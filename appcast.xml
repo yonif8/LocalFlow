@@ -9,7 +9,7 @@
             <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/yonif8/LocalFlow/releases/download/v1.0.0/LocalFlow-1.0.0.dmg" length="51284329" type="application/octet-stream" sparkle:edSignature="wzLgVxbViY3ayLR2osKQN0ioBuSeQAdNGphCOsc4hX0hQi36BSvtczHiUo09OMrB0TYy8qr90LxJR2oH+qYDDg=="/>
+            <enclosure url="https://github.com/yonif8/LocalFlow/releases/download/v1.0.0/LocalFlow-1.0.0.dmg" length="51284332" type="application/octet-stream" sparkle:edSignature="haFMY0pERFj1I27Xnst88rrDzCsHJf6MVTCPa0YkybL3LhPETMIkT1xbcAwrkRuYhxQFeMxH/ozwaNelCDh6CQ=="/>
         </item>
     </channel>
 </rss>
