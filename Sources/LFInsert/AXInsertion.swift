@@ -56,18 +56,22 @@ enum AXInsertion {
     static func insert(_ text: String, verify: Bool) throws {
         let element = try focusedElement()
 
+        // Check settability BEFORE writing: some apps (WhatsApp/Catalyst)
+        // return .success for a write they silently ignore, and their value
+        // attribute is unreadable — so the post-write verification cannot
+        // catch the lie and the paste fallback never runs.
+        var settable = DarwinBoolean(false)
+        let settableErr = AXUIElementIsAttributeSettable(
+            element, kAXSelectedTextAttribute as CFString, &settable
+        )
+        guard settableErr == .success, settable.boolValue else {
+            throw InsertionError.axNotSettable
+        }
+
         let setErr = AXUIElementSetAttributeValue(
             element, kAXSelectedTextAttribute as CFString, text as CFString
         )
         guard setErr == .success else {
-            // Distinguish "attribute simply unsupported" for nicer logs.
-            var settable = DarwinBoolean(false)
-            let settableErr = AXUIElementIsAttributeSettable(
-                element, kAXSelectedTextAttribute as CFString, &settable
-            )
-            if settableErr != .success || !settable.boolValue {
-                throw InsertionError.axNotSettable
-            }
             throw InsertionError.axSetFailed(setErr)
         }
 

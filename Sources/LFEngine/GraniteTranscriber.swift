@@ -158,6 +158,19 @@ public final class GraniteTranscriber: Transcriber, @unchecked Sendable {
     public func transcribeWithTimings(
         _ utterance: Utterance
     ) async throws -> (text: String, timings: TranscriptionTimings) {
+        let detailed = try await transcribeDetailed(utterance)
+        return (detailed.formatted, detailed.timings)
+    }
+
+    /// Like `transcribeWithTimings`, but also returns the RAW CTC text
+    /// (lowercase, unpunctuated). A downstream normalizer that punctuates
+    /// (S1-mini) does markedly better from raw text than from the small
+    /// formatter model's output — the formatter punctuates on acoustic
+    /// pauses and splits clauses mid-sentence; feeding its guesses to the
+    /// normalizer locks them in. `formatted` remains the fail-open fallback.
+    public func transcribeDetailed(
+        _ utterance: Utterance
+    ) async throws -> (raw: String, formatted: String, timings: TranscriptionTimings) {
         guard utterance.sampleRate == 16_000 else {
             throw EngineError.unsupportedSampleRate(got: utterance.sampleRate, required: 16_000)
         }
@@ -179,13 +192,14 @@ public final class GraniteTranscriber: Transcriber, @unchecked Sendable {
             let transcription = try recognizer!.transcribe(audio)
             let inferenceDuration = seconds(since: inferenceStart)
 
-            var text = transcription.text
+            let raw = transcription.text
+            var text = raw
             var formattingDuration: TimeInterval = 0
             if let formatter {
                 let formattingStart = ContinuousClock.now
                 do {
                     let formatted = try formatter.format(
-                        transcription.text, cancellationToken: nil, progressHandler: nil)
+                        raw, cancellationToken: nil, progressHandler: nil)
                     text = formatted.text
                 } catch {
                     // Fail open: raw transcript is better than no transcript.
@@ -199,7 +213,11 @@ public final class GraniteTranscriber: Transcriber, @unchecked Sendable {
                 inference: inferenceDuration,
                 formatting: formattingDuration
             )
-            return (text.trimmingCharacters(in: .whitespacesAndNewlines), timings)
+            return (
+                raw.trimmingCharacters(in: .whitespacesAndNewlines),
+                text.trimmingCharacters(in: .whitespacesAndNewlines),
+                timings
+            )
         }
     }
 

@@ -1,5 +1,6 @@
 import AppKit
 import LFContracts
+import os
 
 /// Inserts text at the caret of the frontmost app via a configurable strategy
 /// chain (AX selected-text first, transient-pasteboard paste as fallback by
@@ -26,10 +27,16 @@ public final class FrontmostInserter: TextInserter, Sendable {
         }
         let secureInput = InsertPermissions.secureInputEnabled
 
+        let target = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
         var failures: [StrategyFailure] = []
         for strategy in configuration.strategyOrder {
             do {
                 try await attempt(strategy, text: text)
+                Logger(subsystem: "com.localflow.insert", category: "insert").info("""
+                    inserted via \(String(describing: strategy), privacy: .public) \
+                    into \(target, privacy: .public)\
+                    \(failures.isEmpty ? "" : " (after: \(failures.map(String.init(describing:)).joined(separator: "; ")))", privacy: .public)
+                    """)
                 return InsertionOutcome(
                     strategy: strategy,
                     secureInputWasEnabled: secureInput,

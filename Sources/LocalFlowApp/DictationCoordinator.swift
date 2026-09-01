@@ -248,9 +248,12 @@ final class DictationCoordinator {
             let clock = ContinuousClock()
             var stageStart = clock.now
             let raw: String
+            let formatted: String
             if let granite = transcriber as? GraniteTranscriber {
-                let (text, t) = try await granite.transcribeWithTimings(utterance)
-                raw = text
+                let detailed = try await granite.transcribeDetailed(utterance)
+                raw = detailed.raw
+                formatted = detailed.formatted
+                let t = detailed.timings
                 Self.logger.info("""
                     transcribe: load \(t.modelLoad.map { String(format: "%.2fs", $0) } ?? "cached", privacy: .public) \
                     inference \(String(format: "%.2fs", t.inference), privacy: .public) \
@@ -259,16 +262,25 @@ final class DictationCoordinator {
                     """)
             } else {
                 raw = try await transcriber.transcribe(utterance)
+                formatted = raw
             }
             let transcribeDuration = clock.now - stageStart
 
             stageStart = clock.now
             // Always runs: dictionary replacements apply even with LLM polish
             // off — the polisher's own llmEnabled config gates the model pass.
+            // S1 works from the RAW transcript (punctuates better than the
+            // pause-based formatter); the formatter output is the fallback.
             let context = PolishContext(
                 targetAppBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier
             )
-            let text = await polisher.polish(raw, context: context)
+            let text: String
+            if let localPolisher = polisher as? LocalPolisher {
+                text = await localPolisher.polishTranscript(
+                    raw: raw, formatted: formatted, context: context)
+            } else {
+                text = await polisher.polish(formatted, context: context)
+            }
             let polishDuration = clock.now - stageStart
 
             stageStart = clock.now

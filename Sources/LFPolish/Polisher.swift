@@ -170,12 +170,30 @@ public struct LocalPolisher: TextPolisher {
         await polishDetailed(text, context: context).text
     }
 
+    /// Transcript-aware polish: the model works from the RAW transcript
+    /// (lowercase, unpunctuated — its native input, so it punctuates and
+    /// segments itself instead of inheriting the pause-based formatter's
+    /// mid-clause periods), while `formatted` is the fail-open fallback so
+    /// a timeout or rejection still yields punctuated text.
+    public func polishTranscript(
+        raw: String, formatted: String, context: PolishContext
+    ) async -> String {
+        let result = await polishDetailed(raw, context: context, fallback: formatted)
+        return result.text
+    }
+
     /// Like `polish`, but reports which path was taken. Never throws.
-    public func polishDetailed(_ text: String, context: PolishContext) async -> PolishResult {
+    /// `fallback`: optional alternative text (e.g. formatter output) used —
+    /// with replacements applied — whenever the model pass is skipped or
+    /// rejected, instead of the (possibly raw/unpunctuated) input.
+    public func polishDetailed(
+        _ text: String, context: PolishContext, fallback: String? = nil
+    ) async -> PolishResult {
         let clock = ContinuousClock()
 
         let replacementsStart = clock.now
         let replaced = engine.apply(to: text)
+        let fallbackText = fallback.map { engine.apply(to: $0) } ?? replaced
         let replacementsDuration = clock.now - replacementsStart
 
         func failOpen(_ reason: PolishOutcome.SkipReason, llmDuration: Duration? = nil) -> PolishResult {
@@ -184,8 +202,8 @@ public struct LocalPolisher: TextPolisher {
                 (llm \(llmDuration.map { String(describing: $0) } ?? "-", privacy: .public))
                 """)
             return PolishResult(
-                text: replaced,
-                afterReplacements: replaced,
+                text: fallbackText,
+                afterReplacements: fallbackText,
                 outcome: .replacementsOnly(reason),
                 modelAvailability: modelAvailabilityDescription,
                 replacementsDuration: replacementsDuration,
@@ -210,9 +228,16 @@ public struct LocalPolisher: TextPolisher {
         guard !trimmedInput.isEmpty else { return failOpen(.emptyModelOutput) }
 
         let tone = configuration.toneOverride ?? ToneHint(bundleID: context.targetAppBundleID)
+        // Longer dictations legitimately need more generation time (the model
+        // rewrites every token): scale the budget past ~150 chars, capped at
+        // 2x the configured timeout.
+        let scaledTimeout = min(
+            configuration.timeout * 2,
+            configuration.timeout + Double(max(0, replaced.count - 150)) / 100.0 * 0.5
+        )
         let start = clock.now
         do {
-            let output = try await Self.withTimeout(configuration.timeout) {
+            let output = try await Self.withTimeout(scaledTimeout) {
                 try await model.respond(input: replaced, tone: tone)
             }
             let llmDuration = clock.now - start
