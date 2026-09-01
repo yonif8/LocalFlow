@@ -134,8 +134,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(simulate)
 
         if let limitation = coordinator.captureLimitation {
-            let info = NSMenuItem(title: limitation, action: nil, keyEquivalent: "")
-            info.isEnabled = false
+            // Keep it short: the widest item sets the whole menu's width.
+            let info = makeItem("⚠︎ Hotkey off — open Permissions…", action: #selector(openPermissions), key: "")
+            info.toolTip = limitation
             menu.addItem(info)
         }
 
