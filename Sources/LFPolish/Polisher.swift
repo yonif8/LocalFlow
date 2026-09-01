@@ -171,7 +171,10 @@ public struct LocalPolisher: TextPolisher {
         let replacementsDuration = clock.now - replacementsStart
 
         func failOpen(_ reason: PolishOutcome.SkipReason, llmDuration: Duration? = nil) -> PolishResult {
-            Self.logger.info("polish fail-open: \(String(describing: reason), privacy: .public)")
+            Self.logger.info("""
+                polish fail-open: \(String(describing: reason), privacy: .public) \
+                (llm \(llmDuration.map { String(describing: $0) } ?? "-", privacy: .public))
+                """)
             return PolishResult(
                 text: replaced,
                 afterReplacements: replaced,
@@ -185,7 +188,11 @@ public struct LocalPolisher: TextPolisher {
         guard let model else {
             return failOpen(.modelUnavailable("FoundationModels not present in this build/OS"))
         }
-        if case .unavailable(let reason) = model.availability {
+        let availabilityStart = clock.now
+        let availability = model.availability
+        let availabilityDuration = clock.now - availabilityStart
+        Self.logger.info("availability check took \(String(describing: availabilityDuration), privacy: .public)")
+        if case .unavailable(let reason) = availability {
             return failOpen(.modelUnavailable(reason))
         }
         guard replaced.count <= configuration.maxInputCharacters else {
@@ -224,24 +231,45 @@ public struct LocalPolisher: TextPolisher {
 
     struct TimeoutError: Error {}
 
-    /// Races `operation` against a wall-clock deadline; the loser is cancelled.
+    /// Races `operation` against a wall-clock deadline and RETURNS AT THE
+    /// DEADLINE regardless. A task group is deliberately not used: a group
+    /// waits for all children before returning, so an operation that ignores
+    /// cancellation (the Foundation Models call does) would hold the
+    /// "timeout" hostage until it finished anyway — observed as 8-10s
+    /// fail-opens against a 2s budget. The losing task is cancelled
+    /// best-effort and abandoned; its late result is discarded.
+    /// One-shot claim guard for racing continuation resumers.
+    private final class ResumeOnce: @unchecked Sendable {
+        private let lock = NSLock()
+        private var resumed = false
+        func claim() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if resumed { return false }
+            resumed = true
+            return true
+        }
+    }
+
     static func withTimeout<T: Sendable>(
         _ seconds: TimeInterval,
         operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask { try await operation() }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
-                throw TimeoutError()
+        let once = ResumeOnce()
+        return try await withCheckedThrowingContinuation { continuation in
+            let work = Task {
+                do {
+                    let value = try await operation()
+                    if once.claim() { continuation.resume(returning: value) }
+                } catch {
+                    if once.claim() { continuation.resume(throwing: error) }
+                }
             }
-            do {
-                guard let first = try await group.next() else { throw TimeoutError() }
-                group.cancelAll()
-                return first
-            } catch {
-                group.cancelAll()
-                throw error
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+                if once.claim() {
+                    work.cancel()
+                    continuation.resume(throwing: TimeoutError())
+                }
             }
         }
     }

@@ -4,6 +4,7 @@ import Observation
 import os
 import LFContracts
 import LFCapture
+import LFEngine
 import LFInsert
 import LFPolish
 
@@ -208,15 +209,41 @@ final class DictationCoordinator {
         // seconds and are unaffected.)
         let processingShownAt = ContinuousClock.now
         do {
-            let raw = try await transcriber.transcribe(utterance)
+            let clock = ContinuousClock()
+            var stageStart = clock.now
+            let raw: String
+            if let granite = transcriber as? GraniteTranscriber {
+                let (text, t) = try await granite.transcribeWithTimings(utterance)
+                raw = text
+                Self.logger.info("""
+                    transcribe: load \(t.modelLoad.map { String(format: "%.2fs", $0) } ?? "cached", privacy: .public) \
+                    inference \(String(format: "%.2fs", t.inference), privacy: .public) \
+                    format \(String(format: "%.2fs", t.formatting), privacy: .public) \
+                    (audio \(String(format: "%.2fs", utterance.duration), privacy: .public))
+                    """)
+            } else {
+                raw = try await transcriber.transcribe(utterance)
+            }
+            let transcribeDuration = clock.now - stageStart
+
             var text = raw
+            stageStart = clock.now
             if UserDefaults.standard.object(forKey: DefaultsKey.polishEnabled) as? Bool ?? true {
                 let context = PolishContext(
                     targetAppBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier
                 )
                 text = await polisher.polish(text, context: context)
             }
+            let polishDuration = clock.now - stageStart
+
+            stageStart = clock.now
             try await inserter.insert(text)
+            let insertDuration = clock.now - stageStart
+            Self.logger.info("""
+                stages: transcribe \(String(describing: transcribeDuration), privacy: .public), \
+                polish \(String(describing: polishDuration), privacy: .public), \
+                insert \(String(describing: insertDuration), privacy: .public)
+                """)
             appendHistory(text)
             Self.logger.info("pipeline complete: \"\(text, privacy: .public)\"")
             let elapsed = ContinuousClock.now - processingShownAt
