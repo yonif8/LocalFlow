@@ -86,6 +86,16 @@ final class OnboardingWindowController {
             w.contentView = NSHostingView(rootView: OnboardingView())
             w.center()
             window = w
+            // Tear the view down on close: its 1.5s permission poll fires
+            // TCC IPC forever if the hosting view outlives the window.
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification, object: w, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    self?.window?.contentView = nil
+                    self?.window = nil
+                }
+            }
         }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)

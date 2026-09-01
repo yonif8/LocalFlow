@@ -89,9 +89,17 @@ final class DictationCoordinator {
 
         // Warm the transcriber once so the first real utterance isn't slow
         // (~2.1 s cold vs ~110 ms warm for the Granite engine).
-        if !didPrepareTranscriber, let preparable = transcriber as? PreparableTranscriber {
+        if !didPrepareTranscriber {
             didPrepareTranscriber = true
-            Task { await preparable.prepare() }
+            if let preparable = transcriber as? PreparableTranscriber {
+                Task { await preparable.prepare() }
+            }
+            // Same idea for the polish model: a cold first call would blow
+            // the polish timeout and leave a zombie request competing with
+            // the ASR engine for the GPU/ANE.
+            if let localPolisher = polisher as? LocalPolisher {
+                Task.detached(priority: .utility) { localPolisher.prewarm() }
+            }
         }
 
         // Mock capture always runs so "Simulate Dictation" works everywhere.

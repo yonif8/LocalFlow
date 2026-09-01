@@ -46,6 +46,15 @@ struct FoundationModelBackend: PolishModel {
         return text
     }
 
+    func prewarm() {
+        guard case .available = SystemLanguageModel.default.availability else { return }
+        // Loads the model into memory process-wide; the per-call sessions
+        // below then respond in well under the polish timeout. A fresh
+        // session per call is deliberate — sessions accumulate transcript
+        // context, and utterances must not bleed into each other.
+        LanguageModelSession(instructions: Self.instructions(for: .neutral)).prewarm()
+    }
+
     func respond(input: String, tone: ToneHint) async throws -> String {
         let session = LanguageModelSession(instructions: Self.instructions(for: tone))
         let response = try await session.respond(

@@ -45,6 +45,12 @@ enum ModelAvailability: Sendable, Equatable {
 protocol PolishModel: Sendable {
     var availability: ModelAvailability { get }
     func respond(input: String, tone: ToneHint) async throws -> String
+    /// Load the model ahead of the first respond call. Default: no-op.
+    func prewarm()
+}
+
+extension PolishModel {
+    func prewarm() {}
 }
 
 // MARK: - Outcome reporting (for the app's HUD / debugging).
@@ -132,6 +138,16 @@ public struct LocalPolisher: TextPolisher {
         }
         #endif
         return nil
+    }
+
+    /// Load the on-device model ahead of the first polish. A cold
+    /// LanguageModelSession pays multi-second model-load latency on its first
+    /// respond — enough to blow the polish timeout on every utterance — and
+    /// the timed-out request keeps computing, starving the ASR engine's GPU
+    /// work. Model loading is process-wide, so one prewarm makes every
+    /// subsequent per-call session fast.
+    public func prewarm() {
+        model?.prewarm()
     }
 
     /// Human-readable availability of the on-device model, for status UIs.
