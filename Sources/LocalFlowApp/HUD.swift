@@ -50,7 +50,7 @@ final class HUDController {
 private final class HUDPanel: NSPanel {
     init() {
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 280, height: 56),
+            contentRect: NSRect(x: 0, y: 0, width: 180, height: 36),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -96,10 +96,10 @@ private struct HUDView: View {
                 EmptyView()
             }
         }
-        .font(.system(size: 13, weight: .medium))
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
-        .frame(width: 280, height: 56)
+        .font(.system(size: 11, weight: .medium))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(width: 180, height: 36)
         .background(.ultraThinMaterial, in: Capsule())
         .overlay(Capsule().strokeBorder(.white.opacity(0.15), lineWidth: 1))
     }
@@ -108,17 +108,17 @@ private struct HUDView: View {
 /// Bar-style live level meter driven by CaptureEvent.level (0...1).
 private struct LevelMeter: View {
     let level: Float
-    private let barCount = 18
+    private let barCount = 12
 
     var body: some View {
-        HStack(spacing: 3) {
+        HStack(spacing: 2.5) {
             ForEach(0..<barCount, id: \.self) { index in
                 Capsule()
                     .fill(.white.opacity(0.9))
-                    .frame(width: 3, height: barHeight(index))
+                    .frame(width: 2.5, height: barHeight(index))
             }
         }
-        .frame(height: 28)
+        .frame(height: 18)
         .animation(.linear(duration: 0.05), value: level)
     }
 
@@ -128,7 +128,7 @@ private struct LevelMeter: View {
         let distance = abs(Double(index) - center) / center
         let weight = 1.0 - 0.65 * distance * distance
         let jitter = 0.75 + 0.25 * sin(Double(index) * 2.4 + Double(level) * 21)
-        let height = 4 + CGFloat(Double(level) * 24 * weight * jitter)
-        return max(4, min(28, height))
+        let height = 3 + CGFloat(Double(level) * 14 * weight * jitter)
+        return max(3, min(18, height))
     }
 }
