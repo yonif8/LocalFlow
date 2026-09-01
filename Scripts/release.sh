@@ -45,7 +45,8 @@ fi
 
 # ---- Build ---------------------------------------------------------------
 echo "==> Building LocalFlow $VERSION…"
-"$REPO_ROOT/Scripts/make-app.sh" --version "$VERSION"
+# Extra args (e.g. --scratch-path) pass through to make-app.sh.
+"$REPO_ROOT/Scripts/make-app.sh" --version "$VERSION" "${@:2}"
 
 # ---- DMG -----------------------------------------------------------------
 echo "==> Creating $DMG…"

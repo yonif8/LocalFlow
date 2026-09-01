@@ -1,5 +1,52 @@
 import SwiftUI
 import AppKit
+import ServiceManagement
+import LFEngine
+import LFPolish
+
+/// Everything about this install that helps debugging, and nothing private:
+/// states, settings, and counts — never dictation history or dictionary
+/// contents.
+enum BugDiagnostics {
+    static func summary() -> String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "dev"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        var model = ""
+        var size = size_t()
+        sysctlbyname("hw.model", nil, &size, nil, 0)
+        var buffer = [CChar](repeating: 0, count: size)
+        sysctlbyname("hw.model", &buffer, &size, nil, 0)
+        model = String(cString: buffer)
+
+        let dictionary = AppSettings.loadDictionary()
+        let mic = AppSettings.microphoneUID.map { uid in
+            MicDevice.available().first(where: { $0.uid == uid })?.name ?? "disconnected (\(uid))"
+        } ?? "system default"
+
+        return """
+        LocalFlow \(version) (build \(build)) · \(ProcessInfo.processInfo.operatingSystemVersionString) · \(model)
+
+        Permissions: mic=\(PermissionChecker.microphone().label), \
+        input-monitoring=\(PermissionChecker.inputMonitoring().label), \
+        accessibility=\(PermissionChecker.accessibility().label)
+        Models: granite-speech=\(EngineModelLocations.isSpeechModelDownloaded() ? "downloaded" : "missing"), \
+        punctuation=\(EngineModelLocations.isPunctuationModelDownloaded() ? "downloaded" : "missing"), \
+        s1-mini=\(PolishModelStore.isModelDownloaded ? "downloaded" : "missing")
+        Engine: \(AppSettings.speechEngine)
+        Hotkey: \(HotkeyChoice.load().rawValue), mouse-button=\(AppSettings.mouseButton.map { "\($0 + 1)" } ?? "off"), \
+        hold-threshold=\(String(format: "%.2fs", AppSettings.holdThreshold)), mic-warm=\(AppSettings.keepMicWarm)
+        Microphone: \(mic)
+        Polish: enabled=\(AppSettings.polishEnabled), tone=\(AppSettings.polishTone), \
+        timeout=\(String(format: "%.2fs", AppSettings.polishTimeout)), max-chars=\(AppSettings.polishMaxChars), \
+        spoken-punctuation=\(AppSettings.spokenPunctuation)
+        Insertion: method=\(AppSettings.insertMethod), restore-delay=\(AppSettings.restoreDelayMs)ms
+        General: hud=\(AppSettings.hudEnabled), history-limit=\(AppSettings.historyLimit), \
+        launch-at-login=\(SMAppService.mainApp.status == .enabled), \
+        dictionary-rules=\(dictionary.rules.count)
+        """
+    }
+}
 
 /// Minimal bug reporter: one text box, Enter submits. Composes a prefilled
 /// GitHub new-issue page in the browser — nothing is sent silently, and no
@@ -44,7 +91,7 @@ private struct BugReportView: View {
                 .lineLimit(3...6)
                 .onSubmit(submit)
             HStack {
-                Text("Opens a prefilled GitHub issue — nothing is sent until you submit it there.")
+                Text("Opens a prefilled GitHub issue with your app settings attached — nothing is sent until you submit it there.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -61,14 +108,17 @@ private struct BugReportView: View {
         let report = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !report.isEmpty else { return }
 
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
-        let os = ProcessInfo.processInfo.operatingSystemVersionString
         let title = report.count > 60 ? String(report.prefix(57)) + "…" : report
         let body = """
         \(report)
 
         ---
-        LocalFlow \(version) · \(os) · engine: \(AppSettings.speechEngine)
+        <details><summary>Diagnostics</summary>
+
+        ```
+        \(BugDiagnostics.summary())
+        ```
+        </details>
         """
 
         var components = URLComponents(string: "https://github.com/yonif8/LocalFlow/issues/new")!
