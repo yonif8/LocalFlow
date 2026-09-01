@@ -29,46 +29,6 @@ private nonisolated(unsafe) var delegateKey: UInt8 = 0
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
-    /// Set only by our own Quit menu item.
-    private var quitRequestedByUser = false
-
-    /// A menu-bar agent must outlive its windows: utilities like SmartClose
-    /// send a quit Apple Event when an app's last window closes. Allow quit
-    /// only from our own Quit item or from the system (logout/shutdown via
-    /// loginwindow); refuse it from other apps.
-    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if quitRequestedByUser { return .terminateNow }
-
-        let logger = Logger(subsystem: "com.localflow.app", category: "lifecycle")
-        guard let event = NSAppleEventManager.shared().currentAppleEvent,
-              let senderDesc = event.attributeDescriptor(forKeyword: AEKeyword(keyAddressAttr)),
-              let pidDesc = senderDesc.coerce(toDescriptorType: typeKernelProcessID)
-        else {
-            // Not an external quit event (e.g. our own programmatic terminate).
-            return .terminateNow
-        }
-
-        var pid: pid_t = 0
-        withUnsafeMutableBytes(of: &pid) { _ = pidDesc.data.copyBytes(to: $0) }
-        if pid == ProcessInfo.processInfo.processIdentifier { return .terminateNow }
-
-        let requester = NSRunningApplication(processIdentifier: pid)
-        let bundleID = requester?.bundleIdentifier ?? "pid \(pid)"
-        if bundleID == "com.apple.loginwindow" { return .terminateNow }
-
-        // Utilities like SmartClose send quit INSTEAD of closing the window
-        // the user X-ed, so honor the intent: close regular windows (not the
-        // HUD panel), keep the process alive in the menu bar.
-        logger.info("refused quit request from \(bundleID, privacy: .public); closing windows instead")
-        for window in NSApp.windows where window.isVisible && !(window is NSPanel) {
-            window.close()
-        }
-        return .terminateCancel
-    }
-
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        false
-    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Agent app: no Dock icon. LSUIElement covers the bundled case; this
@@ -242,7 +202,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func quit() {
-        quitRequestedByUser = true
         NSApp.terminate(nil)
     }
 
