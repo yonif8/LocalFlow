@@ -104,8 +104,14 @@ final class DictationCoordinator {
         // macOS's orange mic-in-use indicator on permanently, which reads as
         // a second mic icon in the menu bar. Built-in mic spin-up is fast;
         // revisit for Bluetooth mics via a settings toggle if needed.
+        let storedButton = UserDefaults.standard.object(forKey: DefaultsKey.mouseButton) as? Int
+        let secondary: HotkeyKey? = storedButton.flatMap { $0 >= 2 ? .mouseButton(Int64($0)) : nil }
         let engine = HoldToTalkCaptureEngine(
-            config: HotkeyConfig(key: HotkeyChoice.load().captureKey, keepMicWarm: false)
+            config: HotkeyConfig(
+                key: HotkeyChoice.load().captureKey,
+                secondaryKey: secondary,
+                keepMicWarm: false
+            )
         )
         do {
             try engine.start()

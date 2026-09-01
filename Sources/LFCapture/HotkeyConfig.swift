@@ -11,12 +11,16 @@ public enum HotkeyKey: Sendable, Equatable, CustomStringConvertible {
     case rightOption
     /// Any non-modifier key by virtual keycode (e.g. 96 = F5). Detected via keyDown/keyUp.
     case keyCode(Int64)
+    /// A mouse button by CGEvent button number (2 = middle, 3+ = side buttons).
+    /// Detected via otherMouseDown/otherMouseUp; left (0) and right (1) are
+    /// deliberately unsupported — hijacking them would break normal clicking.
+    case mouseButton(Int64)
 
     /// True for keys that only produce `.flagsChanged` events (modifiers).
     var usesFlagsChanged: Bool {
         switch self {
         case .fn, .rightCommand, .rightOption: return true
-        case .keyCode: return false
+        case .keyCode, .mouseButton: return false
         }
     }
 
@@ -27,6 +31,7 @@ public enum HotkeyKey: Sendable, Equatable, CustomStringConvertible {
         case .rightCommand: return 54  // kVK_RightCommand
         case .rightOption: return 61   // kVK_RightOption
         case .keyCode(let k): return k
+        case .mouseButton: return -1   // not a keyboard key
         }
     }
 
@@ -41,7 +46,7 @@ public enum HotkeyKey: Sendable, Equatable, CustomStringConvertible {
             return flags.rawValue & 0x0000_0010 != 0 // NX_DEVICERCMDKEYMASK
         case .rightOption:
             return flags.rawValue & 0x0000_0040 != 0 // NX_DEVICERALTKEYMASK
-        case .keyCode:
+        case .keyCode, .mouseButton:
             return false
         }
     }
@@ -52,6 +57,7 @@ public enum HotkeyKey: Sendable, Equatable, CustomStringConvertible {
         case .rightCommand: return "Right Command"
         case .rightOption: return "Right Option"
         case .keyCode(let k): return "keycode \(k)"
+        case .mouseButton(let b): return "Mouse Button \(b + 1)"
         }
     }
 }
@@ -60,6 +66,9 @@ public enum HotkeyKey: Sendable, Equatable, CustomStringConvertible {
 public struct HotkeyConfig: Sendable {
     /// The hold-to-talk key.
     public var key: HotkeyKey
+    /// Optional second trigger (e.g. a spare mouse button). Either trigger
+    /// arms recording; release of the one that armed it ends the utterance.
+    public var secondaryKey: HotkeyKey?
     /// Holds shorter than this are treated as accidental taps and cancelled (Hex uses 0.3s).
     public var holdThreshold: TimeInterval
     /// Utterances shorter than this are cancelled even if the hold was long enough.
@@ -72,11 +81,13 @@ public struct HotkeyConfig: Sendable {
 
     public init(
         key: HotkeyKey = .fn,
+        secondaryKey: HotkeyKey? = nil,
         holdThreshold: TimeInterval = 0.3,
         minUtteranceDuration: TimeInterval = 0.3,
         keepMicWarm: Bool = true
     ) {
         self.key = key
+        self.secondaryKey = secondaryKey
         self.holdThreshold = holdThreshold
         self.minUtteranceDuration = minUtteranceDuration
         self.keepMicWarm = keepMicWarm

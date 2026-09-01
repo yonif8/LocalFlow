@@ -67,6 +67,10 @@ enum HotkeyChoice: String, CaseIterable, Identifiable {
 
 struct SettingsView: View {
     @State private var hotkey: HotkeyChoice = .load()
+    @State private var mouseButton: Int? =
+        UserDefaults.standard.object(forKey: DefaultsKey.mouseButton) as? Int
+    @State private var isDetectingMouseButton = false
+    @State private var mouseMonitors: [Any] = []
     @AppStorage(DefaultsKey.polishEnabled) private var polishEnabled = true
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginItemError: String?
@@ -89,6 +93,28 @@ struct SettingsView: View {
                     DictationCoordinator.shared.restartListeningIfNeeded()
                 }
                 Text("Hold the key to record; release to transcribe and insert.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                LabeledContent("Mouse button:") {
+                    HStack {
+                        Text(isDetectingMouseButton
+                             ? "Press a mouse button…"
+                             : mouseButton.map { "Button \($0 + 1)" } ?? "Off")
+                            .foregroundStyle(isDetectingMouseButton ? .orange : .primary)
+                        if isDetectingMouseButton {
+                            Button("Cancel") { stopDetectingMouseButton() }
+                        } else {
+                            Button(mouseButton == nil ? "Detect…" : "Change…") {
+                                startDetectingMouseButton()
+                            }
+                            if mouseButton != nil {
+                                Button("Remove") { setMouseButton(nil) }
+                            }
+                        }
+                    }
+                }
+                Text("A middle or side mouse button works as a second push-to-talk trigger.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -149,5 +175,51 @@ struct SettingsView: View {
             loginItemError = "Couldn't update login item: \(error.localizedDescription)"
             launchAtLogin = SMAppService.mainApp.status == .enabled
         }
+    }
+
+    // MARK: - Mouse-button trigger
+
+    private func startDetectingMouseButton() {
+        guard !isDetectingMouseButton else { return }
+        isDetectingMouseButton = true
+
+        let handle: (Int) -> Void = { button in
+            Task { @MainActor in
+                // Left (0) and right (1) never arrive via otherMouseDown,
+                // but clamp anyway so normal clicking can't be hijacked.
+                guard button >= 2 else { return }
+                setMouseButton(button)
+                stopDetectingMouseButton()
+            }
+        }
+        // Local monitor catches clicks while Settings is focused; the global
+        // one catches them anywhere else (Input Monitoring already granted).
+        if let local = NSEvent.addLocalMonitorForEvents(matching: .otherMouseDown, handler: { event in
+            handle(event.buttonNumber)
+            return event
+        }) {
+            mouseMonitors.append(local)
+        }
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: .otherMouseDown, handler: { event in
+            handle(event.buttonNumber)
+        }) {
+            mouseMonitors.append(global)
+        }
+    }
+
+    private func stopDetectingMouseButton() {
+        isDetectingMouseButton = false
+        mouseMonitors.forEach { NSEvent.removeMonitor($0) }
+        mouseMonitors.removeAll()
+    }
+
+    private func setMouseButton(_ button: Int?) {
+        mouseButton = button
+        if let button {
+            UserDefaults.standard.set(button, forKey: DefaultsKey.mouseButton)
+        } else {
+            UserDefaults.standard.removeObject(forKey: DefaultsKey.mouseButton)
+        }
+        DictationCoordinator.shared.restartListeningIfNeeded()
     }
 }

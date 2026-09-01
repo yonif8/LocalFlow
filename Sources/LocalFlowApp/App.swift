@@ -222,6 +222,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 enum DefaultsKey {
     static let hasLaunchedBefore = "LFHasLaunchedBefore"
     static let polishEnabled = "LFPolishEnabled"
+    /// CGEvent button number of the secondary push-to-talk mouse button;
+    /// absent/negative = off. (2 = middle, 3+ = side buttons.)
+    static let mouseButton = "LFMouseButton"
     /// JSON-encoded `HotkeyConfig`-shaped value ({"key": "fn" | "rightCommand" | "rightOption"}).
     /// LFCapture can read this at startup; the local mirror enum lives in
     /// SettingsView.swift and is bridged to LFCapture.HotkeyKey in

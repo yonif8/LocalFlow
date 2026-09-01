@@ -14,7 +14,7 @@ final class ErrorBox: @unchecked Sendable {
 }
 
 final class EventTapHotkeyMonitor: @unchecked Sendable {
-    private let key: HotkeyKey
+    private let keys: [HotkeyKey]
 
     /// Callbacks fire on the tap thread.
     var onKeyDown: (() -> Void)?
@@ -25,10 +25,16 @@ final class EventTapHotkeyMonitor: @unchecked Sendable {
     private var runLoopSource: CFRunLoopSource?
     private var tapRunLoop: CFRunLoop?
     private var thread: Thread?
-    private var keyIsDown = false
+    /// The trigger currently held, if any. Only its release ends the hold —
+    /// a second trigger pressed mid-hold is ignored.
+    private var activeKey: HotkeyKey?
 
-    init(key: HotkeyKey) {
-        self.key = key
+    init(keys: [HotkeyKey]) {
+        self.keys = keys
+    }
+
+    convenience init(key: HotkeyKey) {
+        self.init(keys: [key])
     }
 
     func start() throws {
@@ -41,10 +47,18 @@ final class EventTapHotkeyMonitor: @unchecked Sendable {
         let t = Thread { [weak self] in
             guard let self else { ready.signal(); return }
 
-            let mask: CGEventMask =
+            var mask: CGEventMask =
                 (CGEventMask(1) << CGEventType.flagsChanged.rawValue)
                 | (CGEventMask(1) << CGEventType.keyDown.rawValue)
                 | (CGEventMask(1) << CGEventType.keyUp.rawValue)
+            // Mouse-button triggers (middle/side buttons) arrive as
+            // otherMouseDown/otherMouseUp; only subscribe when configured.
+            if self.keys.contains(where: {
+                if case .mouseButton = $0 { return true } else { return false }
+            }) {
+                mask |= (CGEventMask(1) << CGEventType.otherMouseDown.rawValue)
+                    | (CGEventMask(1) << CGEventType.otherMouseUp.rawValue)
+            }
 
             let callback: CGEventTapCallBack = { _, type, event, userInfo in
                 guard let userInfo else { return Unmanaged.passUnretained(event) }
@@ -97,7 +111,7 @@ final class EventTapHotkeyMonitor: @unchecked Sendable {
         runLoopSource = nil
         tapRunLoop = nil
         thread = nil
-        keyIsDown = false
+        activeKey = nil
     }
 
     // MARK: - Event handling (tap thread)
@@ -110,13 +124,10 @@ final class EventTapHotkeyMonitor: @unchecked Sendable {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
 
         case .flagsChanged:
-            guard key.usesFlagsChanged else { return }
             let code = event.getIntegerValueField(.keyboardEventKeycode)
-            guard code == key.virtualKeyCode else { return }
-            let held = key.isHeld(in: event.flags)
-            if held != keyIsDown {
-                keyIsDown = held
-                held ? onKeyDown?() : onKeyUp?()
+            for key in keys where key.usesFlagsChanged && key.virtualKeyCode == code {
+                let held = key.isHeld(in: event.flags)
+                if held { triggerDown(key) } else { triggerUp(key) }
             }
 
         case .keyDown:
@@ -125,23 +136,43 @@ final class EventTapHotkeyMonitor: @unchecked Sendable {
                 onEscape?()
                 return
             }
-            if case .keyCode(let k) = key, code == k,
-               event.getIntegerValueField(.keyboardEventAutorepeat) == 0,
-               !keyIsDown {
-                keyIsDown = true
-                onKeyDown?()
+            guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else { return }
+            for key in keys {
+                if case .keyCode(let k) = key, code == k { triggerDown(key) }
             }
 
         case .keyUp:
-            if case .keyCode(let k) = key,
-               event.getIntegerValueField(.keyboardEventKeycode) == k,
-               keyIsDown {
-                keyIsDown = false
-                onKeyUp?()
+            let code = event.getIntegerValueField(.keyboardEventKeycode)
+            for key in keys {
+                if case .keyCode(let k) = key, code == k { triggerUp(key) }
+            }
+
+        case .otherMouseDown:
+            let button = event.getIntegerValueField(.mouseEventButtonNumber)
+            for key in keys {
+                if case .mouseButton(let b) = key, button == b { triggerDown(key) }
+            }
+
+        case .otherMouseUp:
+            let button = event.getIntegerValueField(.mouseEventButtonNumber)
+            for key in keys {
+                if case .mouseButton(let b) = key, button == b { triggerUp(key) }
             }
 
         default:
             break
         }
+    }
+
+    private func triggerDown(_ key: HotkeyKey) {
+        guard activeKey == nil else { return }
+        activeKey = key
+        onKeyDown?()
+    }
+
+    private func triggerUp(_ key: HotkeyKey) {
+        guard activeKey == key else { return }
+        activeKey = nil
+        onKeyUp?()
     }
 }

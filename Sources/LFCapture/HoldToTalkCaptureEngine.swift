@@ -24,7 +24,9 @@ public final class HoldToTalkCaptureEngine: CaptureEngine, @unchecked Sendable {
 
     public init(config: HotkeyConfig = HotkeyConfig()) {
         self.config = config
-        self.monitor = EventTapHotkeyMonitor(key: config.key)
+        self.monitor = EventTapHotkeyMonitor(
+            keys: [config.key] + (config.secondaryKey.map { [$0] } ?? [])
+        )
         self.recorder = MicRecorder()
         (events, continuation) = AsyncStream.makeStream(of: CaptureEvent.self)
 
