@@ -48,6 +48,13 @@ enum AppSettings {
         }
     }
 
+    /// "granite" (default) or "parakeet" (verbatim contractions, native
+    /// punctuation; beta while it accrues real-world mileage).
+    static var speechEngine: String {
+        get { defaults.string(forKey: DefaultsKey.speechEngine) ?? "granite" }
+        set { defaults.set(newValue, forKey: DefaultsKey.speechEngine) }
+    }
+
     /// CoreAudio UID of the preferred microphone; nil = system default.
     static var microphoneUID: String? {
         get { defaults.string(forKey: DefaultsKey.microphoneUID) }

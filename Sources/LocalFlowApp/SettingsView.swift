@@ -159,6 +159,7 @@ private struct DictationSettingsTab: View {
     @State private var keepMicWarm = AppSettings.keepMicWarm
     @State private var microphoneUID = AppSettings.microphoneUID ?? ""
     @State private var microphones: [MicDevice] = MicDevice.available()
+    @State private var speechEngine = AppSettings.speechEngine
 
     var body: some View {
         Form {
@@ -208,6 +209,24 @@ private struct DictationSettingsTab: View {
                     apply(restartCapture: true)
                 }
                 Text("Accidental-tap filter: holds shorter than this are cancelled.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Speech Recognition") {
+                Picker("Engine:", selection: $speechEngine) {
+                    Text("Granite (default)").tag("granite")
+                    Text("Parakeet (beta — verbatim)").tag("parakeet")
+                }
+                .onChange(of: speechEngine) { _, value in
+                    AppSettings.speechEngine = value
+                    apply()
+                }
+                Text("""
+                    Granite normalizes speech (always writes "do not", never \
+                    "don't"). Parakeet transcribes verbatim — contractions \
+                    kept — and punctuates natively. Parakeet downloads \
+                    ~600 MB on first use.
+                    """)
                     .font(.caption).foregroundStyle(.secondary)
             }
 

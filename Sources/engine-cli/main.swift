@@ -34,6 +34,7 @@ var bench = false
 var benchRuns = 10
 var punctuate = true
 var showRaw = false
+var engineName = "granite"
 var audioPath: String?
 
 var index = 0
@@ -50,8 +51,12 @@ while index < arguments.count {
         punctuate = false
     case "--raw":
         showRaw = true
+    case "--engine":
+        guard index + 1 < arguments.count else { fail("--engine needs granite|parakeet") }
+        engineName = arguments[index + 1]
+        index += 1
     case "--help", "-h":
-        print("usage: engine-cli <audio-file> [--bench [N]] [--no-punctuate] [--raw]")
+        print("usage: engine-cli <audio-file> [--engine granite|parakeet] [--bench [N]] [--no-punctuate] [--raw]")
         exit(0)
     default:
         if argument.hasPrefix("-") { fail("unknown option \(argument)") }
@@ -74,6 +79,28 @@ do {
             format: "audio: %@ (%.2f s @ %.0f Hz, %d samples)",
             audioURL.lastPathComponent, utterance.duration,
             utterance.sampleRate, utterance.samples.count))
+
+        if engineName == "parakeet" {
+            let parakeet = ParakeetTranscriber()
+            errPrint("loading Parakeet TDT v3 (downloads on first use)…")
+            let loadStart = Date()
+            await parakeet.prepare()
+            errPrint("parakeet load: \(ms(Date().timeIntervalSince(loadStart)))")
+            let runs = bench ? benchRuns : 1
+            var latencies: [TimeInterval] = []
+            var text = ""
+            for _ in 1...runs {
+                let start = Date()
+                text = try await parakeet.transcribe(utterance)
+                latencies.append(Date().timeIntervalSince(start))
+            }
+            let median = latencies.sorted()[latencies.count / 2]
+            errPrint(String(
+                format: "parakeet: median %@ over %d run(s), RTF %.3f",
+                ms(median), runs, median / utterance.duration))
+            print(text)
+            exit(0)
+        }
 
         let transcriber = GraniteTranscriber(configuration: .init(
             punctuate: punctuate,

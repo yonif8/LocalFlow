@@ -11,6 +11,9 @@ let package = Package(
         .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", exact: "3.31.4"),
         .package(url: "https://github.com/huggingface/swift-huggingface", from: "0.9.0"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
+        // Alternate ASR engine (Parakeet TDT v3, CoreML): verbatim transcripts
+        // (preserves contractions, unlike Granite) with native punctuation.
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.12.4"),
         // Auto-updates. 2.9.5+ contains security fixes; EdDSA-signed updates
         // work without Apple-trusted code signing.
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.6"),
@@ -25,6 +28,7 @@ let package = Package(
             dependencies: [
                 "LFContracts",
                 .product(name: "GraniteMLX", package: "Granite-MLX"),
+                .product(name: "FluidAudio", package: "FluidAudio"),
             ]
         ),
         .executableTarget(name: "engine-cli", dependencies: ["LFEngine"]),

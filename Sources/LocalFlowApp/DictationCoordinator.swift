@@ -53,7 +53,8 @@ final class DictationCoordinator {
     // the S1 model itself is a process-wide singleton, so rebuilds are cheap.
     private let mockCapture = MockCaptureEngine()
     private var realCapture: HoldToTalkCaptureEngine?
-    private let transcriber: any Transcriber
+    private var transcriber: any Transcriber
+    private var activeEngine = AppSettings.speechEngine
     private var polisher: any TextPolisher
     private var inserter: any TextInserter
 
@@ -95,6 +96,15 @@ final class DictationCoordinator {
     func applySettings(restartCapture: Bool = false) {
         polisher = Self.makePolisher()
         inserter = AdaptiveInserter(configuration: AppSettings.inserterConfiguration)
+        if AppSettings.speechEngine != activeEngine {
+            activeEngine = AppSettings.speechEngine
+            transcriber = EngineFactory.makeTranscriber()
+            didPrepareTranscriber = true
+            Self.logger.info("speech engine switched to \(self.activeEngine, privacy: .public)")
+            if let preparable = transcriber as? PreparableTranscriber {
+                Task { await preparable.prepare() }
+            }
+        }
         trimHistory()
         if restartCapture {
             restartListeningIfNeeded()

@@ -12,8 +12,19 @@ extension GraniteTranscriber: PreparableTranscriber {
     }
 }
 
+extension ParakeetTranscriber: PreparableTranscriber {}
+
 enum EngineFactory {
-    static func makeTranscriber() -> GraniteTranscriber {
+    static func makeTranscriber() -> any Transcriber {
+        switch AppSettings.speechEngine {
+        case "parakeet":
+            return ParakeetTranscriber()
+        default:
+            return makeGraniteTranscriber()
+        }
+    }
+
+    static func makeGraniteTranscriber() -> GraniteTranscriber {
         // Progress feeds the onboarding "Models" section on first run; on a
         // warm cache it just flips the rows to "downloaded" via cache_hit.
         GraniteTranscriber(configuration: .init(progressHandler: { progress in
