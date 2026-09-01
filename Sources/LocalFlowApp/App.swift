@@ -225,6 +225,16 @@ enum DefaultsKey {
     /// CGEvent button number of the secondary push-to-talk mouse button;
     /// absent/negative = off. (2 = middle, 3+ = side buttons.)
     static let mouseButton = "LFMouseButton"
+    static let hudEnabled = "LFHUDEnabled"                     // default true
+    static let keepMicWarm = "LFKeepMicWarm"                   // default false
+    static let holdThreshold = "LFHoldThreshold"               // seconds, default 0.3
+    static let polishTimeout = "LFPolishTimeout"               // seconds, default 1.5
+    static let polishMaxChars = "LFPolishMaxChars"             // default 700
+    static let polishTone = "LFPolishTone"                     // "auto" | "casual" | "neutral"
+    static let insertMethod = "LFInsertMethod"                 // "auto" | "paste" | "type"
+    static let restoreDelayMs = "LFRestoreDelayMs"             // default 300
+    static let historyLimit = "LFHistoryLimit"                 // default 10
+    static let spokenPunctuation = "LFSpokenPunctuation"       // default false
     /// JSON-encoded `HotkeyConfig`-shaped value ({"key": "fn" | "rightCommand" | "rightOption"}).
     /// LFCapture can read this at startup; the local mirror enum lives in
     /// SettingsView.swift and is bridged to LFCapture.HotkeyKey in

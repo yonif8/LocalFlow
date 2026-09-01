@@ -49,11 +49,13 @@ final class DictationCoordinator {
     private(set) var captureLimitation: String?
 
     // Pipeline components — protocol-typed so the orchestrator can rewire.
+    // Polisher and inserter are rebuilt from AppSettings via applySettings();
+    // the S1 model itself is a process-wide singleton, so rebuilds are cheap.
     private let mockCapture = MockCaptureEngine()
     private var realCapture: HoldToTalkCaptureEngine?
     private let transcriber: any Transcriber
-    private let polisher: any TextPolisher
-    private let inserter: any TextInserter
+    private var polisher: any TextPolisher
+    private var inserter: any TextInserter
 
     private var pumpTasks: [Task<Void, Never>] = []
     private var errorResetTask: Task<Void, Never>?
@@ -62,16 +64,31 @@ final class DictationCoordinator {
     private init() {
         self.transcriber = EngineFactory.makeTranscriber()
         self.polisher = Self.makePolisher()
-        self.inserter = AdaptiveInserter()
+        self.inserter = AdaptiveInserter(configuration: AppSettings.inserterConfiguration)
     }
 
     private static func makePolisher() -> any TextPolisher {
-        let dictionaryURL = URL(fileURLWithPath: NSString(
-            string: "~/Library/Application Support/LocalFlow/dictionary.json"
-        ).expandingTildeInPath)
-        let dictionary = (try? PersonalDictionary.load(from: dictionaryURL))
-            ?? PersonalDictionary()
-        return LocalPolisher(dictionary: dictionary)
+        LocalPolisher(
+            dictionary: AppSettings.loadDictionary(),
+            configuration: .init(
+                llmEnabled: AppSettings.polishEnabled,
+                timeout: AppSettings.polishTimeout,
+                maxInputCharacters: AppSettings.polishMaxChars,
+                toneOverride: AppSettings.polishToneOverride
+            )
+        )
+    }
+
+    /// Re-read AppSettings and rebuild the affected pipeline pieces.
+    /// Settings UI calls this after any change; capture-related changes
+    /// additionally restart listening (the event tap holds its config).
+    func applySettings(restartCapture: Bool = false) {
+        polisher = Self.makePolisher()
+        inserter = AdaptiveInserter(configuration: AppSettings.inserterConfiguration)
+        trimHistory()
+        if restartCapture {
+            restartListeningIfNeeded()
+        }
     }
 
     var menuBarSymbolName: String {
@@ -113,13 +130,14 @@ final class DictationCoordinator {
         // macOS's orange mic-in-use indicator on permanently, which reads as
         // a second mic icon in the menu bar. Built-in mic spin-up is fast;
         // revisit for Bluetooth mics via a settings toggle if needed.
-        let storedButton = UserDefaults.standard.object(forKey: DefaultsKey.mouseButton) as? Int
-        let secondary: HotkeyKey? = storedButton.flatMap { $0 >= 2 ? .mouseButton(Int64($0)) : nil }
         let engine = HoldToTalkCaptureEngine(
             config: HotkeyConfig(
                 key: HotkeyChoice.load().captureKey,
-                secondaryKey: secondary,
-                keepMicWarm: false
+                secondaryKey: AppSettings.mouseButton.map { .mouseButton(Int64($0)) },
+                holdThreshold: AppSettings.holdThreshold,
+                // Note: keeping the mic warm leaves macOS's orange mic
+                // indicator on permanently — surfaced in Settings.
+                keepMicWarm: AppSettings.keepMicWarm
             )
         )
         do {
@@ -226,14 +244,13 @@ final class DictationCoordinator {
             }
             let transcribeDuration = clock.now - stageStart
 
-            var text = raw
             stageStart = clock.now
-            if UserDefaults.standard.object(forKey: DefaultsKey.polishEnabled) as? Bool ?? true {
-                let context = PolishContext(
-                    targetAppBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-                )
-                text = await polisher.polish(text, context: context)
-            }
+            // Always runs: dictionary replacements apply even with LLM polish
+            // off — the polisher's own llmEnabled config gates the model pass.
+            let context = PolishContext(
+                targetAppBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+            )
+            let text = await polisher.polish(raw, context: context)
             let polishDuration = clock.now - stageStart
 
             stageStart = clock.now
@@ -260,9 +277,18 @@ final class DictationCoordinator {
 
     private func appendHistory(_ text: String) {
         history.insert(Transcript(text: text, date: Date()), at: 0)
-        if history.count > 10 {
-            history.removeLast(history.count - 10)
+        trimHistory()
+    }
+
+    private func trimHistory() {
+        let limit = AppSettings.historyLimit
+        if history.count > limit {
+            history.removeLast(history.count - limit)
         }
+    }
+
+    func clearHistory() {
+        history.removeAll()
     }
 
     /// Error surfacing: HUD flashes the message, then everything resets.
@@ -285,8 +311,12 @@ final class DictationCoordinator {
 /// (e.g. Accessibility not granted), falls back to copying to the pasteboard
 /// so the user still gets the text.
 struct AdaptiveInserter: TextInserter {
-    private let primary = FrontmostInserter()
+    private let primary: FrontmostInserter
     private let fallback = PasteboardInserter()
+
+    init(configuration: InserterConfiguration = .default) {
+        primary = FrontmostInserter(configuration: configuration)
+    }
 
     func insert(_ text: String) async throws {
         do {

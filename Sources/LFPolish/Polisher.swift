@@ -5,7 +5,7 @@ import os
 // MARK: - Stage 2 abstraction (internal so tests can inject mocks).
 
 /// Tone hint derived from the target app's bundle id.
-enum ToneHint: Sendable, Equatable {
+public enum ToneHint: Sendable, Equatable {
     case casual
     case neutral
 
@@ -104,15 +104,19 @@ public struct LocalPolisher: TextPolisher {
         /// inside the 2s budget on an M1 Max — beyond that the pass would
         /// only burn the full timeout and fail open anyway.
         public var maxInputCharacters: Int
+        /// Force a tone instead of inferring it from the target app.
+        public var toneOverride: ToneHint?
 
         public init(
             llmEnabled: Bool = true,
             timeout: TimeInterval = 1.5,
-            maxInputCharacters: Int = 700
+            maxInputCharacters: Int = 700,
+            toneOverride: ToneHint? = nil
         ) {
             self.llmEnabled = llmEnabled
             self.timeout = timeout
             self.maxInputCharacters = maxInputCharacters
+            self.toneOverride = toneOverride
         }
     }
 
@@ -205,7 +209,7 @@ public struct LocalPolisher: TextPolisher {
         let trimmedInput = replaced.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedInput.isEmpty else { return failOpen(.emptyModelOutput) }
 
-        let tone = ToneHint(bundleID: context.targetAppBundleID)
+        let tone = configuration.toneOverride ?? ToneHint(bundleID: context.targetAppBundleID)
         let start = clock.now
         do {
             let output = try await Self.withTimeout(configuration.timeout) {

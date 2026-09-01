@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import ServiceManagement
+import LFPolish
 
 /// Plain NSWindow host for settings (AppKit lifecycle; no Settings scene).
 @MainActor
@@ -12,7 +13,7 @@ final class SettingsWindowController {
     func show() {
         if window == nil {
             let w = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 440, height: 480),
+                contentRect: NSRect(x: 0, y: 0, width: 560, height: 520),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false
@@ -28,11 +29,8 @@ final class SettingsWindowController {
     }
 }
 
-/// Local mirror of LFCapture's hotkey choice. LFCapture's HotkeyConfig type is
-/// not public yet (module is a placeholder), so we keep this enum here and
-/// persist a JSON value shaped like {"key": "fn"} under DefaultsKey.hotkeyConfig
-/// for LFCapture to consume. NOTE for orchestrator: align raw values with
-/// LFCapture's real type at integration.
+/// Local mirror of LFCapture's hotkey choice, persisted as {"key": "fn"}
+/// JSON under DefaultsKey.hotkeyConfig; bridged in DictationCoordinator.
 enum HotkeyChoice: String, CaseIterable, Identifiable {
     case fn
     case rightCommand
@@ -65,24 +63,102 @@ enum HotkeyChoice: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Root: tabbed settings
+
 struct SettingsView: View {
-    @State private var hotkey: HotkeyChoice = .load()
-    @State private var mouseButton: Int? =
-        UserDefaults.standard.object(forKey: DefaultsKey.mouseButton) as? Int
-    @State private var isDetectingMouseButton = false
-    @State private var mouseMonitors: [Any] = []
-    @AppStorage(DefaultsKey.polishEnabled) private var polishEnabled = true
+    var body: some View {
+        TabView {
+            GeneralSettingsTab()
+                .tabItem { Label("General", systemImage: "gearshape") }
+            DictationSettingsTab()
+                .tabItem { Label("Dictation", systemImage: "mic") }
+            PolishSettingsTab()
+                .tabItem { Label("Polish", systemImage: "wand.and.stars") }
+            DictionarySettingsTab()
+                .tabItem { Label("Dictionary", systemImage: "character.book.closed") }
+            InsertionSettingsTab()
+                .tabItem { Label("Insertion", systemImage: "text.cursor") }
+            AboutTab()
+                .tabItem { Label("About", systemImage: "info.circle") }
+        }
+        .frame(width: 560, height: 500)
+    }
+}
+
+/// Push a settings change into the running pipeline.
+@MainActor
+private func apply(restartCapture: Bool = false) {
+    DictationCoordinator.shared.applySettings(restartCapture: restartCapture)
+}
+
+// MARK: - General
+
+private struct GeneralSettingsTab: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginItemError: String?
-
-    private var dictionaryPath: String {
-        ("~/Library/Application Support/LocalFlow/dictionary.json" as NSString)
-            .expandingTildeInPath
-    }
+    @State private var hudEnabled = AppSettings.hudEnabled
+    @State private var historyLimit = AppSettings.historyLimit
 
     var body: some View {
         Form {
-            Section("Dictation") {
+            Section {
+                Toggle("Launch at login", isOn: $launchAtLogin)
+                    .onChange(of: launchAtLogin) { _, enabled in updateLoginItem(enabled) }
+                if let loginItemError {
+                    Text(loginItemError).font(.caption).foregroundStyle(.red)
+                }
+                Toggle("Show recording indicator (HUD)", isOn: $hudEnabled)
+                    .onChange(of: hudEnabled) { _, value in
+                        AppSettings.hudEnabled = value
+                    }
+                Text("The floating lozenge at the bottom of the screen while you dictate.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("History") {
+                Stepper("Keep last \(historyLimit) transcripts", value: $historyLimit, in: 0...50)
+                    .onChange(of: historyLimit) { _, value in
+                        AppSettings.historyLimit = value
+                        apply()
+                    }
+                Text("Shown in the menu bar History submenu; click an entry to copy it.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Clear History Now") {
+                    DictationCoordinator.shared.clearHistory()
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func updateLoginItem(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+            loginItemError = nil
+        } catch {
+            loginItemError = "Couldn't update login item: \(error.localizedDescription)"
+            launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
+    }
+}
+
+// MARK: - Dictation
+
+private struct DictationSettingsTab: View {
+    @State private var hotkey: HotkeyChoice = .load()
+    @State private var mouseButton: Int? = AppSettings.mouseButton
+    @State private var isDetectingMouseButton = false
+    @State private var mouseMonitors: [Any] = []
+    @State private var holdThreshold = AppSettings.holdThreshold
+    @State private var keepMicWarm = AppSettings.keepMicWarm
+
+    var body: some View {
+        Form {
+            Section("Push to Talk") {
                 Picker("Hold-to-talk key:", selection: $hotkey) {
                     ForEach(HotkeyChoice.allCases) { choice in
                         Text(choice.label).tag(choice)
@@ -90,11 +166,8 @@ struct SettingsView: View {
                 }
                 .onChange(of: hotkey) { _, newValue in
                     newValue.save()
-                    DictationCoordinator.shared.restartListeningIfNeeded()
+                    apply(restartCapture: true)
                 }
-                Text("Hold the key to record; release to transcribe and insert.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
 
                 LabeledContent("Mouse button:") {
                     HStack {
@@ -115,69 +188,41 @@ struct SettingsView: View {
                     }
                 }
                 Text("A middle or side mouse button works as a second push-to-talk trigger.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(.secondary)
 
-                Toggle("Polish text (fix punctuation and phrasing)", isOn: $polishEnabled)
-            }
-
-            Section("General") {
-                Toggle("Launch at login", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { _, enabled in
-                        updateLoginItem(enabled)
+                LabeledContent("Ignore taps shorter than:") {
+                    HStack {
+                        Slider(value: $holdThreshold, in: 0.1...1.0, step: 0.05)
+                            .frame(width: 180)
+                        Text(String(format: "%.2fs", holdThreshold))
+                            .monospacedDigit()
+                            .frame(width: 48, alignment: .trailing)
                     }
-                if let loginItemError {
-                    Text(loginItemError)
-                        .font(.caption)
-                        .foregroundStyle(.red)
                 }
-            }
-
-            Section("Dictionary") {
-                LabeledContent("Replacements file:") {
-                    Text(dictionaryPath)
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                        .lineLimit(2)
+                .onChange(of: holdThreshold) { _, value in
+                    AppSettings.holdThreshold = value
+                    apply(restartCapture: true)
                 }
-                Button("Reveal in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting(
-                        [URL(fileURLWithPath: dictionaryPath)]
-                    )
-                }
-                Text("Edit this JSON file to add custom word replacements.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text("Accidental-tap filter: holds shorter than this are cancelled.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("Microphone") {
-                Text("LocalFlow records from the system default input device. Change it in System Settings → Sound → Input.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Toggle("Keep microphone warm between dictations", isOn: $keepMicWarm)
+                    .onChange(of: keepMicWarm) { _, value in
+                        AppSettings.keepMicWarm = value
+                        apply(restartCapture: true)
+                    }
+                Text("""
+                    Faster start with Bluetooth mics (AirPods), and the first \
+                    syllable is never clipped — but macOS shows the orange \
+                    microphone indicator the whole time the app is listening.
+                    """)
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440)
-        .fixedSize(horizontal: false, vertical: true)
     }
-
-    private func updateLoginItem(_ enabled: Bool) {
-        // SMAppService only works from a real .app bundle; from `swift run`
-        // (bare executable) registration fails — surface that instead of crashing.
-        do {
-            if enabled {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
-            }
-            loginItemError = nil
-        } catch {
-            loginItemError = "Couldn't update login item: \(error.localizedDescription)"
-            launchAtLogin = SMAppService.mainApp.status == .enabled
-        }
-    }
-
-    // MARK: - Mouse-button trigger
 
     private func startDetectingMouseButton() {
         guard !isDetectingMouseButton else { return }
@@ -185,15 +230,11 @@ struct SettingsView: View {
 
         let handle: (Int) -> Void = { button in
             Task { @MainActor in
-                // Left (0) and right (1) never arrive via otherMouseDown,
-                // but clamp anyway so normal clicking can't be hijacked.
                 guard button >= 2 else { return }
                 setMouseButton(button)
                 stopDetectingMouseButton()
             }
         }
-        // Local monitor catches clicks while Settings is focused; the global
-        // one catches them anywhere else (Input Monitoring already granted).
         if let local = NSEvent.addLocalMonitorForEvents(matching: .otherMouseDown, handler: { event in
             handle(event.buttonNumber)
             return event
@@ -215,11 +256,267 @@ struct SettingsView: View {
 
     private func setMouseButton(_ button: Int?) {
         mouseButton = button
-        if let button {
-            UserDefaults.standard.set(button, forKey: DefaultsKey.mouseButton)
-        } else {
-            UserDefaults.standard.removeObject(forKey: DefaultsKey.mouseButton)
+        AppSettings.mouseButton = button
+        apply(restartCapture: true)
+    }
+}
+
+// MARK: - Polish
+
+private struct PolishSettingsTab: View {
+    @State private var polishEnabled = AppSettings.polishEnabled
+    @State private var timeout = AppSettings.polishTimeout
+    @State private var maxChars = Double(AppSettings.polishMaxChars)
+    @State private var tone = AppSettings.polishTone
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Polish dictated text", isOn: $polishEnabled)
+                    .onChange(of: polishEnabled) { _, value in
+                        AppSettings.polishEnabled = value
+                        apply()
+                    }
+                Text("""
+                    Removes filler words (um, uh), applies mid-sentence \
+                    self-corrections, and tidies phrasing using S1-mini, a \
+                    small on-device model. Punctuation and casing are always \
+                    restored, even with polish off. If polish is slow or \
+                    misbehaves, your literal words are inserted instead — \
+                    text is never lost.
+                    """)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Style") {
+                Picker("Writing style:", selection: $tone) {
+                    Text("Match the app (casual in chat apps)").tag("auto")
+                    Text("Always casual").tag("casual")
+                    Text("Always neutral").tag("neutral")
+                }
+                .disabled(!polishEnabled)
+                .onChange(of: tone) { _, value in
+                    AppSettings.polishTone = value
+                    apply()
+                }
+            }
+
+            Section("Limits") {
+                LabeledContent("Polish time budget:") {
+                    HStack {
+                        Slider(value: $timeout, in: 0.5...5.0, step: 0.25)
+                            .frame(width: 180)
+                        Text(String(format: "%.2fs", timeout))
+                            .monospacedDigit()
+                            .frame(width: 48, alignment: .trailing)
+                    }
+                }
+                .disabled(!polishEnabled)
+                .onChange(of: timeout) { _, value in
+                    AppSettings.polishTimeout = value
+                    apply()
+                }
+                Text("If the model can't finish in time, the unpolished text is inserted.")
+                    .font(.caption).foregroundStyle(.secondary)
+
+                LabeledContent("Skip polish beyond:") {
+                    HStack {
+                        Slider(value: $maxChars, in: 100...4000, step: 100)
+                            .frame(width: 180)
+                        Text("\(Int(maxChars)) chars")
+                            .monospacedDigit()
+                            .frame(width: 72, alignment: .trailing)
+                    }
+                }
+                .disabled(!polishEnabled)
+                .onChange(of: maxChars) { _, value in
+                    AppSettings.polishMaxChars = Int(value)
+                    apply()
+                }
+                Text("Very long dictations skip the model instantly instead of burning the budget.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
-        DictationCoordinator.shared.restartListeningIfNeeded()
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - Dictionary
+
+private struct DictionarySettingsTab: View {
+    @State private var rules: [ReplacementRule] = AppSettings.loadDictionary().rules
+    @State private var spokenPunctuation = AppSettings.spokenPunctuation
+    @State private var selection: Int?
+
+    var body: some View {
+        Form {
+            Section {
+                Text("""
+                    Spoken form on the left, written form on the right — e.g. \
+                    "echidna cams" → "EchidnaCams". Applied to every dictation, \
+                    even with polish off.
+                    """)
+                    .font(.caption).foregroundStyle(.secondary)
+
+                List(selection: $selection) {
+                    ForEach(Array(rules.enumerated()), id: \.offset) { index, _ in
+                        HStack {
+                            TextField("spoken", text: binding(for: index).spoken)
+                            Image(systemName: "arrow.right").foregroundStyle(.secondary)
+                            TextField("written", text: binding(for: index).written)
+                        }
+                        .tag(index)
+                    }
+                }
+                .frame(minHeight: 180)
+
+                HStack {
+                    Button {
+                        rules.append(ReplacementRule(spoken: "", written: ""))
+                        selection = rules.count - 1
+                    } label: { Image(systemName: "plus") }
+                    Button {
+                        if let selection, rules.indices.contains(selection) {
+                            rules.remove(at: selection)
+                            save()
+                        }
+                        selection = nil
+                    } label: { Image(systemName: "minus") }
+                        .disabled(selection == nil)
+                    Spacer()
+                    Button("Reveal File in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([AppSettings.dictionaryURL])
+                    }
+                }
+            }
+
+            Section {
+                Toggle("Spoken punctuation commands", isOn: $spokenPunctuation)
+                    .onChange(of: spokenPunctuation) { _, value in
+                        AppSettings.spokenPunctuation = value
+                        apply()
+                    }
+                Text("Saying \"comma\", \"period\", \"new line\" inserts the punctuation itself.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .onDisappear { save() }
+    }
+
+    private func binding(for index: Int) -> (spoken: Binding<String>, written: Binding<String>) {
+        (
+            spoken: Binding(
+                get: { rules.indices.contains(index) ? rules[index].spoken : "" },
+                set: { if rules.indices.contains(index) { rules[index].spoken = $0; save() } }
+            ),
+            written: Binding(
+                get: { rules.indices.contains(index) ? rules[index].written : "" },
+                set: { if rules.indices.contains(index) { rules[index].written = $0; save() } }
+            )
+        )
+    }
+
+    private func save() {
+        var dictionary = AppSettings.loadDictionary()
+        dictionary.rules = rules.filter { !$0.spoken.isEmpty && !$0.written.isEmpty }
+        AppSettings.saveDictionary(dictionary)
+        apply()
+    }
+}
+
+// MARK: - Insertion
+
+private struct InsertionSettingsTab: View {
+    @State private var method = AppSettings.insertMethod
+    @State private var restoreDelay = Double(AppSettings.restoreDelayMs)
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Insert text by:", selection: $method) {
+                    Text("Automatic (direct insert, then paste)").tag("auto")
+                    Text("Paste only").tag("paste")
+                    Text("Simulated typing").tag("type")
+                }
+                .pickerStyle(.radioGroup)
+                .onChange(of: method) { _, value in
+                    AppSettings.insertMethod = value
+                    apply()
+                }
+                Text("""
+                    Automatic inserts at the caret via Accessibility and falls \
+                    back to paste (your clipboard is restored). Simulated \
+                    typing is slower but works in unusual apps.
+                    """)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
+                LabeledContent("Clipboard restore delay:") {
+                    HStack {
+                        Slider(value: $restoreDelay, in: 50...1500, step: 50)
+                            .frame(width: 180)
+                        Text("\(Int(restoreDelay)) ms")
+                            .monospacedDigit()
+                            .frame(width: 60, alignment: .trailing)
+                    }
+                }
+                .onChange(of: restoreDelay) { _, value in
+                    AppSettings.restoreDelayMs = Int(value)
+                    apply()
+                }
+                Text("""
+                    After a paste-based insert, how long to wait before putting \
+                    your previous clipboard back. Raise this if slow apps \
+                    (some Electron apps) paste the wrong thing.
+                    """)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - About
+
+private struct AboutTab: View {
+    private var version: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("LocalFlow", value: "version \(version)")
+                Text("Fully local dictation — no audio or text ever leaves this Mac.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Models") {
+                LabeledContent("Speech recognition") {
+                    Text("Granite Speech 5.0 TurboCTC (IBM), MLX conversion by Kyle Howells")
+                        .multilineTextAlignment(.trailing)
+                }
+                LabeledContent("Punctuation") {
+                    Text("Punctuation/truecase formatter by Kyle Howells")
+                }
+                LabeledContent("Text polish") {
+                    Text("S1-mini by Superwhisper")
+                }
+                Text("All models run on-device via MLX and are cached locally after first download.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Acknowledgements") {
+                Text("""
+                    Built on Granite-MLX (Kyle Howells), MLX Swift (Apple), \
+                    and S1-mini by Superwhisper (Apache 2.0). Speech models \
+                    © IBM, Apache 2.0.
+                    """)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
     }
 }

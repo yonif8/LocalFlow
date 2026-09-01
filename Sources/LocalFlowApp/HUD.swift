@@ -10,6 +10,7 @@ final class HUDController {
     private var panel: HUDPanel?
 
     func show() {
+        guard AppSettings.hudEnabled else { return }
         if panel == nil {
             panel = HUDPanel()
         }
