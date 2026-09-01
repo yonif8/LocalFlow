@@ -84,6 +84,18 @@ print("target app        : \(targetBundleID ?? "none (neutral tone)")")
 print()
 
 let context = PolishContext(targetAppBundleID: targetBundleID)
+
+// Warm the model the way the app does at startup (load + first generation),
+// so the timed run below reflects steady-state latency, not cold start.
+if llmEnabled {
+    let warmStart = ContinuousClock.now
+    _ = await LocalPolisher(
+        configuration: .init(llmEnabled: true, timeout: 30)
+    ).polish("warm up run", context: context)
+    let warmSeconds = Double((ContinuousClock.now - warmStart).components.seconds)
+    print("model warm-up     : \(String(format: "%.1fs", warmSeconds)) (one-time, app does this at launch)")
+}
+
 let result = await polisher.polishDetailed(input, context: context)
 
 func format(_ duration: Duration) -> String {

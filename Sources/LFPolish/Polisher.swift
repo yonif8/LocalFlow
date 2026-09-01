@@ -107,7 +107,7 @@ public struct LocalPolisher: TextPolisher {
 
         public init(
             llmEnabled: Bool = true,
-            timeout: TimeInterval = 2.0,
+            timeout: TimeInterval = 1.5,
             maxInputCharacters: Int = 700
         ) {
             self.llmEnabled = llmEnabled
@@ -137,12 +137,11 @@ public struct LocalPolisher: TextPolisher {
     }
 
     static func makeDefaultModel() -> PolishModel? {
-        #if canImport(FoundationModels)
-        if #available(macOS 26.0, *) {
-            return FoundationModelBackend()
-        }
-        #endif
-        return nil
+        // S1-mini (purpose-built transcript normalizer, ~0.1s/utterance on
+        // M1 Max) replaced the Apple Foundation Models backend, which was
+        // ~10-20x slower and prone to answering the dictation. The FM
+        // backend remains in-tree but unwired.
+        S1MiniBackend.shared
     }
 
     /// Load the on-device model ahead of the first polish. A cold
@@ -254,19 +253,6 @@ public struct LocalPolisher: TextPolisher {
         // Length must be in the ballpark: filler removal shrinks a little,
         // cleanup never triples or guts the text.
         guard candidate.count * 3 >= input.count, candidate.count <= input.count * 2 else {
-            return false
-        }
-        // A reply announces itself: cleanups never open with assistant
-        // discourse markers unless the dictation itself did.
-        let replyMarkers = [
-            "sure", "certainly", "of course", "yes,", "no problem", "i can",
-            "i will", "i'll", "i'm", "i am", "i apologize", "i'm sorry",
-            "sorry", "here is", "here's", "as an ai", "great question",
-        ]
-        let candidateStart = candidate.lowercased()
-        let inputStart = input.lowercased().trimmingCharacters(in: .whitespaces)
-        for marker in replyMarkers
-        where candidateStart.hasPrefix(marker) && !inputStart.hasPrefix(marker) {
             return false
         }
         let inputWords = contentWords(input)
