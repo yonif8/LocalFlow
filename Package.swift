@@ -39,6 +39,7 @@ let package = Package(
             dependencies: ["LFContracts", "LFCapture", "LFInsert", "LFPolish"]
         ),
 
+        .testTarget(name: "LFEngineTests", dependencies: ["LFEngine"]),
         .testTarget(name: "LFPolishTests", dependencies: ["LFPolish"]),
         .testTarget(name: "LFInsertTests", dependencies: ["LFInsert"]),
     ]
