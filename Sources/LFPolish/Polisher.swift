@@ -69,6 +69,9 @@ public enum PolishOutcome: Sendable, Equatable {
         case timeout
         case error(String)
         case emptyModelOutput
+        /// The model's output did not look like a cleanup of the input
+        /// (e.g. it answered the dictation instead of cleaning it).
+        case implausibleOutput
     }
 }
 
@@ -95,15 +98,17 @@ public struct LocalPolisher: TextPolisher {
         public var llmEnabled: Bool
         /// Wall-clock budget for the LLM pass; on expiry, fail open.
         public var timeout: TimeInterval
-        /// Inputs longer than this skip the LLM pass entirely (the model's
-        /// context budget is 4096 tokens total; ~6000 chars keeps instructions
-        /// + input + output comfortably inside it). Never truncates.
+        /// Inputs longer than this skip the LLM pass instantly (never
+        /// truncates). The bound is LATENCY, not context: the on-device model
+        /// regenerates the whole text and manages roughly two sentences
+        /// inside the 2s budget on an M1 Max — beyond that the pass would
+        /// only burn the full timeout and fail open anyway.
         public var maxInputCharacters: Int
 
         public init(
             llmEnabled: Bool = true,
             timeout: TimeInterval = 2.0,
-            maxInputCharacters: Int = 6000
+            maxInputCharacters: Int = 700
         ) {
             self.llmEnabled = llmEnabled
             self.timeout = timeout
@@ -212,6 +217,10 @@ public struct LocalPolisher: TextPolisher {
             guard !polishedText.isEmpty else {
                 return failOpen(.emptyModelOutput, llmDuration: llmDuration)
             }
+            guard Self.looksLikeCleanup(of: replaced, candidate: polishedText) else {
+                Self.logger.warning("model output rejected as implausible: \(polishedText, privacy: .public)")
+                return failOpen(.implausibleOutput, llmDuration: llmDuration)
+            }
             Self.logger.info("polish succeeded via on-device model")
             return PolishResult(
                 text: polishedText,
@@ -225,6 +234,48 @@ public struct LocalPolisher: TextPolisher {
         } catch {
             return failOpen(.error(String(describing: error)), llmDuration: clock.now - start)
         }
+    }
+
+    // MARK: Output plausibility
+
+    /// A cleanup's output must be recognizably the input's own words. The
+    /// model sometimes ANSWERS the dictation ("can you send the report?" →
+    /// "Sure, I can send it") or emits canned assistant text; pasting that
+    /// as the user's words is far worse than skipping the polish.
+    static func looksLikeCleanup(of input: String, candidate: String) -> Bool {
+        func contentWords(_ s: String) -> Set<String> {
+            Set(
+                s.lowercased()
+                    .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+                    .map(String.init)
+                    .filter { $0.count > 2 }
+            )
+        }
+        // Length must be in the ballpark: filler removal shrinks a little,
+        // cleanup never triples or guts the text.
+        guard candidate.count * 3 >= input.count, candidate.count <= input.count * 2 else {
+            return false
+        }
+        // A reply announces itself: cleanups never open with assistant
+        // discourse markers unless the dictation itself did.
+        let replyMarkers = [
+            "sure", "certainly", "of course", "yes,", "no problem", "i can",
+            "i will", "i'll", "i'm", "i am", "i apologize", "i'm sorry",
+            "sorry", "here is", "here's", "as an ai", "great question",
+        ]
+        let candidateStart = candidate.lowercased()
+        let inputStart = input.lowercased().trimmingCharacters(in: .whitespaces)
+        for marker in replyMarkers
+        where candidateStart.hasPrefix(marker) && !inputStart.hasPrefix(marker) {
+            return false
+        }
+        let inputWords = contentWords(input)
+        let candidateWords = contentWords(candidate)
+        // Degenerate inputs (all short words) can't be scored; let them pass
+        // the length check alone.
+        guard !inputWords.isEmpty, !candidateWords.isEmpty else { return true }
+        let overlap = candidateWords.intersection(inputWords).count
+        return Double(overlap) >= 0.6 * Double(candidateWords.count)
     }
 
     // MARK: Timeout

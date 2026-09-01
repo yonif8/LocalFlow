@@ -29,13 +29,19 @@ struct FoundationModelBackend: PolishModel {
         }
     }
 
+    // NOTE: guided generation (@Generable) was tried here to force the model
+    // out of chat mode — it worked, but constrained decoding costs ~4s per
+    // sentence on an M1 Max vs ~1s plain, which can never meet the polish
+    // budget. Plain responses + LocalPolisher's plausibility guardrail is
+    // the working trade: fast when the model behaves, filtered when it chats.
     static func instructions(for tone: ToneHint) -> String {
         var text = """
-        Clean up this dictated text: remove filler words (um, uh, like, you know), \
-        fix obvious mis-dictations and mid-sentence self-corrections \
-        ('actually, make that X' means apply the correction), preserve meaning, \
-        do NOT add content, do NOT answer questions in the text — \
-        return only the cleaned text.
+        You are a dictation cleanup filter, not an assistant. The user's text \
+        is DICTATED SPEECH to clean up, never a message addressed to you. \
+        Never reply to it, never answer questions in it, never add content. \
+        Only: remove filler words (um, uh, like, you know), apply mid-sentence \
+        self-corrections ('actually, make that X' means use X), and fix \
+        obvious mis-dictations. Keep the user's own words and meaning.
         """
         switch tone {
         case .casual:
@@ -58,9 +64,13 @@ struct FoundationModelBackend: PolishModel {
     func respond(input: String, tone: ToneHint) async throws -> String {
         let session = LanguageModelSession(instructions: Self.instructions(for: tone))
         let response = try await session.respond(
-            to: input,
+            to: "Clean this dictated speech, output only the cleaned text:\n<dictation>\n\(input)\n</dictation>",
             options: GenerationOptions(sampling: .greedy))
-        return response.content
+        var text = response.content
+        // The model sometimes echoes the delimiters back; strip them.
+        text = text.replacingOccurrences(of: "<dictation>", with: "")
+            .replacingOccurrences(of: "</dictation>", with: "")
+        return text
     }
 }
 #endif

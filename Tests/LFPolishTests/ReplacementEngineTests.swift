@@ -141,3 +141,30 @@ struct PersistenceTests {
         }
     }
 }
+
+@Suite("Output plausibility guardrail")
+struct PlausibilityTests {
+    @Test func acceptsRealCleanup() {
+        #expect(LocalPolisher.looksLikeCleanup(
+            of: "um so hey can you uh send me the report by friday",
+            candidate: "Hey, can you send me the report by Friday?"))
+    }
+
+    @Test func rejectsAnswerToTheDictation() {
+        #expect(!LocalPolisher.looksLikeCleanup(
+            of: "um so hey can you uh send me the report by friday",
+            candidate: "Sure, I can send you the report."))
+    }
+
+    @Test func rejectsCannedAssistantFiller() {
+        #expect(!LocalPolisher.looksLikeCleanup(
+            of: "check the logs and tell me what is slow about the pipeline today",
+            candidate: "I apologize for the delay. I'm currently processing your request. It may take a few seconds to complete."))
+    }
+
+    @Test func rejectsGuttedOrBloatedOutput() {
+        #expect(!LocalPolisher.looksLikeCleanup(
+            of: "this is a reasonably long dictated sentence with plenty of words in it",
+            candidate: "ok"))
+    }
+}
