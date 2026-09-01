@@ -265,6 +265,10 @@ final class DictationCoordinator {
                 raw = try await transcriber.transcribe(utterance)
                 formatted = raw
             }
+            // Raw transcript at debug level: when a user reports "that's not
+            // what I said," this attributes the error to ASR vs polish in
+            // seconds instead of a reconstruction hunt.
+            Self.logger.debug("raw transcript: \"\(raw, privacy: .public)\"")
             let transcribeDuration = clock.now - stageStart
 
             stageStart = clock.now
