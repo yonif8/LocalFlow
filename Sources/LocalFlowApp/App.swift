@@ -197,6 +197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(update)
         }
         menu.addItem(makeItem("Permissions…", action: #selector(openPermissions), key: ""))
+        menu.addItem(makeItem("Report a Bug…", action: #selector(reportBug), key: ""))
         menu.addItem(.separator())
         menu.addItem(makeItem("Quit LocalFlow", action: #selector(quit), key: "q"))
     }
@@ -235,6 +236,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openPermissions() {
         OnboardingWindowController.shared.show()
+    }
+
+    @objc private func reportBug() {
+        BugReportWindowController.shared.show()
     }
 
     @objc private func quit() {
