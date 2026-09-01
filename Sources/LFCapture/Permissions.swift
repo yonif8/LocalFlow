@@ -36,6 +36,8 @@ public enum CaptureError: Error, CustomStringConvertible {
     case eventTapCreationFailed
     case audioEngineFailed(String)
     case noInputDevice
+    /// The configured microphone (by UID) is not connected/usable.
+    case microphoneUnavailable(String)
 
     public var description: String {
         switch self {
@@ -49,6 +51,8 @@ public enum CaptureError: Error, CustomStringConvertible {
             return "Audio engine failed to start: \(why)"
         case .noInputDevice:
             return "No audio input device available (input format reported 0 Hz)."
+        case .microphoneUnavailable(let uid):
+            return "The selected microphone (\(uid)) is not connected; falling back to the system default."
         }
     }
 }

@@ -48,6 +48,18 @@ enum AppSettings {
         }
     }
 
+    /// CoreAudio UID of the preferred microphone; nil = system default.
+    static var microphoneUID: String? {
+        get { defaults.string(forKey: DefaultsKey.microphoneUID) }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: DefaultsKey.microphoneUID)
+            } else {
+                defaults.removeObject(forKey: DefaultsKey.microphoneUID)
+            }
+        }
+    }
+
     // MARK: Polish
 
     static var polishEnabled: Bool {

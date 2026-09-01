@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import CoreAudio
 import Foundation
 
 /// AVAudioEngine microphone pipeline producing 16 kHz mono Float32 samples.
@@ -36,13 +37,16 @@ public final class MicRecorder: @unchecked Sendable {
     public init() {}
 
     /// Install the input tap; if `keepWarm` also start the engine immediately.
-    public func prepare(keepWarm: Bool) throws {
+    public func prepare(keepWarm: Bool, microphoneUID: String? = nil) throws {
         lock.lock()
         defer { lock.unlock() }
         guard !prepared else { return }
         self.keepWarm = keepWarm
 
         let input = engine.inputNode
+        if let microphoneUID {
+            try Self.select(deviceUID: microphoneUID, for: input)
+        }
         let inputFormat = input.outputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
             throw CaptureError.noInputDevice
@@ -57,6 +61,44 @@ public final class MicRecorder: @unchecked Sendable {
 
         if keepWarm {
             try startEngineLocked()
+        }
+    }
+
+    /// Point AVAudioEngine's input at a specific CoreAudio device by UID.
+    /// Falls back with a typed error when the device is gone (unplugged);
+    /// callers should retry with nil (system default).
+    private static func select(deviceUID: String, for input: AVAudioInputNode) throws {
+        var uid = deviceUID as CFString
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let translateErr = withUnsafeMutablePointer(to: &uid) { uidPtr in
+            AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject), &address,
+                UInt32(MemoryLayout<CFString>.size), uidPtr,
+                &size, &deviceID
+            )
+        }
+        guard translateErr == noErr, deviceID != kAudioObjectUnknown, deviceID != 0 else {
+            throw CaptureError.microphoneUnavailable(deviceUID)
+        }
+        guard let audioUnit = input.audioUnit else {
+            throw CaptureError.noInputDevice
+        }
+        var mutableDeviceID = deviceID
+        let setErr = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global, 0,
+            &mutableDeviceID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        guard setErr == noErr else {
+            throw CaptureError.microphoneUnavailable(deviceUID)
         }
     }
 

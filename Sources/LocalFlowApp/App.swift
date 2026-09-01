@@ -277,6 +277,7 @@ enum DefaultsKey {
     static let restoreDelayMs = "LFRestoreDelayMs"             // default 300
     static let historyLimit = "LFHistoryLimit"                 // default 10
     static let spokenPunctuation = "LFSpokenPunctuation"       // default false
+    static let microphoneUID = "LFMicrophoneUID"               // absent = system default
     /// JSON-encoded `HotkeyConfig`-shaped value ({"key": "fn" | "rightCommand" | "rightOption"}).
     /// LFCapture can read this at startup; the local mirror enum lives in
     /// SettingsView.swift and is bridged to LFCapture.HotkeyKey in

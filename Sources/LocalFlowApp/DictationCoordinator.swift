@@ -152,6 +152,7 @@ final class DictationCoordinator {
             config: HotkeyConfig(
                 key: HotkeyChoice.load().captureKey,
                 secondaryKey: AppSettings.mouseButton.map { .mouseButton(Int64($0)) },
+                microphoneUID: AppSettings.microphoneUID,
                 holdThreshold: AppSettings.holdThreshold,
                 // Note: keeping the mic warm leaves macOS's orange mic
                 // indicator on permanently — surfaced in Settings.

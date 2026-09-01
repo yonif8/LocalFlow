@@ -56,7 +56,12 @@ public final class HoldToTalkCaptureEngine: CaptureEngine, @unchecked Sendable {
             throw CaptureError.inputMonitoringDenied
         }
 
-        try recorder.prepare(keepWarm: config.keepMicWarm)
+        do {
+            try recorder.prepare(keepWarm: config.keepMicWarm, microphoneUID: config.microphoneUID)
+        } catch CaptureError.microphoneUnavailable {
+            // Selected mic unplugged: degrade to the system default.
+            try recorder.prepare(keepWarm: config.keepMicWarm, microphoneUID: nil)
+        }
         try monitor.start()
 
         lock.lock()

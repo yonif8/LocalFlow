@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AVFoundation
 import ServiceManagement
 import LFPolish
 
@@ -156,6 +157,8 @@ private struct DictationSettingsTab: View {
     @State private var mouseMonitors: [Any] = []
     @State private var holdThreshold = AppSettings.holdThreshold
     @State private var keepMicWarm = AppSettings.keepMicWarm
+    @State private var microphoneUID = AppSettings.microphoneUID ?? ""
+    @State private var microphones: [MicDevice] = MicDevice.available()
 
     var body: some View {
         Form {
@@ -209,6 +212,24 @@ private struct DictationSettingsTab: View {
             }
 
             Section("Microphone") {
+                Picker("Microphone:", selection: $microphoneUID) {
+                    Text("System default").tag("")
+                    ForEach(microphones) { mic in
+                        Text(mic.name).tag(mic.uid)
+                    }
+                    // Keep a vanished-but-selected device visible so the
+                    // choice isn't silently lost when it's unplugged.
+                    if !microphoneUID.isEmpty && !microphones.contains(where: { $0.uid == microphoneUID }) {
+                        Text("Selected device (disconnected)").tag(microphoneUID)
+                    }
+                }
+                .onChange(of: microphoneUID) { _, value in
+                    AppSettings.microphoneUID = value.isEmpty ? nil : value
+                    apply(restartCapture: true)
+                }
+                Text("If the selected microphone is disconnected, LocalFlow records from the system default instead.")
+                    .font(.caption).foregroundStyle(.secondary)
+
                 Toggle("Keep microphone warm between dictations", isOn: $keepMicWarm)
                     .onChange(of: keepMicWarm) { _, value in
                         AppSettings.keepMicWarm = value
@@ -259,6 +280,21 @@ private struct DictationSettingsTab: View {
         mouseButton = button
         AppSettings.mouseButton = button
         apply(restartCapture: true)
+    }
+}
+
+/// An input device for the microphone picker.
+struct MicDevice: Identifiable {
+    let uid: String
+    let name: String
+    var id: String { uid }
+
+    static func available() -> [MicDevice] {
+        AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.microphone, .external],
+            mediaType: .audio,
+            position: .unspecified
+        ).devices.map { MicDevice(uid: $0.uniqueID, name: $0.localizedName) }
     }
 }
 

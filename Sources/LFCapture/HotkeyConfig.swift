@@ -73,6 +73,10 @@ public struct HotkeyConfig: Sendable {
     public var holdThreshold: TimeInterval
     /// Utterances shorter than this are cancelled even if the hold was long enough.
     public var minUtteranceDuration: TimeInterval
+    /// CoreAudio device UID of the microphone to record from; nil = system
+    /// default. If the device is missing at start, capture falls back to the
+    /// default rather than failing.
+    public var microphoneUID: String?
     /// Keep AVAudioEngine running with a discarding tap between utterances.
     /// Mitigates the 1-2s mic spin-up on AirPods/Bluetooth inputs and avoids
     /// losing the first syllable. Costs an always-on mic stream (samples are
@@ -82,12 +86,14 @@ public struct HotkeyConfig: Sendable {
     public init(
         key: HotkeyKey = .fn,
         secondaryKey: HotkeyKey? = nil,
+        microphoneUID: String? = nil,
         holdThreshold: TimeInterval = 0.3,
         minUtteranceDuration: TimeInterval = 0.3,
         keepMicWarm: Bool = true
     ) {
         self.key = key
         self.secondaryKey = secondaryKey
+        self.microphoneUID = microphoneUID
         self.holdThreshold = holdThreshold
         self.minUtteranceDuration = minUtteranceDuration
         self.keepMicWarm = keepMicWarm
