@@ -160,13 +160,20 @@ SWIFT
 fi
 
 # ---- Codesign -------------------------------------------------------------
-# Ad-hoc signature so macOS will run the bundle. NOTE: ad-hoc identities are
-# unstable — every re-sign produces a "different" app as far as TCC is
-# concerned, so Microphone / Input Monitoring / Accessibility grants do NOT
-# persist across rebuilds. For day-to-day development use a stable
-# self-signed or Developer ID identity instead, e.g.:
-#   codesign --force --deep -s "LocalFlow Dev" dist/LocalFlow.app
-echo "==> Codesigning (ad-hoc)…"
-codesign --force --deep -s - "$APP"
+# Prefer the stable "LocalFlow Signing" identity (created by
+# Scripts/setup-signing.sh): its designated requirement is stable across
+# rebuilds, so TCC grants (Microphone / Input Monitoring / Accessibility)
+# persist. Fall back to ad-hoc, whose grants die on every re-sign.
+IDENTITY="LocalFlow Signing"
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "$IDENTITY"; then
+    echo "==> Codesigning (stable identity: $IDENTITY)…"
+    # No hardened runtime: it gates mic access behind entitlements and is
+    # only needed for notarization; this is a locally-built app.
+    codesign --force --deep -s "$IDENTITY" --identifier "$BUNDLE_ID" "$APP"
+else
+    echo "==> Codesigning (ad-hoc — permissions will NOT survive rebuilds;"
+    echo "    run Scripts/setup-signing.sh once to fix)…"
+    codesign --force --deep -s - "$APP"
+fi
 
 echo "==> Done: $APP"
