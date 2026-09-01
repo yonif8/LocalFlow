@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import Observation
 import os
+import Sparkle
 
 // AppKit lifecycle (not SwiftUI scenes): SwiftUI's MenuBarExtra failed to
 // materialize a status item when this SwiftPM-built bundle ran on this OS,
@@ -30,6 +31,23 @@ private nonisolated(unsafe) var delegateKey: UInt8 = 0
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
 
+    /// Sparkle auto-updates. Retained for the app's lifetime; startingUpdater
+    /// is only true when the bundle carries a feed URL + EdDSA public key
+    /// (i.e. a make-app.sh --version build). Dev builds (`swift run`, plain
+    /// dist builds without keys) skip the updater entirely so Sparkle never
+    /// complains about a missing/invalid configuration at launch.
+    private let updaterController: SPUStandardUpdaterController? = {
+        let info = Bundle.main.infoDictionary
+        guard let feed = info?["SUFeedURL"] as? String, !feed.isEmpty,
+              let key = info?["SUPublicEDKey"] as? String, !key.isEmpty else {
+            os.Logger(subsystem: "com.localflow.app", category: "updater")
+                .info("Sparkle disabled: no SUFeedURL/SUPublicEDKey in Info.plist (dev build)")
+            return nil
+        }
+        return SPUStandardUpdaterController(
+            startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+    }()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Agent app: no Dock icon. LSUIElement covers the bundled case; this
         // covers `swift run` during development.
@@ -51,6 +69,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self,
             selector: #selector(handleSimulateNotification),
             name: Notification.Name("com.localflow.app.simulate"),
+            object: nil,
+            suspensionBehavior: .deliverImmediately
+        )
+        // Companion debug hook: trigger a Sparkle update check headlessly
+        // (same UI path as the "Check for Updates…" menu item).
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(handleCheckForUpdatesNotification),
+            name: Notification.Name("com.localflow.app.checkForUpdates"),
             object: nil,
             suspensionBehavior: .deliverImmediately
         )
@@ -161,6 +188,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
         menu.addItem(makeItem("Settings…", action: #selector(openSettingsWindow), key: ","))
+        if let updaterController {
+            let update = NSMenuItem(
+                title: "Check for Updates…",
+                action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
+                keyEquivalent: "")
+            update.target = updaterController
+            menu.addItem(update)
+        }
         menu.addItem(makeItem("Permissions…", action: #selector(openPermissions), key: ""))
         menu.addItem(.separator())
         menu.addItem(makeItem("Quit LocalFlow", action: #selector(quit), key: "q"))
@@ -209,6 +244,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func handleSimulateNotification(_ note: Notification) {
         Task { @MainActor in
             DictationCoordinator.shared.simulateDictation()
+        }
+    }
+
+    @objc private func handleCheckForUpdatesNotification(_ note: Notification) {
+        Task { @MainActor in
+            guard let delegate = NSApp.delegate as? AppDelegate else { return }
+            delegate.updaterController?.checkForUpdates(nil)
         }
     }
 

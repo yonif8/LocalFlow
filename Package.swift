@@ -11,6 +11,9 @@ let package = Package(
         .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", exact: "3.31.4"),
         .package(url: "https://github.com/huggingface/swift-huggingface", from: "0.9.0"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
+        // Auto-updates. 2.9.5+ contains security fixes; EdDSA-signed updates
+        // work without Apple-trusted code signing.
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.9.6"),
     ],
     targets: [
         // Shared contracts — FROZEN. Only the orchestrator edits this target.
@@ -51,7 +54,10 @@ let package = Package(
         // Stream E: menu bar app shell (real engine wired in at integration)
         .executableTarget(
             name: "LocalFlowApp",
-            dependencies: ["LFContracts", "LFCapture", "LFInsert", "LFPolish", "LFEngine"]
+            dependencies: [
+                "LFContracts", "LFCapture", "LFInsert", "LFPolish", "LFEngine",
+                .product(name: "Sparkle", package: "Sparkle"),
+            ]
         ),
 
         .testTarget(name: "LFEngineTests", dependencies: ["LFEngine"]),
