@@ -3,7 +3,10 @@ import AppKit
 import ServiceManagement
 import LFPolish
 
-/// Plain NSWindow host for settings (AppKit lifecycle; no Settings scene).
+/// Settings window in the native System-Settings idiom: an
+/// NSTabViewController with toolbar-style tabs. (SwiftUI's TabView in a
+/// plain NSWindow renders as a collapsed "navigation tab bar" overflow menu
+/// on macOS 26 — unusable for settings.)
 @MainActor
 final class SettingsWindowController {
     static let shared = SettingsWindowController()
@@ -12,15 +15,35 @@ final class SettingsWindowController {
 
     func show() {
         if window == nil {
-            let w = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 560, height: 520),
-                styleMask: [.titled, .closable],
-                backing: .buffered,
-                defer: false
-            )
+            let tabs = NSTabViewController()
+            tabs.tabStyle = .toolbar
+
+            func add(_ title: String, _ symbol: String, _ view: some View) {
+                let host = NSHostingController(
+                    rootView: view
+                        .frame(width: 560)
+                        .fixedSize(horizontal: false, vertical: true)
+                )
+                host.title = title
+                host.sizingOptions = .preferredContentSize
+                let item = NSTabViewItem(viewController: host)
+                item.label = title
+                item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+                tabs.addTabViewItem(item)
+            }
+
+            add("General", "gearshape", GeneralSettingsTab())
+            add("Dictation", "mic", DictationSettingsTab())
+            add("Polish", "wand.and.stars", PolishSettingsTab())
+            add("Dictionary", "character.book.closed", DictionarySettingsTab())
+            add("Insertion", "text.cursor", InsertionSettingsTab())
+            add("About", "info.circle", AboutTab())
+
+            let w = NSWindow(contentViewController: tabs)
+            w.styleMask = [.titled, .closable]
             w.title = "LocalFlow Settings"
+            w.toolbarStyle = .preference
             w.isReleasedWhenClosed = false
-            w.contentView = NSHostingView(rootView: SettingsView())
             w.center()
             window = w
         }
@@ -60,28 +83,6 @@ enum HotkeyChoice: String, CaseIterable, Identifiable {
         if let data = try? JSONEncoder().encode(["key": rawValue]) {
             UserDefaults.standard.set(data, forKey: DefaultsKey.hotkeyConfig)
         }
-    }
-}
-
-// MARK: - Root: tabbed settings
-
-struct SettingsView: View {
-    var body: some View {
-        TabView {
-            GeneralSettingsTab()
-                .tabItem { Label("General", systemImage: "gearshape") }
-            DictationSettingsTab()
-                .tabItem { Label("Dictation", systemImage: "mic") }
-            PolishSettingsTab()
-                .tabItem { Label("Polish", systemImage: "wand.and.stars") }
-            DictionarySettingsTab()
-                .tabItem { Label("Dictionary", systemImage: "character.book.closed") }
-            InsertionSettingsTab()
-                .tabItem { Label("Insertion", systemImage: "text.cursor") }
-            AboutTab()
-                .tabItem { Label("About", systemImage: "info.circle") }
-        }
-        .frame(width: 560, height: 500)
     }
 }
 
