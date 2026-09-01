@@ -33,10 +33,10 @@ let package = Package(
         .target(name: "LFPolish", dependencies: ["LFContracts"]),
         .executableTarget(name: "polish-cli", dependencies: ["LFPolish"]),
 
-        // Stream E: menu bar app shell (engine wired in by orchestrator at integration)
+        // Stream E: menu bar app shell (real engine wired in at integration)
         .executableTarget(
             name: "LocalFlowApp",
-            dependencies: ["LFContracts", "LFCapture", "LFInsert", "LFPolish"]
+            dependencies: ["LFContracts", "LFCapture", "LFInsert", "LFPolish", "LFEngine"]
         ),
 
         .testTarget(name: "LFEngineTests", dependencies: ["LFEngine"]),
