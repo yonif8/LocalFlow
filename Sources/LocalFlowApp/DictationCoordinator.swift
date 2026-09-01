@@ -75,7 +75,9 @@ final class DictationCoordinator {
 
     var menuBarSymbolName: String {
         switch state {
-        case .idle: return isListening ? "mic" : "mic.slash"
+        // Idle icon is deliberately not a mic: macOS shows its own orange
+        // mic pill while recording, and two mic glyphs side by side is noise.
+        case .idle: return isListening ? "waveform" : "waveform.slash"
         case .recording: return "mic.fill"
         case .processing: return "waveform"
         case .error: return "mic.badge.xmark"
@@ -98,8 +100,12 @@ final class DictationCoordinator {
 
         // Real hold-to-talk capture: needs Input Monitoring + Microphone.
         // start() throws when permissions are missing; fall back gracefully.
+        // keepMicWarm: false — holding the mic open between utterances keeps
+        // macOS's orange mic-in-use indicator on permanently, which reads as
+        // a second mic icon in the menu bar. Built-in mic spin-up is fast;
+        // revisit for Bluetooth mics via a settings toggle if needed.
         let engine = HoldToTalkCaptureEngine(
-            config: HotkeyConfig(key: HotkeyChoice.load().captureKey)
+            config: HotkeyConfig(key: HotkeyChoice.load().captureKey, keepMicWarm: false)
         )
         do {
             try engine.start()
