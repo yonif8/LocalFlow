@@ -62,6 +62,16 @@ final class DictationCoordinator {
     private var didPrepareTranscriber = false
 
     private init() {
+        // One-time move of the legacy model caches (~/Documents/huggingface,
+        // ~/.cache/huggingface/hub) into Application Support — must run
+        // before anything can trigger a model load.
+        ModelLocations.migrateLegacyCachesIfNeeded()
+        // S1-mini download progress → onboarding "Models" section.
+        PolishModelStore.progressHandler = { progress in
+            Task { @MainActor in
+                ModelSetupState.shared.notePolishProgress(progress)
+            }
+        }
         self.transcriber = EngineFactory.makeTranscriber()
         self.polisher = Self.makePolisher()
         self.inserter = AdaptiveInserter(configuration: AppSettings.inserterConfiguration)
@@ -104,6 +114,14 @@ final class DictationCoordinator {
 
     func startListening() {
         guard !isListening else { return }
+
+        // First run with models missing: surface the onboarding window so
+        // the user sees download progress instead of a silent multi-minute
+        // stall. (App.swift already shows it for missing permissions.)
+        ModelSetupState.shared.refreshFromDisk()
+        if !ModelSetupState.shared.allDownloaded {
+            OnboardingWindowController.shared.show()
+        }
 
         // Warm the transcriber once so the first real utterance isn't slow
         // (~2.1 s cold vs ~110 ms warm for the Granite engine).

@@ -3,6 +3,7 @@ import AppKit
 import AVFoundation
 import ApplicationServices
 import IOKit.hid
+import os
 
 /// Non-prompting permission checks (safe to poll on a timer).
 enum PermissionChecker {
@@ -76,14 +77,16 @@ final class OnboardingWindowController {
     func show() {
         if window == nil {
             let w = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 460, height: 380),
+                contentRect: NSRect(x: 0, y: 0, width: 460, height: 560),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false
             )
             w.title = "Welcome to LocalFlow"
             w.isReleasedWhenClosed = false
-            w.contentView = NSHostingView(rootView: OnboardingView())
+            let hosting = NSHostingView(rootView: OnboardingView())
+            w.contentView = hosting
+            w.setContentSize(hosting.fittingSize)
             w.center()
             window = w
             // Tear the view down on close: its 1.5s permission poll fires
@@ -99,6 +102,8 @@ final class OnboardingWindowController {
         }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        Logger(subsystem: "com.localflow.app", category: "onboarding")
+            .info("onboarding window shown")
     }
 }
 
@@ -106,6 +111,7 @@ struct OnboardingView: View {
     @State private var micStatus = PermissionChecker.microphone()
     @State private var inputStatus = PermissionChecker.inputMonitoring()
     @State private var axStatus = PermissionChecker.accessibility()
+    private var setup: ModelSetupState { .shared }
 
     private let timer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
@@ -161,6 +167,30 @@ struct OnboardingView: View {
 
             Divider()
 
+            Text("On-device models")
+                .font(.headline)
+            Text("All speech processing happens locally. Models download once, then live in LocalFlow's Application Support folder.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            ModelRow(
+                title: "Speech recognition",
+                detail: "Granite 470M — transcribes your voice (~550 MB).",
+                status: setup.speech
+            )
+            ModelRow(
+                title: "Punctuation",
+                detail: "Adds punctuation and capitalization (~56 MB).",
+                status: setup.punctuation
+            )
+            ModelRow(
+                title: "Polish",
+                detail: "S1-mini — removes filler words and false starts (~633 MB).",
+                status: setup.polish
+            )
+
+            Divider()
+
             Text("Tip: after granting a permission, macOS may require relaunching LocalFlow for it to take effect.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -171,6 +201,10 @@ struct OnboardingView: View {
             micStatus = PermissionChecker.microphone()
             inputStatus = PermissionChecker.inputMonitoring()
             axStatus = PermissionChecker.accessibility()
+            setup.refreshFromDisk()
+        }
+        .onAppear {
+            setup.refreshFromDisk()
         }
     }
 
@@ -178,6 +212,66 @@ struct OnboardingView: View {
         let url = "x-apple.systempreferences:com.apple.preference.security?\(anchor)"
         if let u = URL(string: url) {
             NSWorkspace.shared.open(u)
+        }
+    }
+}
+
+private struct ModelRow: View {
+    let title: String
+    let detail: String
+    let status: ModelSetupState.Status
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            statusIcon
+                .font(.title3)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(title).font(.body.weight(.semibold))
+                    Text(statusLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if case .downloading(let fraction, _, _) = status {
+                    ProgressView(value: max(0, min(1, fraction)))
+                        .progressViewStyle(.linear)
+                        .controlSize(.small)
+                }
+            }
+            Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private var statusIcon: some View {
+        switch status {
+        case .downloaded:
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        case .downloading:
+            Image(systemName: "arrow.down.circle.fill").foregroundStyle(.tint)
+        case .waiting:
+            Image(systemName: "clock").foregroundStyle(.orange)
+        case .unknown:
+            Image(systemName: "circle.dashed").foregroundStyle(.secondary)
+        }
+    }
+
+    private var statusLabel: String {
+        switch status {
+        case .downloaded:
+            return "Downloaded"
+        case .downloading(_, let completedMB, let totalMB):
+            if let totalMB {
+                return "Downloading — \(completedMB) of \(totalMB) MB"
+            }
+            return "Downloading…"
+        case .waiting:
+            return "Waiting to download"
+        case .unknown:
+            return "Checking…"
         }
     }
 }

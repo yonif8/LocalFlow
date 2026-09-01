@@ -66,8 +66,18 @@ final class S1MiniBackend: PolishModel, @unchecked Sendable {
         }
 
         do {
-            let loaded = try await #huggingFaceLoadModelContainer(
-                configuration: ModelConfiguration(id: Self.modelID))
+            // Explicit HubClient so the weights live in LocalFlow's own
+            // Application Support directory (PolishModelStore.cacheDirectory)
+            // instead of ~/.cache/huggingface/hub, with download progress
+            // surfaced through PolishModelStore.progressHandler.
+            let hub = HubClient(cache: HubCache(cacheDirectory: PolishModelStore.cacheDirectory))
+            let loaded = try await loadModelContainer(
+                from: #hubDownloader(hub),
+                using: #huggingFaceTokenizerLoader(),
+                configuration: ModelConfiguration(id: Self.modelID),
+                progressHandler: { progress in
+                    PolishModelStore.report(progress)
+                })
             // Warm generation so the first real polish skips kernel compilation.
             _ = try? await makeSession(loaded).respond(
                 to: Self.userMessage("warm up test", tone: .neutral))

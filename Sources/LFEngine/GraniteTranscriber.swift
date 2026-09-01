@@ -23,10 +23,60 @@ public enum EngineError: Error, CustomStringConvertible {
 public struct EngineModelProgress: Sendable {
     /// Hugging Face repository ID being acquired (speech or punctuation model).
     public let repositoryID: String
-    /// Coarse phase description (e.g. "downloading", "cached").
+    /// Coarse phase description ("checking", "downloading", "cache_hit", "complete").
     public let phase: String
     /// 0...1 byte-weighted progress for the current model.
     public let fractionCompleted: Double
+    /// Approximate final size in bytes, when known (for "X of Y MB" UI).
+    public let estimatedTotalBytes: Int64?
+}
+
+/// Canonical on-disk locations for LocalFlow's speech + punctuation models.
+///
+/// Everything lives under `~/Library/Application Support/LocalFlow/granite/`
+/// (materialized checkpoints at `granite/models/<owner>/<repo>`, Hugging Face
+/// transfer cache at `hf-cache/`). The `LOCALFLOW_MODELS_ROOT` environment
+/// variable overrides the root — a debug/testing hook, never needed in
+/// normal operation.
+public enum EngineModelLocations {
+    /// Root directory holding every LocalFlow model subdirectory.
+    public static var rootDirectory: URL {
+        if let override = ProcessInfo.processInfo.environment["LOCALFLOW_MODELS_ROOT"],
+           !override.isEmpty {
+            return URL(
+                fileURLWithPath: NSString(string: override).expandingTildeInPath,
+                isDirectory: true)
+        }
+        let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        return appSupport.appendingPathComponent("LocalFlow", isDirectory: true)
+    }
+
+    /// Storage configuration used by every Granite model operation.
+    public static var graniteStorage: GraniteModelStorage {
+        GraniteModelStorage(
+            hubDirectory: rootDirectory.appendingPathComponent("granite", isDirectory: true),
+            downloadCacheDirectory: rootDirectory.appendingPathComponent(
+                "hf-cache", isDirectory: true),
+            compiledCoreMLDirectory: nil)
+    }
+
+    /// Directory containing materialized `owner/repo` model folders.
+    public static var modelsDirectory: URL {
+        graniteStorage.modelsDirectory
+    }
+
+    /// True when a complete speech checkpoint is present locally.
+    public static func isSpeechModelDownloaded() -> Bool {
+        GraniteModelManager(storage: graniteStorage)
+            .isDownloaded(GraniteModelLoader.defaultModelID)
+    }
+
+    /// True when a complete punctuation/truecase checkpoint is present locally.
+    public static func isPunctuationModelDownloaded() -> Bool {
+        GraniteModelManager(storage: graniteStorage)
+            .isDownloaded(PunctuationModelLoader.defaultModelID)
+    }
 }
 
 /// Per-call timing breakdown, for the CLI and latency instrumentation.
@@ -61,6 +111,10 @@ public final class GraniteTranscriber: Transcriber, @unchecked Sendable {
         public var formatterModel: String
         /// When false, raw lowercase CTC text is returned (no formatter load).
         public var punctuate: Bool
+        /// Where models are materialized/downloaded. Defaults to
+        /// `EngineModelLocations.graniteStorage` (LocalFlow's Application
+        /// Support directory).
+        public var storage: GraniteModelStorage
         /// Called with model download/cache progress during first load.
         public var progressHandler: (@Sendable (EngineModelProgress) -> Void)?
 
@@ -68,11 +122,13 @@ public final class GraniteTranscriber: Transcriber, @unchecked Sendable {
             speechModel: String = GraniteModelLoader.defaultModelID,
             formatterModel: String = PunctuationModelLoader.defaultModelID,
             punctuate: Bool = true,
+            storage: GraniteModelStorage = EngineModelLocations.graniteStorage,
             progressHandler: (@Sendable (EngineModelProgress) -> Void)? = nil
         ) {
             self.speechModel = speechModel
             self.formatterModel = formatterModel
             self.punctuate = punctuate
+            self.storage = storage
             self.progressHandler = progressHandler
         }
     }
@@ -185,17 +241,20 @@ public final class GraniteTranscriber: Transcriber, @unchecked Sendable {
                 handler(EngineModelProgress(
                     repositoryID: update.repositoryID,
                     phase: update.phase.rawValue,
-                    fractionCompleted: update.fractionCompleted
+                    fractionCompleted: update.fractionCompleted,
+                    estimatedTotalBytes: update.estimatedTotalBytes
                 ))
             }
         }
         recognizer = try GraniteRecognizer(
             modelSource: configuration.speechModel,
+            storage: configuration.storage,
             progressHandler: downloadHandler
         )
         if configuration.punctuate {
             formatter = try GraniteTranscriptFormatterFactory.load(
                 modelSource: configuration.formatterModel,
+                storage: configuration.storage,
                 progressHandler: downloadHandler
             )
         }

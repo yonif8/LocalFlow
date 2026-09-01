@@ -14,7 +14,13 @@ extension GraniteTranscriber: PreparableTranscriber {
 
 enum EngineFactory {
     static func makeTranscriber() -> GraniteTranscriber {
-        GraniteTranscriber()
+        // Progress feeds the onboarding "Models" section on first run; on a
+        // warm cache it just flips the rows to "downloaded" via cache_hit.
+        GraniteTranscriber(configuration: .init(progressHandler: { progress in
+            Task { @MainActor in
+                ModelSetupState.shared.noteEngineProgress(progress)
+            }
+        }))
     }
 
     /// Debug: LOCALFLOW_SIM_WAV=<path to 16 kHz wav> makes "Simulate
