@@ -167,3 +167,18 @@ struct PlausibilityTests {
             candidate: "ok"))
     }
 }
+
+@Suite("Number-formatting guardrail")
+struct NumberGuardrailTests {
+    @Test func acceptsSpokenNumberConversion() {
+        #expect(LocalPolisher.looksLikeCleanup(
+            of: "i said it was gonna be at three thirty pm and it was gonna cost twelve thousand dollars",
+            candidate: "I said it was going to be at 3:30pm, and it was going to cost $12,000."))
+    }
+
+    @Test func stillRejectsUnrelatedAnswer() {
+        #expect(!LocalPolisher.looksLikeCleanup(
+            of: "what time is the meeting at three thirty pm tomorrow",
+            candidate: "I apologize for the delay. I'm currently processing your request right now, apologies."))
+    }
+}

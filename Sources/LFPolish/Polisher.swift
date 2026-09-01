@@ -270,6 +270,19 @@ public struct LocalPolisher: TextPolisher {
     /// model sometimes ANSWERS the dictation ("can you send the report?" →
     /// "Sure, I can send it") or emits canned assistant text; pasting that
     /// as the user's words is far worse than skipping the polish.
+    /// Spoken-number vocabulary: words the model legitimately CONVERTS to
+    /// digits ("twelve thousand dollars" → "$12,000"), so they must not
+    /// count against the word-overlap check in either direction.
+    private static let numberWords: Set<String> = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven",
+        "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
+        "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
+        "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+        "hundred", "thousand", "million", "billion", "point", "half",
+        "quarter", "dollars", "dollar", "cents", "euros", "pounds",
+        "percent", "oclock",
+    ]
+
     static func looksLikeCleanup(of input: String, candidate: String) -> Bool {
         func contentWords(_ s: String) -> Set<String> {
             Set(
@@ -277,6 +290,10 @@ public struct LocalPolisher: TextPolisher {
                     .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
                     .map(String.init)
                     .filter { $0.count > 2 }
+                    // Number words may become digits (and vice versa) —
+                    // exclude both forms from the overlap comparison.
+                    .filter { !numberWords.contains($0) }
+                    .filter { !$0.contains(where: \.isNumber) }
             )
         }
         // Length must be in the ballpark: filler removal shrinks a little,
