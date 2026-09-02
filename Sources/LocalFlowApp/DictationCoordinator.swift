@@ -59,6 +59,8 @@ final class DictationCoordinator {
     private var inserter: any TextInserter
 
     private var pumpTasks: [Task<Void, Never>] = []
+    private var lastLevelLog = ContinuousClock.now
+    private var levelLogPeak: Float = 0
     private var errorResetTask: Task<Void, Never>?
     private var didPrepareTranscriber = false
 
@@ -236,6 +238,14 @@ final class DictationCoordinator {
 
         case .level(let value):
             level = max(0, min(1, value))
+            // Throttled diagnostics for "meter not moving" reports: peak
+            // level once per second while recording.
+            levelLogPeak = max(levelLogPeak, level)
+            if ContinuousClock.now - lastLevelLog > .seconds(1) {
+                Self.logger.info("level peak: \(String(format: "%.2f", self.levelLogPeak), privacy: .public)")
+                lastLevelLog = .now
+                levelLogPeak = 0
+            }
 
         case .cancelled:
             state = .idle

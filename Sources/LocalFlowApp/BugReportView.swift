@@ -48,9 +48,10 @@ enum BugDiagnostics {
     }
 }
 
-/// Minimal bug reporter: one text box, Enter submits. Composes a prefilled
-/// GitHub new-issue page in the browser — nothing is sent silently, and no
-/// credentials live in the app.
+/// Bug reporter as a modern modal overlay: the whole screen dims, a large
+/// HUD-material card floats centered. One text box, Return submits (opens a
+/// prefilled GitHub issue — nothing sent silently), Esc or clicking the
+/// dimmed area dismisses.
 @MainActor
 final class BugReportWindowController {
     static let shared = BugReportWindowController()
@@ -58,50 +59,127 @@ final class BugReportWindowController {
     private var window: NSWindow?
 
     func show() {
+        guard let screen = NSScreen.main else { return }
         if window == nil {
-            let w = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 460, height: 150),
-                styleMask: [.titled, .closable],
+            let w = KeyableOverlayWindow(
+                contentRect: screen.frame,
+                styleMask: [.borderless],
                 backing: .buffered,
                 defer: false
             )
-            w.title = "Report a Bug"
+            w.isOpaque = false
+            w.backgroundColor = .clear
+            w.level = .modalPanel
+            w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             w.isReleasedWhenClosed = false
+            w.hasShadow = false
             w.contentView = NSHostingView(rootView: BugReportView(onDone: { [weak self] in
-                self?.window?.close()
+                self?.dismiss()
             }))
-            w.center()
             window = w
         }
+        window?.setFrame(screen.frame, display: true)
+        window?.alphaValue = 0
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            window?.animator().alphaValue = 1
+        }
+    }
+
+    func dismiss() {
+        guard let window else { return }
+        NSAnimationContext.runAnimationGroup({ context in
+            context.duration = 0.15
+            window.animator().alphaValue = 0
+        }, completionHandler: {
+            Task { @MainActor in
+                window.orderOut(nil)
+            }
+        })
+    }
+}
+
+/// Borderless windows refuse key status by default; typing needs it.
+private final class KeyableOverlayWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override func cancelOperation(_ sender: Any?) {
+        BugReportWindowController.shared.dismiss()
     }
 }
 
 private struct BugReportView: View {
     let onDone: () -> Void
     @State private var text = ""
+    @FocusState private var focused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("What went wrong? Dictate or type, then press Return.")
-                .font(.callout)
-            TextField("e.g. Dictation into Mail inserted nothing…", text: $text, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(3...6)
-                .onSubmit(submit)
-            HStack {
-                Text("Opens a prefilled GitHub issue with your app settings attached — nothing is sent until you submit it there.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Report", action: submit)
-                    .keyboardShortcut(.defaultAction)
+        ZStack {
+            // Dimmed backdrop — click anywhere outside the card to dismiss.
+            Color.black.opacity(0.45)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture { onDone() }
+
+            VStack(spacing: 0) {
+                HStack(spacing: 14) {
+                    Image(systemName: "ladybug.fill")
+                        .font(.system(size: 24))
+                        .foregroundStyle(.tint)
+                    TextField("Report a bug — what went wrong?", text: $text, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .font(.title2)
+                        .lineLimit(1...8)
+                        .focused($focused)
+                        .onSubmit(submit)
+                    Button(action: submit) {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 16, weight: .bold))
+                            .frame(width: 36, height: 36)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
                     .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 18)
+
+                Divider()
+
+                HStack {
+                    Text("Dictate or type, then press Return — opens a prefilled GitHub issue with your app settings attached. Nothing is sent until you submit it there.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 20)
+                    Text("esc to dismiss")
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(Color(nsColor: .underPageBackgroundColor))
             }
+            .frame(width: 760)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18)
+                    .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.35), radius: 40, y: 12)
+            .onAppear {
+                text = ""
+                focused = true
+            }
+            // Esc needs a target when the window's cancelOperation is bypassed
+            // by the focused text field.
+            .background(
+                Button("") { onDone() }
+                    .keyboardShortcut(.cancelAction)
+                    .opacity(0)
+            )
         }
-        .padding(16)
-        .frame(width: 460)
     }
 
     private func submit() {
