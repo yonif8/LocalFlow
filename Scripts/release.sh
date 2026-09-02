@@ -45,8 +45,12 @@ fi
 
 # ---- Build ---------------------------------------------------------------
 echo "==> Building LocalFlow $VERSION…"
-# Extra args (e.g. --scratch-path) pass through to make-app.sh.
-"$REPO_ROOT/Scripts/make-app.sh" --version "$VERSION" "${@:2}"
+# Always build releases in an isolated scratch dir: the default .build is
+# shared with dev/IDE/other-session builds and its llbuild state has served
+# STALE BINARIES that shipped without the code they claimed to contain.
+# Extra args pass through to make-app.sh and may override the scratch path.
+"$REPO_ROOT/Scripts/make-app.sh" --version "$VERSION" \
+    --scratch-path "$REPO_ROOT/.build-release" "${@:2}"
 
 # ---- DMG -----------------------------------------------------------------
 echo "==> Creating $DMG…"
