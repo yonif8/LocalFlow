@@ -1,6 +1,6 @@
 import Foundation
 
-// FROZEN CONTRACTS — streams code against these; only the orchestrator changes them.
+// Shared pipeline contracts. Every module codes against these; change with care.
 
 /// A finished, endpointed chunk of speech ready for transcription.
 public struct Utterance: Sendable {

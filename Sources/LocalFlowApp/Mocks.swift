@@ -2,25 +2,18 @@ import Foundation
 import AppKit
 import LFContracts
 
-// Mock pipeline components, coded strictly against the FROZEN LFContracts
-// protocols. Status of the real modules as of this stream's work:
-//   - LFEngine (Transcriber): intentionally NOT a dependency of this target;
-//     orchestrator wires the real one at integration. MockTranscriber stands in.
-//   - LFCapture / LFInsert / LFPolish: targets exist as dependencies but their
-//     sources are placeholders with no public API yet, so contracts-shaped
-//     mocks stand in here too. Swap points are all in DictationCoordinator.init.
+// Mock pipeline components (LFContracts-shaped), used by the "Simulate
+// Dictation" debug path and as fallbacks when permissions are missing.
 
-/// Warm-up seam mirroring LFEngine's real `ParakeetTranscriber.prepare()`:
-/// first-ever inference is ~2.1 s cold vs ~110 ms warm, so the coordinator
-/// calls prepare at startup. The orchestrator adapts the real transcriber to
-/// this (or calls prepare directly) at integration.
+/// Warm-up seam: the coordinator calls prepare() at startup so first-ever
+/// model load/download never happens mid-dictation.
 protocol PreparableTranscriber: Sendable {
     func prepare() async
 }
 
 /// Returns canned text after a short delay, cycling through phrases.
 actor MockTranscriber: Transcriber, PreparableTranscriber {
-    /// No-op warm-up (the real engine loads MLX weights here).
+    /// No-op warm-up (the real engine loads/downloads models here).
     func prepare() async {}
     private var index = 0
     private let phrases = [
@@ -122,17 +115,8 @@ final class MockCaptureEngine: CaptureEngine, @unchecked Sendable {
     }
 }
 
-/// Fail-open polisher: trims whitespace, otherwise returns input unchanged.
-/// Stands in for LFPolish until it exposes a public TextPolisher.
-struct PassthroughPolisher: TextPolisher {
-    func polish(_ text: String, context: PolishContext) async -> String {
-        text.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-}
-
-/// Copies the text to the general pasteboard so the demo produces a tangible
-/// result without Accessibility permission. Stands in for LFInsert until it
-/// exposes a public TextInserter (real one types at the caret).
+/// Copies the text to the general pasteboard — the last-resort fallback when
+/// Accessibility isn't granted, so dictated text is never lost.
 struct PasteboardInserter: TextInserter {
     func insert(_ text: String) async throws {
         await MainActor.run {

@@ -109,9 +109,9 @@ print("after replacements: \(result.afterReplacements)  [\(format(result.replace
 switch result.outcome {
 case .polished:
     let timing = result.llmDuration.map(format) ?? "?"
-    print("after FM polish   : \(result.text)  [\(timing)]")
+    print("after LLM polish  : \(result.text)  [\(timing)]")
 case .replacementsOnly(let reason):
     let timing = result.llmDuration.map { "  [\(format($0))]" } ?? ""
-    print("after FM polish   : (skipped, fail-open: \(reason))\(timing)")
+    print("after LLM polish  : (skipped, fail-open: \(reason))\(timing)")
     print("final text        : \(result.text)")
 }
