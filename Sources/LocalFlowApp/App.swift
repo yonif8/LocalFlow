@@ -99,6 +99,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        // Never leave the system's output ducked if we quit mid-dictation.
+        SystemAudioDucker.shared.restore()
+    }
+
     // MARK: - Status item
 
     private func setUpStatusItem() {
@@ -274,6 +279,7 @@ enum DefaultsKey {
     static let mouseButton = "LFMouseButton"
     static let hudEnabled = "LFHUDEnabled"                     // default true
     static let keepMicWarm = "LFKeepMicWarm"                   // default false
+    static let duckWhileDictating = "LFDuckWhileDictating"     // default true
     static let holdThreshold = "LFHoldThreshold"               // seconds, default 0.3
     static let polishTimeout = "LFPolishTimeout"               // seconds, default 1.5
     static let polishMaxChars = "LFPolishMaxChars"             // default 700

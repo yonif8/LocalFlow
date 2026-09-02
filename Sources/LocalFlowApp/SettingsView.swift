@@ -157,6 +157,7 @@ private struct DictationSettingsTab: View {
     @State private var mouseMonitors: [Any] = []
     @State private var holdThreshold = AppSettings.holdThreshold
     @State private var keepMicWarm = AppSettings.keepMicWarm
+    @State private var duckWhileDictating = AppSettings.duckWhileDictating
     @State private var microphoneUID = AppSettings.microphoneUID ?? ""
     @State private var microphones: [MicDevice] = MicDevice.available()
 
@@ -208,6 +209,17 @@ private struct DictationSettingsTab: View {
                     apply(restartCapture: true)
                 }
                 Text("Accidental-tap filter: holds shorter than this are cancelled.")
+                    .font(.caption).foregroundStyle(.secondary)
+
+                Toggle("Lower other audio while dictating", isOn: $duckWhileDictating)
+                    .onChange(of: duckWhileDictating) { _, value in
+                        AppSettings.duckWhileDictating = value
+                    }
+                Text("""
+                    Music and other sound output drops to 20% volume while \
+                    you hold the key, so it doesn't drown out the microphone. \
+                    Your volume comes back the moment you release.
+                    """)
                     .font(.caption).foregroundStyle(.secondary)
             }
 

@@ -177,6 +177,7 @@ final class DictationCoordinator {
     }
 
     func stopListening() {
+        SystemAudioDucker.shared.restore()
         realCapture?.stop()
         realCapture = nil
         mockCapture.stop()
@@ -224,6 +225,9 @@ final class DictationCoordinator {
             errorResetTask?.cancel()
             state = .recording
             level = 0
+            if AppSettings.duckWhileDictating {
+                SystemAudioDucker.shared.duck()
+            }
             HUDController.shared.show()
 
         case .level(let value):
@@ -238,12 +242,16 @@ final class DictationCoordinator {
             }
 
         case .cancelled:
+            SystemAudioDucker.shared.restore()
             state = .idle
             level = 0
             HUDController.shared.hide()
 
         case .ended(let utterance):
             Self.logger.info("capture ended (\(utterance.duration, privacy: .public)s); transcribing")
+            // Key released — bring the volume back right away; transcription
+            // and insertion don't need quiet.
+            SystemAudioDucker.shared.restore()
             state = .processing
             level = 0
             await runPipeline(utterance)
