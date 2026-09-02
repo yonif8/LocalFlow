@@ -5,14 +5,12 @@ let package = Package(
     name: "LocalFlow",
     platforms: [.macOS("15.0")],
     dependencies: [
-        .package(url: "https://github.com/kylehowells/Granite-MLX", from: "0.1.1"),
-        // Polish LLM runtime (S1-mini). 3.x versions track mlx-swift 0.31.x,
-        // which Granite-MLX pins; do not bump one without the other.
+        // Polish LLM runtime (S1-mini). 3.x versions track mlx-swift 0.31.x.
         .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", exact: "3.31.4"),
         .package(url: "https://github.com/huggingface/swift-huggingface", from: "0.9.0"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
-        // Alternate ASR engine (Parakeet TDT v3, CoreML): verbatim transcripts
-        // (preserves contractions, unlike Granite) with native punctuation.
+        // The ASR engine (Parakeet TDT v3, CoreML): verbatim transcripts
+        // with native punctuation.
         .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.12.4"),
         // Auto-updates. 2.9.5+ contains security fixes; EdDSA-signed updates
         // work without Apple-trusted code signing.
@@ -27,7 +25,6 @@ let package = Package(
             name: "LFEngine",
             dependencies: [
                 "LFContracts",
-                .product(name: "GraniteMLX", package: "Granite-MLX"),
                 .product(name: "FluidAudio", package: "FluidAudio"),
             ]
         ),

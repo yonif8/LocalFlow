@@ -67,7 +67,7 @@ if [[ ! -f "$NOTES" ]]; then
     cat > "$NOTES" <<EOF
 LocalFlow $VERSION — fully-local dictation for macOS.
 
-- Hold-to-talk dictation, transcribed entirely on your Mac (Granite ASR via MLX)
+- Hold-to-talk dictation, transcribed entirely on your Mac (Parakeet ASR, on-device)
 - Optional on-device polish pass (S1-mini by Superwhisper)
 - Auto-updates via Sparkle
 

@@ -1,18 +1,82 @@
+@preconcurrency import AVFoundation
 import Foundation
-import GraniteMLX
 import LFContracts
 
-/// File-based `Utterance` loading, for the CLI and tests.
-///
-/// The live dictation path builds `Utterance`s directly from microphone
-/// samples; this exists so tools can feed recorded audio through the exact
-/// same `Transcriber` entry point. Decoding and resampling to 16 kHz mono are
-/// delegated to GraniteMLX's audio frontend (AVFoundation with an ffmpeg
-/// fallback), so anything AVFoundation can read works here.
+/// Loads an audio file as a 16 kHz mono `Utterance` (pure AVFoundation).
 public enum UtteranceLoader {
-    /// Loads an audio file as a 16 kHz mono `Utterance`.
     public static func load(contentsOf url: URL) throws -> Utterance {
-        let audio = try GraniteAudioInput.load(url: url, targetSampleRate: 16_000)
-        return Utterance(samples: audio.samples, sampleRate: Double(audio.sampleRate))
+        let file: AVAudioFile
+        do {
+            file = try AVAudioFile(forReading: url)
+        } catch {
+            throw EngineError.audioLoadFailed(String(describing: error))
+        }
+
+        guard let targetFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)
+        else {
+            throw EngineError.audioLoadFailed("could not create 16kHz mono format")
+        }
+
+        guard let converter = AVAudioConverter(from: file.processingFormat, to: targetFormat) else {
+            throw EngineError.audioLoadFailed("no converter from \(file.processingFormat)")
+        }
+
+        let sourceCapacity = AVAudioFrameCount(8192)
+        let ratio = targetFormat.sampleRate / file.processingFormat.sampleRate
+        let targetCapacity = AVAudioFrameCount((Double(sourceCapacity) * ratio).rounded(.up) + 32)
+
+        guard let inBuffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: sourceCapacity),
+              let outBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: targetCapacity)
+        else {
+            throw EngineError.audioLoadFailed("buffer allocation failed")
+        }
+
+        var samples: [Float] = []
+        var reachedEnd = false
+        while !reachedEnd {
+            do {
+                try file.read(into: inBuffer)
+            } catch {
+                throw EngineError.audioLoadFailed(String(describing: error))
+            }
+            if inBuffer.frameLength == 0 { break }
+            reachedEnd = file.framePosition >= file.length
+
+            var fed = false
+            var conversionError: NSError?
+            outBuffer.frameLength = 0
+            let status = converter.convert(to: outBuffer, error: &conversionError) { _, outStatus in
+                if fed {
+                    outStatus.pointee = .noDataNow
+                    return nil
+                }
+                fed = true
+                outStatus.pointee = .haveData
+                return inBuffer
+            }
+            if let conversionError {
+                throw EngineError.audioLoadFailed(String(describing: conversionError))
+            }
+            if status == .error {
+                throw EngineError.audioLoadFailed("conversion failed")
+            }
+            if outBuffer.frameLength > 0, let channel = outBuffer.floatChannelData?[0] {
+                samples.append(contentsOf: UnsafeBufferPointer(start: channel, count: Int(outBuffer.frameLength)))
+            }
+        }
+
+        // Drain the converter's tail.
+        var drainError: NSError?
+        outBuffer.frameLength = 0
+        let drainStatus = converter.convert(to: outBuffer, error: &drainError) { _, outStatus in
+            outStatus.pointee = .endOfStream
+            return nil
+        }
+        if drainStatus != .error, outBuffer.frameLength > 0, let channel = outBuffer.floatChannelData?[0] {
+            samples.append(contentsOf: UnsafeBufferPointer(start: channel, count: Int(outBuffer.frameLength)))
+        }
+
+        return Utterance(samples: samples, sampleRate: 16_000)
     }
 }

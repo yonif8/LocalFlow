@@ -159,7 +159,6 @@ private struct DictationSettingsTab: View {
     @State private var keepMicWarm = AppSettings.keepMicWarm
     @State private var microphoneUID = AppSettings.microphoneUID ?? ""
     @State private var microphones: [MicDevice] = MicDevice.available()
-    @State private var speechEngine = AppSettings.speechEngine
 
     var body: some View {
         Form {
@@ -209,24 +208,6 @@ private struct DictationSettingsTab: View {
                     apply(restartCapture: true)
                 }
                 Text("Accidental-tap filter: holds shorter than this are cancelled.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-
-            Section("Speech Recognition") {
-                Picker("Engine:", selection: $speechEngine) {
-                    Text("Granite (default)").tag("granite")
-                    Text("Parakeet (beta — verbatim)").tag("parakeet")
-                }
-                .onChange(of: speechEngine) { _, value in
-                    AppSettings.speechEngine = value
-                    apply()
-                }
-                Text("""
-                    Granite normalizes speech (always writes "do not", never \
-                    "don't"). Parakeet transcribes verbatim — contractions \
-                    kept — and punctuates natively. Parakeet downloads \
-                    ~600 MB on first use.
-                    """)
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -551,24 +532,21 @@ private struct AboutTab: View {
 
             Section("Models") {
                 LabeledContent("Speech recognition") {
-                    Text("Granite Speech 5.0 TurboCTC (IBM), MLX conversion by Kyle Howells")
+                    Text("Parakeet TDT v3 (NVIDIA), CoreML via FluidAudio")
                         .multilineTextAlignment(.trailing)
-                }
-                LabeledContent("Punctuation") {
-                    Text("Punctuation/truecase formatter by Kyle Howells")
                 }
                 LabeledContent("Text polish") {
                     Text("S1-mini by Superwhisper")
                 }
-                Text("All models run on-device via MLX and are cached locally after first download.")
+                Text("All models run on-device and are cached locally after first download.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("Acknowledgements") {
                 Text("""
-                    Built on Granite-MLX (Kyle Howells), MLX Swift (Apple), \
-                    and S1-mini by Superwhisper (Apache 2.0). Speech models \
-                    © IBM, Apache 2.0.
+                    Built on FluidAudio (FluidInference), MLX Swift (Apple), \
+                    Sparkle, and S1-mini by Superwhisper. Parakeet model \
+                    © NVIDIA. All Apache 2.0 / MIT licensed.
                     """)
                     .font(.caption).foregroundStyle(.secondary)
             }

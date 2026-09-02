@@ -30,10 +30,8 @@ enum BugDiagnostics {
         Permissions: mic=\(PermissionChecker.microphone().label), \
         input-monitoring=\(PermissionChecker.inputMonitoring().label), \
         accessibility=\(PermissionChecker.accessibility().label)
-        Models: granite-speech=\(EngineModelLocations.isSpeechModelDownloaded() ? "downloaded" : "missing"), \
-        punctuation=\(EngineModelLocations.isPunctuationModelDownloaded() ? "downloaded" : "missing"), \
+        Models: parakeet=\(ParakeetTranscriber.isModelDownloaded ? "downloaded" : "missing"), \
         s1-mini=\(PolishModelStore.isModelDownloaded ? "downloaded" : "missing")
-        Engine: \(AppSettings.speechEngine)
         Hotkey: \(HotkeyChoice.load().rawValue), mouse-button=\(AppSettings.mouseButton.map { "\($0 + 1)" } ?? "off"), \
         hold-threshold=\(String(format: "%.2fs", AppSettings.holdThreshold)), mic-warm=\(AppSettings.keepMicWarm)
         Microphone: \(mic)

@@ -1,14 +1,10 @@
-// engine-cli — transcribe a WAV with the LocalFlow Granite engine.
+// engine-cli — transcribe a WAV with LocalFlow's Parakeet engine.
 //
-//   engine-cli <audio-file>                 transcribe, print text + timing breakdown
-//   engine-cli <audio-file> --bench [N]     warm up, then N timed runs (default 10);
-//                                           report per-utterance latency stats
-//   Options:
-//     --no-punctuate    skip the punctuation/truecase formatter
-//     --raw             also print the raw (unformatted) CTC text
+//   engine-cli <audio-file>             transcribe, print text + timing
+//   engine-cli <audio-file> --bench [N] warm up, then N timed runs (default 10)
 //
-// First run downloads the models (~550 MB speech + ~56 MB formatter) into the
-// shared Granite-MLX cache; progress is printed to stderr.
+// First-ever run downloads the Parakeet models (~600 MB) into FluidAudio's
+// Application Support cache.
 
 import Foundation
 import LFContracts
@@ -27,14 +23,9 @@ func ms(_ seconds: TimeInterval) -> String {
     String(format: "%.0f ms", seconds * 1000)
 }
 
-// MARK: - Argument parsing
-
 var arguments = Array(CommandLine.arguments.dropFirst())
 var bench = false
 var benchRuns = 10
-var punctuate = true
-var showRaw = false
-var engineName = "granite"
 var audioPath: String?
 
 var index = 0
@@ -47,16 +38,8 @@ while index < arguments.count {
             benchRuns = n
             index += 1
         }
-    case "--no-punctuate":
-        punctuate = false
-    case "--raw":
-        showRaw = true
-    case "--engine":
-        guard index + 1 < arguments.count else { fail("--engine needs granite|parakeet") }
-        engineName = arguments[index + 1]
-        index += 1
     case "--help", "-h":
-        print("usage: engine-cli <audio-file> [--engine granite|parakeet] [--bench [N]] [--no-punctuate] [--raw]")
+        print("usage: engine-cli <audio-file> [--bench [N]]")
         exit(0)
     default:
         if argument.hasPrefix("-") { fail("unknown option \(argument)") }
@@ -67,98 +50,38 @@ while index < arguments.count {
 }
 
 guard let audioPath else {
-    fail("usage: engine-cli <audio-file> [--bench [N]] [--no-punctuate] [--raw]")
+    fail("usage: engine-cli <audio-file> [--bench [N]]")
 }
-let audioURL = URL(fileURLWithPath: audioPath)
-
-// MARK: - Run
 
 do {
-    let utterance = try UtteranceLoader.load(contentsOf: audioURL)
+    let utterance = try UtteranceLoader.load(contentsOf: URL(fileURLWithPath: audioPath))
+    errPrint(String(
+        format: "audio: %@ (%.2f s @ %.0f Hz, %d samples)",
+        (audioPath as NSString).lastPathComponent, utterance.duration,
+        utterance.sampleRate, utterance.samples.count))
+
+    let transcriber = ParakeetTranscriber()
+    ParakeetTranscriber.progressHandler = { progress in
         errPrint(String(
-            format: "audio: %@ (%.2f s @ %.0f Hz, %d samples)",
-            audioURL.lastPathComponent, utterance.duration,
-            utterance.sampleRate, utterance.samples.count))
+            format: "models: %@ %.0f%%", progress.phase, progress.fractionCompleted * 100))
+    }
+    let loadStart = Date()
+    await transcriber.prepare()
+    errPrint("model load: \(ms(Date().timeIntervalSince(loadStart)))")
 
-        if engineName == "parakeet" {
-            let parakeet = ParakeetTranscriber()
-            errPrint("loading Parakeet TDT v3 (downloads on first use)…")
-            let loadStart = Date()
-            await parakeet.prepare()
-            errPrint("parakeet load: \(ms(Date().timeIntervalSince(loadStart)))")
-            let runs = bench ? benchRuns : 1
-            var latencies: [TimeInterval] = []
-            var text = ""
-            for _ in 1...runs {
-                let start = Date()
-                text = try await parakeet.transcribe(utterance)
-                latencies.append(Date().timeIntervalSince(start))
-            }
-            let median = latencies.sorted()[latencies.count / 2]
-            errPrint(String(
-                format: "parakeet: median %@ over %d run(s), RTF %.3f",
-                ms(median), runs, median / utterance.duration))
-            print(text)
-            exit(0)
-        }
-
-        let transcriber = GraniteTranscriber(configuration: .init(
-            punctuate: punctuate,
-            progressHandler: { progress in
-                errPrint(String(
-                    format: "model %@: %@ %.0f%%",
-                    progress.repositoryID, progress.phase,
-                    progress.fractionCompleted * 100))
-            }
-        ))
-
-        if bench {
-            errPrint("preparing models + warm-up run…")
-            let load = try await transcriber.prepare(warmRun: true)
-            if let load { errPrint("model load: \(ms(load))") }
-
-            var latencies: [TimeInterval] = []
-            var lastText = ""
-            for run in 1...benchRuns {
-                let (text, timings) = try await transcriber.transcribeWithTimings(utterance)
-                lastText = text
-                latencies.append(timings.total)
-                errPrint(String(
-                    format: "run %2d/%d: total %@ (inference %@, formatting %@)",
-                    run, benchRuns, ms(timings.total),
-                    ms(timings.inference), ms(timings.formatting)))
-            }
-            let sorted = latencies.sorted()
-            let median = sorted[sorted.count / 2]
-            let mean = latencies.reduce(0, +) / Double(latencies.count)
-            print("transcript: \(lastText)")
-            print(String(
-                format: "bench (%d runs, %.2f s audio, warm): median %@  mean %@  min %@  max %@  RTF %.3f",
-                benchRuns, utterance.duration,
-                ms(median), ms(mean), ms(sorted.first!), ms(sorted.last!),
-                median / utterance.duration))
-        } else {
-            let (text, timings) = try await transcriber.transcribeWithTimings(utterance)
-            print(text)
-            errPrint("--")
-            if let load = timings.modelLoad {
-                errPrint("model load:  \(ms(load))")
-            }
-            errPrint("inference:   \(ms(timings.inference))")
-            if punctuate {
-                errPrint("formatting:  \(ms(timings.formatting))")
-            }
-            errPrint(String(
-                format: "total:       %@ (%.2f s audio, RTF %.3f excl. load)",
-                ms(timings.total), utterance.duration,
-                (timings.inference + timings.formatting) / utterance.duration))
-            if showRaw {
-                let rawTranscriber = GraniteTranscriber(configuration: .init(punctuate: false))
-                let (raw, _) = try await rawTranscriber.transcribeWithTimings(utterance)
-                errPrint("raw: \(raw)")
-            }
-        }
+    let runs = bench ? benchRuns : 1
+    var latencies: [TimeInterval] = []
+    var text = ""
+    for _ in 1...runs {
+        let start = Date()
+        text = try await transcriber.transcribe(utterance)
+        latencies.append(Date().timeIntervalSince(start))
+    }
+    let median = latencies.sorted()[latencies.count / 2]
+    errPrint(String(
+        format: "parakeet: median %@ over %d run(s), RTF %.3f",
+        ms(median), runs, median / utterance.duration))
+    print(text)
 } catch {
-    errPrint("error: \(error)")
-    exit(1)
+    fail(String(describing: error))
 }

@@ -85,7 +85,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Framewor
 
 cp "$BIN_PATH" "$APP/Contents/MacOS/$APP_NAME"
 
-# MLX (the Granite ASR backend) loads its GPU kernels from an mlx.metallib
+# MLX (the S1-mini polish backend) loads its GPU kernels from an mlx.metallib
 # colocated with the executable. Copy it into Contents/MacOS when the build
 # produced one; warn otherwise (the mock-transcriber app runs fine without it,
 # the real engine will not).
@@ -101,7 +101,7 @@ if [[ -n "$METALLIB" ]]; then
     echo "==> Copied mlx.metallib ($(basename "$(dirname "$METALLIB")") build)"
 else
     echo "==> WARNING: mlx.metallib not found next to the built products;"
-    echo "    the real Granite/MLX transcriber will not run from this bundle."
+    echo "    the S1-mini polish model will not run from this bundle."
 fi
 
 # ---- Sparkle.framework ----------------------------------------------------

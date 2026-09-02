@@ -3,13 +3,49 @@ import Foundation
 import LFContracts
 import os
 
-// Parakeet TDT v3 (0.6B, CoreML via FluidAudio, Apache 2.0): the alternate
-// ASR engine. Unlike Granite TurboCTC — whose training data normalizes
-// contractions away ("don't" can only ever come out "do not") — Parakeet
-// transcribes verbatim AND emits its own punctuation/capitalization, so the
-// pause-based formatter isn't needed on this path.
+public enum EngineError: Error, CustomStringConvertible {
+    case unsupportedSampleRate(got: Double, required: Double)
+    case utteranceTooShort(sampleCount: Int)
+    case audioLoadFailed(String)
+
+    public var description: String {
+        switch self {
+        case .unsupportedSampleRate(let got, let required):
+            return "Unsupported sample rate \(got) Hz (engine requires \(required) Hz)."
+        case .utteranceTooShort(let count):
+            return "Utterance too short to transcribe (\(count) samples)."
+        case .audioLoadFailed(let why):
+            return "Could not load audio: \(why)"
+        }
+    }
+}
+
+/// Download/load progress for the speech model, for onboarding UI.
+public struct EngineModelProgress: Sendable {
+    public let fractionCompleted: Double
+    public let phase: String
+}
+
+// Parakeet TDT v3 (0.6B, CoreML via FluidAudio, Apache 2.0): LocalFlow's
+// speech engine. Transcribes verbatim (contractions preserved) and emits its
+// own punctuation/capitalization — no separate formatter model needed.
+// (Granite TurboCTC was removed: its training normalized contractions away
+// and its pause-based punctuation formatter split clauses mid-sentence.)
 public final class ParakeetTranscriber: Transcriber, @unchecked Sendable {
     private static let logger = Logger(subsystem: "com.localflow.engine", category: "parakeet")
+
+    /// Observed by the app for the onboarding "Models" row.
+    public static var progressHandler: (@Sendable (EngineModelProgress) -> Void)? {
+        get { progressLock.withLock { _progressHandler } }
+        set { progressLock.withLock { _progressHandler = newValue } }
+    }
+    nonisolated(unsafe) private static var _progressHandler: (@Sendable (EngineModelProgress) -> Void)?
+    private static let progressLock = NSLock()
+
+    /// Models live in FluidAudio's own Application Support cache.
+    public static var isModelDownloaded: Bool {
+        AsrModels.modelsExist(at: AsrModels.defaultCacheDirectory())
+    }
 
     private let lock = NSLock()
     private var manager: AsrManager?
@@ -51,13 +87,21 @@ public final class ParakeetTranscriber: Transcriber, @unchecked Sendable {
         }
 
         do {
-            let models = try await AsrModels.downloadAndLoad(version: .v3)
+            let models = try await AsrModels.downloadAndLoad(
+                version: .v3,
+                progressHandler: { progress in
+                    ParakeetTranscriber.progressHandler?(EngineModelProgress(
+                        fractionCompleted: progress.fractionCompleted,
+                        phase: String(describing: progress.phase)))
+                }
+            )
             let loaded = AsrManager(config: .default)
             try await loaded.loadModels(models)
             withState { manager, loading in
                 manager = loaded
                 loading = false
             }
+            Self.progressHandler?(EngineModelProgress(fractionCompleted: 1, phase: "complete"))
             Self.logger.info("Parakeet TDT v3 loaded")
             return loaded
         } catch {

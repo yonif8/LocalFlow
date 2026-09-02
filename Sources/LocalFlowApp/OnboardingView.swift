@@ -175,13 +175,8 @@ struct OnboardingView: View {
 
             ModelRow(
                 title: "Speech recognition",
-                detail: "Granite 470M — transcribes your voice (~550 MB).",
+                detail: "Parakeet — transcribes your voice, verbatim (~600 MB).",
                 status: setup.speech
-            )
-            ModelRow(
-                title: "Punctuation",
-                detail: "Adds punctuation and capitalization (~56 MB).",
-                status: setup.punctuation
             )
             ModelRow(
                 title: "Polish",

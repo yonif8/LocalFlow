@@ -6,7 +6,7 @@ import Foundation
 public struct Utterance: Sendable {
     /// Mono PCM samples.
     public let samples: [Float]
-    /// Expected to be 16_000 for the Granite pipeline.
+    /// Expected to be 16_000 for the speech engine.
     public let sampleRate: Double
 
     public init(samples: [Float], sampleRate: Double) {

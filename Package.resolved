@@ -1,5 +1,5 @@
 {
-  "originHash" : "d524f9746b2cfea1dc6aacfbf79b31019dbeffee06d1f874ab7ddc9d08164ebc",
+  "originHash" : "1a4ba214355de419facac71ee707d5142fe905026608123d42322b1ea0a0e5f8",
   "pins" : [
     {
       "identity" : "eventsource",
@@ -17,15 +17,6 @@
       "state" : {
         "revision" : "4dbf4f9f9a5ff3a53ade848d7ba4e3df13db859b",
         "version" : "0.15.6"
-      }
-    },
-    {
-      "identity" : "granite-mlx",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/kylehowells/Granite-MLX",
-      "state" : {
-        "revision" : "cdda6bd23b72e5144a1b90d55100759da743f7da",
-        "version" : "0.1.1"
       }
     },
     {
@@ -53,15 +44,6 @@
       "state" : {
         "revision" : "ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a",
         "version" : "2.9.6"
-      }
-    },
-    {
-      "identity" : "swift-argument-parser",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-argument-parser.git",
-      "state" : {
-        "revision" : "6a52f3251125d74daf04fcbd5e6f08a75d074382",
-        "version" : "1.8.2"
       }
     },
     {

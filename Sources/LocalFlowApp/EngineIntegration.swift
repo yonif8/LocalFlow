@@ -2,36 +2,18 @@ import Foundation
 import LFContracts
 import LFEngine
 
-// Orchestrator integration: the real Granite transcriber, adapted to the
-// app's warm-up seam. Weights load lazily inside GraniteTranscriber, so
-// construction is cheap; prepare() pulls the ~2.1 s cold start forward to
-// app startup.
-extension GraniteTranscriber: PreparableTranscriber {
-    func prepare() async {
-        _ = try? await prepare(warmRun: true)
-    }
-}
-
+// The speech engine: Parakeet TDT v3, the app's only ASR. Progress feeds the
+// onboarding "Models" row on first run.
 extension ParakeetTranscriber: PreparableTranscriber {}
 
 enum EngineFactory {
-    static func makeTranscriber() -> any Transcriber {
-        switch AppSettings.speechEngine {
-        case "parakeet":
-            return ParakeetTranscriber()
-        default:
-            return makeGraniteTranscriber()
-        }
-    }
-
-    static func makeGraniteTranscriber() -> GraniteTranscriber {
-        // Progress feeds the onboarding "Models" section on first run; on a
-        // warm cache it just flips the rows to "downloaded" via cache_hit.
-        GraniteTranscriber(configuration: .init(progressHandler: { progress in
+    static func makeTranscriber() -> ParakeetTranscriber {
+        ParakeetTranscriber.progressHandler = { progress in
             Task { @MainActor in
                 ModelSetupState.shared.noteEngineProgress(progress)
             }
-        }))
+        }
+        return ParakeetTranscriber()
     }
 
     /// Debug: LOCALFLOW_SIM_WAV=<path to 16 kHz wav> makes "Simulate

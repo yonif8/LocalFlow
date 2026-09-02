@@ -4,17 +4,13 @@ import os
 import LFEngine
 import LFPolish
 
-/// Where LocalFlow's models live on disk, plus the one-time migration of the
-/// legacy caches into `~/Library/Application Support/LocalFlow/`.
+/// Model housekeeping: one-time cleanup of caches from removed engines and
+/// the legacy S1-mini migration.
 ///
-/// Legacy locations (from before models were app-managed):
-///   - Granite speech + punctuation: `~/Documents/huggingface/models/<owner>/<repo>`
-///   - S1-mini polish model:         `~/.cache/huggingface/hub/models--mlx-community--S1-mini-MLX-8bit`
-///
-/// Both are safe to migrate as plain directory moves: Granite materialized
-/// checkpoints are ordinary files, and the S1 HubCache snapshot symlinks are
-/// relative. Only the directories LocalFlow actually uses are moved; anything
-/// else in those caches is left alone.
+/// Parakeet (speech) lives in FluidAudio's own Application Support cache;
+/// S1-mini (polish) lives in `~/Library/Application Support/LocalFlow/s1-mini`.
+/// The Granite engine was removed in 1.1.0 — its caches (~1.1 GB) are deleted
+/// on first launch after the update to reclaim disk space.
 enum ModelLocations {
     private static let logger = Logger(subsystem: "com.localflow.app", category: "models")
 
@@ -23,43 +19,39 @@ enum ModelLocations {
         !(ProcessInfo.processInfo.environment["LOCALFLOW_MODELS_ROOT"] ?? "").isEmpty
     }
 
-    private static let graniteRepositories = [
-        "iky1e/granite-speech-5.0-470m-turboctc-mlx-q8",
-        "iky1e/punctuation-fullstop-truecase-english-mlx-q8",
-    ]
-
-    /// One-time, silent migration of the legacy model caches. Runs at app
-    /// startup; a no-op when the legacy directories are gone or the new ones
-    /// already exist. Never runs against a debug-overridden root.
     static func migrateLegacyCachesIfNeeded() {
         guard !isOverridden else { return }
-        let home = FileManager.default.homeDirectoryForCurrentUser
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser
+        let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("LocalFlow", isDirectory: true)
 
-        // Granite: ~/Documents/huggingface/models/<owner>/<repo> → granite/models/<owner>/<repo>
-        let legacyModels = home.appendingPathComponent(
-            "Documents/huggingface/models", isDirectory: true)
-        let newModels = EngineModelLocations.modelsDirectory
-        for repository in graniteRepositories {
-            moveIfNeeded(
-                from: legacyModels.appendingPathComponent(repository, isDirectory: true),
-                to: newModels.appendingPathComponent(repository, isDirectory: true))
-        }
-
-        // S1-mini: ~/.cache/huggingface/hub/models--…  →  s1-mini/models--…
+        // S1-mini legacy: ~/.cache/huggingface/hub/models--… → s1-mini/models--…
         let repoName = PolishModelStore.repoDirectory.lastPathComponent
         moveIfNeeded(
             from: home.appendingPathComponent(
                 ".cache/huggingface/hub/\(repoName)", isDirectory: true),
             to: PolishModelStore.repoDirectory)
+
+        // Granite engine removed in 1.1.0: reclaim its caches.
+        for stale in [
+            appSupport.appendingPathComponent("granite", isDirectory: true),
+            appSupport.appendingPathComponent("hf-cache", isDirectory: true),
+            home.appendingPathComponent("Documents/huggingface/models/iky1e", isDirectory: true),
+        ] where fm.fileExists(atPath: stale.path) {
+            do {
+                try fm.removeItem(at: stale)
+                logger.info("removed stale model cache \(stale.path, privacy: .public)")
+            } catch {
+                logger.error("could not remove \(stale.path, privacy: .public): \(String(describing: error), privacy: .public)")
+            }
+        }
     }
 
     private static func moveIfNeeded(from source: URL, to destination: URL) {
         let fm = FileManager.default
         guard fm.fileExists(atPath: source.path) else { return }
-        guard !fm.fileExists(atPath: destination.path) else {
-            logger.info("migration skipped, destination exists: \(destination.path, privacy: .public)")
-            return
-        }
+        guard !fm.fileExists(atPath: destination.path) else { return }
         do {
             try fm.createDirectory(
                 at: destination.deletingLastPathComponent(),
@@ -67,7 +59,7 @@ enum ModelLocations {
             try fm.moveItem(at: source, to: destination)
             logger.info("migrated model dir \(source.path, privacy: .public) → \(destination.path, privacy: .public)")
         } catch {
-            // Fail open: the engine will re-download into the new location.
+            // Fail open: the model re-downloads into the new location.
             logger.error("model migration failed for \(source.path, privacy: .public): \(String(describing: error), privacy: .public)")
         }
     }
@@ -90,11 +82,10 @@ final class ModelSetupState {
     }
 
     private(set) var speech: Status = .unknown
-    private(set) var punctuation: Status = .unknown
     private(set) var polish: Status = .unknown
 
     var allDownloaded: Bool {
-        speech == .downloaded && punctuation == .downloaded && polish == .downloaded
+        speech == .downloaded && polish == .downloaded
     }
 
     private init() {}
@@ -105,14 +96,8 @@ final class ModelSetupState {
         if !speech.isDownloading {
             setStatus(
                 &speech,
-                to: EngineModelLocations.isSpeechModelDownloaded() ? .downloaded : .waiting,
+                to: ParakeetTranscriber.isModelDownloaded ? .downloaded : .waiting,
                 name: "speech")
-        }
-        if !punctuation.isDownloading {
-            setStatus(
-                &punctuation,
-                to: EngineModelLocations.isPunctuationModelDownloaded() ? .downloaded : .waiting,
-                name: "punctuation")
         }
         if !polish.isDownloading {
             setStatus(
@@ -122,13 +107,17 @@ final class ModelSetupState {
         }
     }
 
-    /// Route Granite progress (speech or punctuation repo) to its row.
     func noteEngineProgress(_ progress: EngineModelProgress) {
-        let status = Self.status(for: progress)
-        if progress.repositoryID.contains("punctuation") {
-            setStatus(&punctuation, to: status, name: "punctuation")
+        if progress.fractionCompleted >= 1 || progress.phase == "complete" {
+            setStatus(&speech, to: .downloaded, name: "speech")
         } else {
-            setStatus(&speech, to: status, name: "speech")
+            setStatus(
+                &speech,
+                to: .downloading(
+                    fraction: progress.fractionCompleted,
+                    completedMB: Int(progress.fractionCompleted * 600),
+                    totalMB: 600),
+                name: "speech")
         }
     }
 
@@ -144,21 +133,6 @@ final class ModelSetupState {
                     totalMB: progress.totalBytes > 0
                         ? Int(progress.totalBytes / 1_000_000) : nil),
                 name: "polish")
-        }
-    }
-
-    private static func status(for progress: EngineModelProgress) -> Status {
-        switch progress.phase {
-        case "cache_hit", "complete":
-            return .downloaded
-        default:
-            let total = progress.estimatedTotalBytes
-            return .downloading(
-                fraction: progress.fractionCompleted,
-                completedMB: total.map {
-                    Int(progress.fractionCompleted * Double($0) / 1_000_000)
-                } ?? 0,
-                totalMB: total.map { Int($0 / 1_000_000) })
         }
     }
 

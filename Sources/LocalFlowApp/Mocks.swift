@@ -10,7 +10,7 @@ import LFContracts
 //     sources are placeholders with no public API yet, so contracts-shaped
 //     mocks stand in here too. Swap points are all in DictationCoordinator.init.
 
-/// Warm-up seam mirroring LFEngine's real `GraniteTranscriber.prepare(warmRun:)`:
+/// Warm-up seam mirroring LFEngine's real `ParakeetTranscriber.prepare()`:
 /// first-ever inference is ~2.1 s cold vs ~110 ms warm, so the coordinator
 /// calls prepare at startup. The orchestrator adapts the real transcriber to
 /// this (or calls prepare directly) at integration.
@@ -27,7 +27,7 @@ actor MockTranscriber: Transcriber, PreparableTranscriber {
         "Hello from LocalFlow — this transcript came from the mock transcriber.",
         "The quick brown fox jumps over the lazy dog.",
         "Remember to pick up oat milk and coffee beans on the way home.",
-        "Dictation is working end to end; wire in the Granite engine next.",
+        "Dictation is working end to end with the mock transcriber.",
         "This sentence was produced entirely offline, no cloud required.",
     ]
 

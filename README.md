@@ -5,7 +5,7 @@ transcribed and typed into whatever app you're using. Nothing ever leaves your
 Mac: no accounts, no cloud, no audio uploaded anywhere.
 
 - **Hold-to-talk** — hold Fn (or a configurable key/mouse button), speak, release.
-- **On-device speech recognition** — Granite ASR running on Apple Silicon via [MLX](https://github.com/ml-explore/mlx) ([Granite-MLX](https://github.com/kylehowells/Granite-MLX)).
+- **On-device speech recognition** — NVIDIA Parakeet TDT v3 (verbatim, natively punctuated) on the Neural Engine via [FluidAudio](https://github.com/FluidInference/FluidAudio).
 - **On-device polish** — an optional fast LLM pass cleans up filler words and phrasing, powered by **S1-mini by Superwhisper**, also running locally via MLX.
 - **Menu bar app** — history, settings, permissions, all in a lightweight status item.
 - **Auto-updates** — via [Sparkle](https://sparkle-project.org); the app checks for updates and offers them in place.
@@ -74,7 +74,7 @@ Scripts/release.sh 1.2.3   # versioned build + DMG + signed appcast
 
 ## Credits
 
-- Speech recognition: IBM **Granite** ASR, via [Granite-MLX](https://github.com/kylehowells/Granite-MLX)
+- Speech recognition: NVIDIA **Parakeet TDT v3**, via [FluidAudio](https://github.com/FluidInference/FluidAudio)
 - Polish LLM: **S1-mini by Superwhisper**
 - Runtime: [MLX / mlx-swift](https://github.com/ml-explore/mlx-swift), [mlx-swift-lm](https://github.com/ml-explore/mlx-swift-lm)
 - Updates: [Sparkle](https://sparkle-project.org)

@@ -23,7 +23,7 @@ struct Transcript: Identifiable, Sendable {
 /// CaptureEngine.events → .ended → Transcriber.transcribe → TextPolisher.polish
 /// → TextInserter.insert, with HUD state transitions and error surfacing.
 ///
-/// Real components wired: LFEngine.GraniteTranscriber,
+/// Real components wired: LFEngine.ParakeetTranscriber,
 /// LFCapture.HoldToTalkCaptureEngine (falls back to mock-only if permissions
 /// are missing), LFPolish.LocalPolisher, LFInsert.FrontmostInserter (falls
 /// back to pasteboard copy if Accessibility is missing).
@@ -54,7 +54,6 @@ final class DictationCoordinator {
     private let mockCapture = MockCaptureEngine()
     private var realCapture: HoldToTalkCaptureEngine?
     private var transcriber: any Transcriber
-    private var activeEngine = AppSettings.speechEngine
     private var polisher: any TextPolisher
     private var inserter: any TextInserter
 
@@ -98,15 +97,6 @@ final class DictationCoordinator {
     func applySettings(restartCapture: Bool = false) {
         polisher = Self.makePolisher()
         inserter = AdaptiveInserter(configuration: AppSettings.inserterConfiguration)
-        if AppSettings.speechEngine != activeEngine {
-            activeEngine = AppSettings.speechEngine
-            transcriber = EngineFactory.makeTranscriber()
-            didPrepareTranscriber = true
-            Self.logger.info("speech engine switched to \(self.activeEngine, privacy: .public)")
-            if let preparable = transcriber as? PreparableTranscriber {
-                Task { await preparable.prepare() }
-            }
-        }
         trimHistory()
         if restartCapture {
             restartListeningIfNeeded()
@@ -136,7 +126,7 @@ final class DictationCoordinator {
         }
 
         // Warm the transcriber once so the first real utterance isn't slow
-        // (~2.1 s cold vs ~110 ms warm for the Granite engine).
+        // (model load + first-ever ~600 MB download happen here, not mid-dictation).
         if !didPrepareTranscriber {
             didPrepareTranscriber = true
             if let preparable = transcriber as? PreparableTranscriber {
@@ -268,23 +258,10 @@ final class DictationCoordinator {
         do {
             let clock = ContinuousClock()
             var stageStart = clock.now
-            let raw: String
-            let formatted: String
-            if let granite = transcriber as? GraniteTranscriber {
-                let detailed = try await granite.transcribeDetailed(utterance)
-                raw = detailed.raw
-                formatted = detailed.formatted
-                let t = detailed.timings
-                Self.logger.info("""
-                    transcribe: load \(t.modelLoad.map { String(format: "%.2fs", $0) } ?? "cached", privacy: .public) \
-                    inference \(String(format: "%.2fs", t.inference), privacy: .public) \
-                    format \(String(format: "%.2fs", t.formatting), privacy: .public) \
-                    (audio \(String(format: "%.2fs", utterance.duration), privacy: .public))
-                    """)
-            } else {
-                raw = try await transcriber.transcribe(utterance)
-                formatted = raw
-            }
+            // Parakeet output is verbatim WITH native punctuation; it serves
+            // as both the polish input and the fail-open fallback.
+            let raw = try await transcriber.transcribe(utterance)
+            let formatted = raw
             // Raw transcript at debug level: when a user reports "that's not
             // what I said," this attributes the error to ASR vs polish in
             // seconds instead of a reconstruction hunt.
