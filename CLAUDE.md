@@ -7,7 +7,10 @@ github.com/yonif8/LocalFlow.
 
 ## Pipeline
 
-mic (LFCapture: CGEventTap hold-to-talk + AVAudioEngine 16kHz)
+mic (LFCapture: CGEventTap hold-to-talk + AVAudioEngine 16kHz;
+  SystemAudioDucker drops output volume to 20% while recording — CoreAudio
+  HAL writes, which never trigger the macOS volume bezel; restores on
+  ended/cancelled/stopListening/app-quit; toggle in Settings → Dictation)
 → ASR (LFEngine: **Parakeet TDT v3** via FluidAudio CoreML — verbatim,
   natively punctuated; the only engine since 1.1.0, Granite was removed)
 → polish (LFPolish: dictionary replacements always; **S1-mini** LLM via
