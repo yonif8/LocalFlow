@@ -1,0 +1,326 @@
+name: Release all platforms
+run-name: Release ${{ inputs.tag }} (${{ inputs.request_id }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing stable release tag (exactly vX.Y.Z)"
+        required: true
+        type: string
+      request_id:
+        description: "Unique publish request identifier"
+        required: true
+        type: string
+      dmg_sha256:
+        description: "SHA-256 of the macOS DMG already attached to the draft"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate immutable release request
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REQUESTED_TAG: ${{ inputs.tag }}
+      REQUEST_ID: ${{ inputs.request_id }}
+      EXPECTED_DMG_SHA256: ${{ inputs.dmg_sha256 }}
+    steps:
+      - name: Check out the dispatched tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require the exact stable tag and macOS release
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$REQUESTED_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Stable releases must use an exact vX.Y.Z tag." >&2
+            exit 1
+          fi
+          if [[ ! "$REQUEST_ID" =~ ^[0-9a-f]{32}$ ]]; then
+            echo "The publish request identifier is invalid." >&2
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_DMG_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "The macOS DMG digest is invalid." >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF_TYPE" != "tag" || "$GITHUB_REF_NAME" != "$REQUESTED_TAG" ]]; then
+            echo "Dispatch this workflow on $REQUESTED_TAG, not on a branch or a different tag." >&2
+            exit 1
+          fi
+          git show-ref --verify --quiet "refs/tags/$REQUESTED_TAG" || {
+            echo "The requested tag is absent from the checkout." >&2
+            exit 1
+          }
+          tag_commit="$(git rev-parse "$REQUESTED_TAG^{commit}")"
+          if [[ "$tag_commit" != "$GITHUB_SHA" || "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]]; then
+            echo "The workflow checkout does not resolve to the requested tag commit." >&2
+            exit 1
+          fi
+
+          version="${REQUESTED_TAG#v}"
+          release_json="$RUNNER_TEMP/localflow-release.json"
+          gh release view "$REQUESTED_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease,assets >"$release_json"
+          python3 - "$release_json" "$REQUESTED_TAG" "$version" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          release_path, expected_tag, version = sys.argv[1:]
+          release = json.loads(pathlib.Path(release_path).read_text(encoding="utf-8"))
+          if release["tagName"] != expected_tag:
+              raise SystemExit("The GitHub release is attached to a different tag.")
+          if release["isPrerelease"]:
+              raise SystemExit("Stable releases cannot be marked as prereleases.")
+          expected_dmg = f"LocalFlow-{version}.dmg"
+          matches = [asset for asset in release["assets"] if asset["name"] == expected_dmg]
+          if len(matches) != 1 or int(matches[0].get("size", 0)) <= 0:
+              raise SystemExit(f"The release must contain one non-empty {expected_dmg} asset.")
+          PY
+          dmg_dir="$RUNNER_TEMP/macos-release-asset"
+          mkdir -p "$dmg_dir"
+          gh release download "$REQUESTED_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "LocalFlow-${version}.dmg" --dir "$dmg_dir"
+          actual_dmg_sha256="$(sha256sum "$dmg_dir/LocalFlow-${version}.dmg" | awk '{print $1}')"
+          if [[ "$actual_dmg_sha256" != "$EXPECTED_DMG_SHA256" ]]; then
+            echo "The macOS DMG attached to the release does not match this publish request." >&2
+            exit 1
+          fi
+          echo "tag=$REQUESTED_TAG" >>"$GITHUB_OUTPUT"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+  windows:
+    needs: validate
+    uses: ./.github/workflows/windows.yml
+    with:
+      release: true
+      version: ${{ needs.validate.outputs.version }}
+    secrets: inherit
+
+  linux:
+    needs: validate
+    uses: ./.github/workflows/linux.yml
+    with:
+      release: true
+      version: ${{ needs.validate.outputs.version }}
+    secrets: inherit
+
+  publish:
+    name: Verify and publish one three-platform release
+    needs: [validate, windows, linux]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      VERSION: ${{ needs.validate.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download immutable platform artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: LocalFlow-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Verify complete signed build output
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=(
+            "LocalFlow-${VERSION}-windows-x64-setup.exe"
+            "LocalFlow-${VERSION}-windows-x64-setup.exe.sha256"
+            "LocalFlow-${VERSION}-windows-x64-portable.zip"
+            "windows-update.json"
+            "LocalFlow-x86_64.AppImage"
+            "LocalFlow-x86_64.AppImage.zsync"
+            "localflow_${VERSION}_amd64.deb"
+            "LocalFlow-${VERSION}-Linux-Integration.tar.gz"
+            "SHA256SUMS"
+            "SHA256SUMS.asc"
+            "LocalFlow-Linux-signing-key.asc"
+          )
+          printf '%s\n' "${expected[@]}" | sort >"$RUNNER_TEMP/expected-platform-assets"
+          find artifacts -mindepth 1 -maxdepth 1 -type f -printf '%f\n' \
+            | sort >"$RUNNER_TEMP/actual-platform-assets"
+          if ! diff -u "$RUNNER_TEMP/expected-platform-assets" "$RUNNER_TEMP/actual-platform-assets"; then
+            echo "The build produced a missing or unexpected release artifact." >&2
+            exit 1
+          fi
+          while IFS= read -r name; do
+            test -s "artifacts/$name" || {
+              echo "Release artifact is empty: $name" >&2
+              exit 1
+            }
+          done <"$RUNNER_TEMP/expected-platform-assets"
+          test ! -e artifacts/UNSIGNED-NOT-FOR-DISTRIBUTION.txt
+          (
+            cd artifacts
+            sha256sum --check "LocalFlow-${VERSION}-windows-x64-setup.exe.sha256"
+            sha256sum --check SHA256SUMS
+            gpg --batch --import LocalFlow-Linux-signing-key.asc
+            gpg --batch --verify SHA256SUMS.asc SHA256SUMS
+          )
+          python3 - "$VERSION" "$RELEASE_TAG" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import sys
+
+          version, tag = sys.argv[1:]
+          installer = pathlib.Path(f"artifacts/LocalFlow-{version}-windows-x64-setup.exe")
+          manifest = json.loads(pathlib.Path("artifacts/windows-update.json").read_text(encoding="utf-8-sig"))
+          expected_url = (
+              "https://github.com/yonif8/LocalFlow/releases/download/"
+              f"{tag}/{installer.name}"
+          )
+          actual_hash = hashlib.sha256(installer.read_bytes()).hexdigest()
+          assert manifest["schemaVersion"] == 1
+          assert manifest["version"] == version
+          assert manifest["channel"] == "stable"
+          assert manifest["installer"]["url"] == expected_url
+          assert manifest["installer"]["sha256"].lower() == actual_hash
+          assert manifest["installer"]["authenticode"]["required"] is True
+          assert manifest["installer"]["authenticode"]["validAtPublication"] is True
+          assert manifest["installer"]["authenticode"]["signerCertificateSha256"]
+          PY
+
+      - name: Reconcile the draft without replacing mismatched assets
+        id: draft
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_all="$RUNNER_TEMP/expected-all-assets"
+          {
+            echo "LocalFlow-${VERSION}.dmg"
+            cat "$RUNNER_TEMP/expected-platform-assets"
+          } | sort >"$expected_all"
+
+          release_json="$RUNNER_TEMP/release-before-publish.json"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease,assets >"$release_json"
+          release_state="$(python3 - "$release_json" "$expected_all" "$RELEASE_TAG" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          release_path, expected_path, expected_tag = sys.argv[1:]
+          release = json.loads(pathlib.Path(release_path).read_text(encoding="utf-8"))
+          expected = set(pathlib.Path(expected_path).read_text(encoding="utf-8").splitlines())
+          actual = {asset["name"] for asset in release["assets"]}
+          if release["tagName"] != expected_tag or release["isPrerelease"]:
+              raise SystemExit("The existing release metadata does not match this stable tag.")
+          unexpected = sorted(actual - expected)
+          if unexpected:
+              raise SystemExit("Unexpected assets already exist on the release: " + ", ".join(unexpected))
+          if f"LocalFlow-{expected_tag[1:]}.dmg" not in actual:
+              raise SystemExit("The macOS DMG disappeared from the release.")
+          if not release["isDraft"] and actual != expected:
+              missing = sorted(expected - actual)
+              raise SystemExit("The public release is incomplete: " + ", ".join(missing))
+          print("public" if not release["isDraft"] else "draft")
+          PY
+          )"
+          echo "state=$release_state" >>"$GITHUB_OUTPUT"
+
+          if [[ "$release_state" == "public" ]]; then
+            echo "The release is already public and complete; leaving its immutable assets untouched."
+            exit 0
+          fi
+
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name' | sort >"$RUNNER_TEMP/remote-assets"
+          download_dir="$RUNNER_TEMP/existing-release-assets"
+          mkdir -p "$download_dir"
+          missing=()
+          while IFS= read -r name; do
+            if grep -Fxq "$name" "$RUNNER_TEMP/remote-assets"; then
+              gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+                --pattern "$name" --dir "$download_dir"
+              if ! cmp --silent "artifacts/$name" "$download_dir/$name"; then
+                echo "The draft already contains a different $name; refusing to overwrite it." >&2
+                exit 1
+              fi
+            else
+              missing+=("artifacts/$name")
+            fi
+          done <"$RUNNER_TEMP/expected-platform-assets"
+          if (( ${#missing[@]} > 0 )); then
+            gh release upload "$RELEASE_TAG" "${missing[@]}" --repo "$GITHUB_REPOSITORY"
+          fi
+
+          complete_json="$RUNNER_TEMP/complete-draft.json"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease,assets >"$complete_json"
+          python3 - "$complete_json" "$expected_all" "$RELEASE_TAG" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          release_path, expected_path, expected_tag = sys.argv[1:]
+          release = json.loads(pathlib.Path(release_path).read_text(encoding="utf-8"))
+          expected = set(pathlib.Path(expected_path).read_text(encoding="utf-8").splitlines())
+          assets = release["assets"]
+          actual = {asset["name"] for asset in assets}
+          if release["tagName"] != expected_tag or not release["isDraft"] or release["isPrerelease"]:
+              raise SystemExit("The release changed state before final draft verification.")
+          if actual != expected:
+              raise SystemExit("The draft is missing assets or contains unexpected assets.")
+          empty = sorted(asset["name"] for asset in assets if int(asset.get("size", 0)) <= 0)
+          if empty:
+              raise SystemExit("The draft contains empty assets: " + ", ".join(empty))
+          PY
+
+      - name: Publish the complete stable release
+        if: steps.draft.outputs.state == 'draft'
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --prerelease=false --latest
+
+      - name: Verify the public release is complete
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_json="$RUNNER_TEMP/release-after-publish.json"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,isDraft,isPrerelease,assets,url >"$release_json"
+          python3 - "$release_json" "$RUNNER_TEMP/expected-all-assets" "$RELEASE_TAG" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          release_path, expected_path, expected_tag = sys.argv[1:]
+          release = json.loads(pathlib.Path(release_path).read_text(encoding="utf-8"))
+          expected = set(pathlib.Path(expected_path).read_text(encoding="utf-8").splitlines())
+          assets = release["assets"]
+          actual = {asset["name"] for asset in assets}
+          if release["tagName"] != expected_tag or release["isDraft"] or release["isPrerelease"]:
+              raise SystemExit("The GitHub release is not a public stable release for the requested tag.")
+          if actual != expected:
+              raise SystemExit("The public release asset inventory is incomplete or unexpected.")
+          empty = sorted(asset["name"] for asset in assets if int(asset.get("size", 0)) <= 0)
+          if empty:
+              raise SystemExit("The public release contains empty assets: " + ", ".join(empty))
+          print(release["url"])
+          PY
