@@ -92,7 +92,7 @@ $manifest = [ordered]@{
             validAtPublication = $isSigned
             signerCertificateSha256 = $signerFingerprint
         }
-        silentArguments = "/CURRENTUSER /VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
+        silentArguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
     }
 }
 

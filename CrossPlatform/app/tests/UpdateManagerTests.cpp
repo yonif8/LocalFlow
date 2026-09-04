@@ -52,7 +52,7 @@ QByteArray validManifest() {
       "validAtPublication": false,
       "signerCertificateSha256": null
     },
-    "silentArguments": "/CURRENTUSER /VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
+    "silentArguments": "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
   }
 })json";
 }

@@ -1884,8 +1884,7 @@ struct UpdateManager::Implementation {
     // The manifest's silentArguments value is deliberately ignored. This
     // fixed invocation shows the installer's own UI after the explicit user
     // action.
-    if (!QProcess::startDetached(downloadedInstallerPath,
-                                 {QStringLiteral("/CURRENTUSER")})) {
+    if (!QProcess::startDetached(downloadedInstallerPath, QStringList{})) {
       fail(QStringLiteral("Windows could not open the verified installer."));
       return;
     }

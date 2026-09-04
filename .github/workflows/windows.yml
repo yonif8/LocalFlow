@@ -622,11 +622,17 @@ jobs:
           if (Test-Path -LiteralPath $smokeRoot) {
             Remove-Item -LiteralPath $smokeRoot -Recurse -Force
           }
+          $installLog = Join-Path $env:RUNNER_TEMP "LocalFlow-install-smoke.log"
           $install = Start-Process -FilePath $installer -Wait -PassThru -ArgumentList @(
-            "/CURRENTUSER", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART",
-            "/TASKS=startup", "/DIR=$smokeRoot"
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/TASKS=startup",
+            "/DIR=$smokeRoot", "/LOG=$installLog"
           )
-          if ($install.ExitCode -ne 0) { throw "Installer smoke test failed with exit code $($install.ExitCode)." }
+          if ($install.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $installLog -PathType Leaf) {
+              Get-Content -LiteralPath $installLog -Tail 200
+            }
+            throw "Installer smoke test failed with exit code $($install.ExitCode)."
+          }
           $installedApp = Join-Path $smokeRoot "bin\LocalFlow.exe"
           $installedWorker = Join-Path $smokeRoot "bin\polish\localflow-polish-worker.exe"
           $uninstaller = Join-Path $smokeRoot "unins000.exe"
