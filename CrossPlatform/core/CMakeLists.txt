@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 project(LocalFlowCore LANGUAGES CXX)
 
 add_library(localflow_core STATIC
+    src/audio_resampler.cpp
     src/learned_terminology.cpp
     src/replacements.cpp
     src/terminology.cpp
@@ -31,4 +32,3 @@ if(LOCALFLOW_BUILD_CORE_TESTS)
     enable_testing()
     add_subdirectory(../tests/core ${CMAKE_CURRENT_BINARY_DIR}/tests)
 endif()
-

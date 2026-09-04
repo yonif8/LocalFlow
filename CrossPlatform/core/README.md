@@ -11,6 +11,8 @@ Public headers live in `include/localflow/core`. Link the CMake target
 The first port covers:
 
 - shared pipeline contracts and value types;
+- streaming or batch mono PCM conversion from 8–96 kHz to the 16 kHz model
+  rate, with a band-limited filter and deterministic end-of-stream flushing;
 - personal-dictionary replacement and optional spoken punctuation;
 - Unicode-safe insertion chunking;
 - screen-term extraction, correction, and path reconstruction;
@@ -23,6 +25,13 @@ responsibility so each platform can use atomic writes and its native data path;
 `LearnedTerminologyBank::sanitized` is the required validation boundary after
 decoding and before encoding.
 
+`MonoResampler16k` is stateful. Pass each captured mono float buffer to
+`process`, then call `finish` exactly when the utterance ends. `finish` extends
+the filter at the final sample and emits the complete duration; dropping that
+call would drop the filter-delayed tail. Invalid (`NaN`/infinite) buffers throw
+before mutating stream state. For already-complete recordings,
+`resample_mono_to_16khz` runs the same streaming implementation in one call.
+
 Build and run the standalone tests with:
 
 ```sh
@@ -30,4 +39,3 @@ cmake -S CrossPlatform/tests/core -B build/core-tests
 cmake --build build/core-tests
 ctest --test-dir build/core-tests --output-on-failure
 ```
-

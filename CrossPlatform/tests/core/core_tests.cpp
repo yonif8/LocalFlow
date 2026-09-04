@@ -1,3 +1,4 @@
+#include "localflow/core/audio_resampler.hpp"
 #include "localflow/core/contracts.hpp"
 #include "localflow/core/learned_terminology.hpp"
 #include "localflow/core/replacements.hpp"
@@ -10,6 +11,7 @@
 #include <exception>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -64,6 +66,25 @@ std::string join(const std::vector<std::string>& values) {
     std::string result;
     for (const auto& value : values) {
         result += value;
+    }
+    return result;
+}
+
+void append_samples(std::vector<float>& destination, std::vector<float> source) {
+    destination.insert(destination.end(), source.begin(), source.end());
+}
+
+std::vector<float> test_signal(std::uint32_t rate, std::size_t count) {
+    constexpr double test_pi = 3.141592653589793238462643383279502884;
+    std::vector<float> result;
+    result.reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        const double time = static_cast<double>(index) / static_cast<double>(rate);
+        const double envelope = 0.55 + 0.45
+            * std::sin(2.0 * test_pi * 2.3 * time + 0.2);
+        result.push_back(static_cast<float>(envelope * (
+            0.55 * std::sin(2.0 * test_pi * 317.0 * time)
+            + 0.22 * std::sin(2.0 * test_pi * 2'071.0 * time + 0.4))));
     }
     return result;
 }
@@ -212,6 +233,169 @@ void chunker_tests(TestRunner& runner) {
             threw = true;
         }
         LF_CHECK(threw);
+    });
+}
+
+void resampler_tests(TestRunner& runner) {
+    runner.run("resampler preserves exact 16 kHz input", [] {
+        const auto input = test_signal(16'000, 713);
+        LF_CHECK(lf::resample_mono_to_16khz(input, 16'000) == input);
+
+        lf::MonoResampler16k stream(16'000);
+        std::vector<float> output;
+        append_samples(output, stream.process(input.data(), 17));
+        append_samples(output, stream.process(input.data() + 17, input.size() - 17));
+        append_samples(output, stream.finish());
+        LF_CHECK(output == input);
+        LF_CHECK(stream.output_samples_emitted() == input.size());
+    });
+
+    runner.run("streaming chunks are bit-identical to batch", [] {
+        const std::vector<std::uint32_t> rates = {
+            8'000, 8'001, 11'025, 16'000, 22'050, 44'100, 48'000, 96'000,
+        };
+        const std::vector<std::size_t> chunk_sizes = {1, 7, 64, 3, 257, 19, 511, 2};
+        for (const auto rate : rates) {
+            const auto input = test_signal(rate, static_cast<std::size_t>(rate / 18 + 37));
+            const auto batch = lf::resample_mono_to_16khz(input, rate);
+            lf::MonoResampler16k stream(rate);
+            std::vector<float> streamed;
+            std::size_t position = 0;
+            std::size_t chunk_index = 0;
+            while (position < input.size()) {
+                const auto count = std::min(
+                    chunk_sizes[chunk_index % chunk_sizes.size()],
+                    input.size() - position);
+                append_samples(streamed, stream.process(input.data() + position, count));
+                // Empty device callbacks must be harmless and deterministic.
+                append_samples(streamed, stream.process(nullptr, 0));
+                position += count;
+                ++chunk_index;
+            }
+            append_samples(streamed, stream.finish());
+            LF_CHECK(streamed == batch);
+            LF_CHECK(stream.input_samples_received() == input.size());
+            LF_CHECK(stream.output_samples_emitted() == batch.size());
+        }
+    });
+
+    runner.run("resampler flushes complete duration and both boundaries", [] {
+        for (const std::uint32_t rate : {8'000U, 11'025U, 44'100U, 48'000U, 96'000U}) {
+            const std::size_t count = static_cast<std::size_t>(rate / 100 + 3);
+            const std::vector<float> input(count, 0.375F);
+            const auto output = lf::resample_mono_to_16khz(input, rate);
+            const auto expected_count = (static_cast<std::uint64_t>(count) * 16'000U
+                + rate - 1U) / rate;
+            LF_CHECK(output.size() == expected_count);
+            LF_CHECK(!output.empty());
+            LF_CHECK(std::abs(output.front() - 0.375F) < 1.0e-5F);
+            LF_CHECK(std::abs(output.back() - 0.375F) < 1.0e-5F);
+            LF_CHECK(std::all_of(output.begin(), output.end(), [](float value) {
+                return std::isfinite(value) && std::abs(value - 0.375F) < 1.0e-5F;
+            }));
+        }
+    });
+
+    runner.run("downsampling rejects out-of-band aliases", [] {
+        constexpr std::uint32_t rate = 96'000;
+        constexpr std::size_t count = rate / 5;
+        constexpr double test_pi = 3.141592653589793238462643383279502884;
+        auto sine = [&](double frequency) {
+            std::vector<float> result;
+            result.reserve(count);
+            for (std::size_t index = 0; index < count; ++index) {
+                result.push_back(static_cast<float>(std::sin(
+                    2.0 * test_pi * frequency * static_cast<double>(index) / rate)));
+            }
+            return lf::resample_mono_to_16khz(result, rate);
+        };
+        const auto in_band = sine(2'000.0);
+        const auto out_of_band = sine(30'000.0);
+        auto interior_rms = [](const std::vector<float>& values) {
+            const std::size_t margin = 100;
+            double sum = 0.0;
+            for (std::size_t index = margin; index < values.size() - margin; ++index) {
+                sum += static_cast<double>(values[index]) * values[index];
+            }
+            return std::sqrt(sum / static_cast<double>(values.size() - 2 * margin));
+        };
+        LF_CHECK(interior_rms(in_band) > 0.65);
+        LF_CHECK(interior_rms(out_of_band) < 0.005);
+    });
+
+    runner.run("non-finite chunks are rejected without changing stream state", [] {
+        constexpr std::uint32_t rate = 44'100;
+        const auto all_input = test_signal(rate, 700);
+        const std::vector<float> prefix(all_input.begin(), all_input.begin() + 233);
+        const std::vector<float> suffix(all_input.begin() + 233, all_input.end());
+        const auto expected = lf::resample_mono_to_16khz(all_input, rate);
+
+        lf::MonoResampler16k stream(rate);
+        std::vector<float> actual;
+        append_samples(actual, stream.process(prefix));
+        const auto received_before = stream.input_samples_received();
+        bool rejected_nan = false;
+        try {
+            (void)stream.process(std::vector<float>{
+                0.1F, std::numeric_limits<float>::quiet_NaN(), 0.2F,
+            });
+        } catch (const std::invalid_argument&) {
+            rejected_nan = true;
+        }
+        LF_CHECK(rejected_nan);
+        LF_CHECK(stream.input_samples_received() == received_before);
+
+        bool rejected_infinity = false;
+        try {
+            (void)stream.process(std::vector<float>{
+                -std::numeric_limits<float>::infinity(),
+            });
+        } catch (const std::invalid_argument&) {
+            rejected_infinity = true;
+        }
+        LF_CHECK(rejected_infinity);
+        LF_CHECK(stream.input_samples_received() == received_before);
+
+        append_samples(actual, stream.process(suffix));
+        append_samples(actual, stream.finish());
+        LF_CHECK(actual == expected);
+    });
+
+    runner.run("finish is idempotent and reset starts a clean utterance", [] {
+        const auto input = test_signal(48'000, 503);
+        const auto expected = lf::resample_mono_to_16khz(input, 48'000);
+        lf::MonoResampler16k stream(48'000);
+        std::vector<float> first;
+        append_samples(first, stream.process(input));
+        append_samples(first, stream.finish());
+        LF_CHECK(first == expected);
+        LF_CHECK(stream.finish().empty());
+
+        bool rejected_after_finish = false;
+        try {
+            (void)stream.process(input);
+        } catch (const std::logic_error&) {
+            rejected_after_finish = true;
+        }
+        LF_CHECK(rejected_after_finish);
+        stream.reset();
+        std::vector<float> second;
+        append_samples(second, stream.process(input));
+        append_samples(second, stream.finish());
+        LF_CHECK(second == expected);
+    });
+
+    runner.run("resampler validates rates and empty input", [] {
+        LF_CHECK(lf::resample_mono_to_16khz({}, 44'100).empty());
+        for (const auto invalid_rate : {0U, 7'999U, 96'001U}) {
+            bool threw = false;
+            try {
+                lf::MonoResampler16k stream(invalid_rate);
+            } catch (const std::invalid_argument&) {
+                threw = true;
+            }
+            LF_CHECK(threw);
+        }
     });
 }
 
@@ -473,10 +657,10 @@ int main() {
     contracts_tests(runner);
     replacement_tests(runner);
     chunker_tests(runner);
+    resampler_tests(runner);
     extraction_tests(runner);
     correction_tests(runner);
     learned_bank_tests(runner);
     golden_regressions(runner);
     return runner.exit_code();
 }
-
