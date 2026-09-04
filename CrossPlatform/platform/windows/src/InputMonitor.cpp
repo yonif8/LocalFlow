@@ -71,6 +71,36 @@ detail::MouseInputDecision detail::classify_mouse_input(
     return decision;
 }
 
+detail::KeyboardCancelDecision detail::CancelKeyInputState::classify(
+    const InputMonitorOptions& options,
+    const WPARAM message,
+    const KBDLLHOOKSTRUCT& event,
+    const bool ptt_active) noexcept {
+    KeyboardCancelDecision decision;
+    constexpr ULONG_PTR injectedFlags =
+        LLKHF_INJECTED | LLKHF_LOWER_IL_INJECTED;
+    if (options.ignore_injected_events && (event.flags & injectedFlags) != 0) {
+        return decision;
+    }
+
+    const bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
+    const bool up = message == WM_KEYUP || message == WM_SYSKEYUP;
+    if ((!down && !up) || event.vkCode != options.cancel_virtual_key) {
+        return decision;
+    }
+
+    decision.matched = true;
+    if (down && (ptt_active || awaiting_release_)) {
+        decision.request_cancel = ptt_active;
+        decision.consume = true;
+        awaiting_release_ = true;
+    } else if (up && awaiting_release_) {
+        decision.consume = true;
+        awaiting_release_ = false;
+    }
+    return decision;
+}
+
 struct GlobalInputMonitor::DispatchState {
     explicit DispatchState(Callback value) : callback(std::move(value)) {}
 
@@ -98,6 +128,7 @@ std::error_code GlobalInputMonitor::start() {
     }
 
     state_.reset();
+    cancel_key_input_.reset();
     {
         std::lock_guard dispatch_lock(dispatch_->mutex);
         dispatch_->stopping = false;
@@ -238,7 +269,10 @@ void GlobalInputMonitor::hook_main(std::promise<std::error_code> ready) {
 LRESULT CALLBACK GlobalInputMonitor::keyboard_hook(
     const int code, const WPARAM message, const LPARAM data) noexcept {
     if (code >= HC_ACTION && g_monitor != nullptr) {
-        g_monitor->process_keyboard(message, *reinterpret_cast<const KBDLLHOOKSTRUCT*>(data));
+        if (g_monitor->process_keyboard(
+                message, *reinterpret_cast<const KBDLLHOOKSTRUCT*>(data))) {
+            return 1;
+        }
     }
     return CallNextHookEx(nullptr, code, message, data);
 }
@@ -254,30 +288,38 @@ LRESULT CALLBACK GlobalInputMonitor::mouse_hook(
     return CallNextHookEx(nullptr, code, message, data);
 }
 
-void GlobalInputMonitor::process_keyboard(
+bool GlobalInputMonitor::process_keyboard(
     const WPARAM message, const KBDLLHOOKSTRUCT& event) noexcept {
-    if (options_.ignore_injected_events && (event.flags & LLKHF_INJECTED) != 0) {
-        return;
+    constexpr ULONG_PTR injectedFlags =
+        LLKHF_INJECTED | LLKHF_LOWER_IL_INJECTED;
+    if (options_.ignore_injected_events && (event.flags & injectedFlags) != 0) {
+        return false;
     }
+
+    const auto cancellation = cancel_key_input_.classify(
+        options_, message, event, state_.is_active());
+    if (cancellation.matched) {
+        if (cancellation.request_cancel) {
+            process_cancel(CancelReason::escape_key);
+        }
+        return cancellation.consume;
+    }
+
     const bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
     const bool up = message == WM_KEYUP || message == WM_SYSKEYUP;
     if (!down && !up) {
-        return;
-    }
-
-    if (down && event.vkCode == options_.cancel_virtual_key) {
-        process_cancel(CancelReason::escape_key);
-        return;
+        return false;
     }
     const Trigger trigger = keyboard_trigger(event.vkCode);
     if (!configured(trigger)) {
-        return;
+        return false;
     }
     if (down) {
         process_down(trigger);
     } else {
         process_up(trigger);
     }
+    return false;
 }
 
 bool GlobalInputMonitor::process_mouse(

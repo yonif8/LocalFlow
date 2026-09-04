@@ -96,7 +96,6 @@ int main() {
     // A late physical release after cancellation is intentionally ignored.
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     backend->stop();
-    XCloseDisplay(display);
 
     {
         std::lock_guard<std::mutex> lock(mutex);
@@ -134,15 +133,15 @@ int main() {
             changed.notify_all();
         });
     if (!keyboardStarted.ok() || !mouseStarted.ok()) {
-        std::cerr << "Could not start simultaneous X11 keyboard/mouse listeners.\n";
+        std::cerr << "Could not start simultaneous X11 keyboard/mouse listeners: keyboard="
+                  << keyboardStarted.message << "; mouse=" << mouseStarted.message
+                  << '\n';
         return EXIT_FAILURE;
     }
 
-    display = XOpenDisplay(nullptr);
-    if (display == nullptr) {
-        std::cerr << "Could not reopen the Xvfb display.\n";
-        return EXIT_FAILURE;
-    }
+    // Keep the XTest client connected between phases. X servers reset after
+    // their final client disconnects, and reconnecting during that short reset
+    // window would make this integration test nondeterministic.
     const auto f9 = XKeysymToKeycode(display, XK_F9);
     if (f9 == 0) {
         std::cerr << "Xvfb keyboard map is missing F9.\n";

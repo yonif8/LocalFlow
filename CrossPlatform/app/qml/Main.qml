@@ -16,6 +16,9 @@ QtObject {
             root.settingsWindow.raise()
             root.settingsWindow.requestActivate()
         }
+        function onUpdatesRequested() {
+            root.settingsWindow.showPage(5)
+        }
         function onSettingsDismissed() { root.settingsWindow.hide() }
         function onOnboardingRequested() {
             root.onboardingWindow.show()

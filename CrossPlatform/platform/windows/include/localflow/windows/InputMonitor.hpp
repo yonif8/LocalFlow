@@ -76,6 +76,30 @@ struct MouseInputDecision {
     bool consume{false};
 };
 
+struct KeyboardCancelDecision {
+    bool matched{false};
+    bool request_cancel{false};
+    bool consume{false};
+};
+
+/// Tracks one physical cancellation gesture so Escape is intercepted only
+/// while it is cancelling an active PTT hold. The corresponding repeat/down
+/// and release events are consumed with that gesture; idle Escape remains a
+/// normal foreground-app key.
+class CancelKeyInputState final {
+public:
+    [[nodiscard]] KeyboardCancelDecision classify(
+        const InputMonitorOptions& options,
+        WPARAM message,
+        const KBDLLHOOKSTRUCT& event,
+        bool ptt_active) noexcept;
+
+    void reset() noexcept { awaiting_release_ = false; }
+
+private:
+    bool awaiting_release_{false};
+};
+
 /// Pure hook policy kept visible for native adapter tests. Injected events are
 /// ignored when requested, and only configured down/up messages may be
 /// consumed.
@@ -90,8 +114,9 @@ struct MouseInputDecision {
 ///
 /// Hooks live on a dedicated message-loop thread. User callbacks are delivered
 /// on a second thread, ensuring model/microphone startup can never stall the
-/// hook long enough for Windows to silently remove it. Keyboard input is only
-/// observed. A configured physical mouse trigger is consumed by default so it
+/// hook long enough for Windows to silently remove it. Configured keyboard PTT
+/// input is only observed; an Escape gesture that cancels an active hold is
+/// consumed. A configured physical mouse trigger is consumed by default so it
 /// cannot also activate a foreground-app action.
 class GlobalInputMonitor final {
 public:
@@ -115,7 +140,8 @@ private:
     static LRESULT CALLBACK mouse_hook(int code, WPARAM message, LPARAM data) noexcept;
 
     void hook_main(std::promise<std::error_code> ready);
-    void process_keyboard(WPARAM message, const KBDLLHOOKSTRUCT& event) noexcept;
+    [[nodiscard]] bool process_keyboard(
+        WPARAM message, const KBDLLHOOKSTRUCT& event) noexcept;
     [[nodiscard]] bool process_mouse(
         WPARAM message, const MSLLHOOKSTRUCT& event) noexcept;
     void process_down(Trigger trigger) noexcept;
@@ -132,6 +158,7 @@ private:
     std::atomic<DWORD> hook_thread_id_{0};
     std::mutex lifecycle_mutex_;
     PttStateMachine state_;
+    detail::CancelKeyInputState cancel_key_input_;
     HHOOK keyboard_hook_{nullptr};
     HHOOK mouse_hook_{nullptr};
 };

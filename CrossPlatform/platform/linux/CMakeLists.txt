@@ -134,6 +134,27 @@ if(LOCALFLOW_LINUX_BUILD_TESTS)
     target_link_libraries(localflow_linux_platform_tests PRIVATE localflow_linux_platform)
     add_test(NAME localflow_linux_platform_tests COMMAND localflow_linux_platform_tests)
 
+    if(X11_FOUND)
+        add_executable(localflow_linux_x11_shortcut_policy_tests
+            tests/X11ShortcutPolicyTests.cpp)
+        set_target_properties(localflow_linux_x11_shortcut_policy_tests PROPERTIES
+            CXX_STANDARD 17
+            CXX_STANDARD_REQUIRED YES
+            CXX_EXTENSIONS NO)
+        target_compile_options(localflow_linux_x11_shortcut_policy_tests PRIVATE
+            -Wall -Wextra -Wpedantic)
+        if(LOCALFLOW_STRICT_WARNINGS)
+            target_compile_options(localflow_linux_x11_shortcut_policy_tests PRIVATE
+                -Werror)
+        endif()
+        target_include_directories(localflow_linux_x11_shortcut_policy_tests PRIVATE
+            src ${X11_INCLUDE_DIR})
+        target_link_libraries(localflow_linux_x11_shortcut_policy_tests PRIVATE
+            localflow_linux_platform ${X11_LIBRARIES})
+        add_test(NAME localflow_linux_x11_shortcut_policy_tests
+            COMMAND localflow_linux_x11_shortcut_policy_tests)
+    endif()
+
     if(LOCALFLOW_LINUX_QT_CLIPBOARD)
         add_executable(localflow_linux_qt_clipboard_tests
             tests/QtClipboardIntegrationTests.cpp)

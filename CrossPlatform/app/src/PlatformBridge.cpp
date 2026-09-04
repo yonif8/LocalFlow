@@ -56,6 +56,7 @@ std::chrono::steady_clock::time_point bounded_event_time(
   return value;
 }
 
+#ifndef _WIN32
 std::chrono::steady_clock::time_point event_time_from_milliseconds(
     std::uint64_t milliseconds) {
   if (milliseconds == 0)
@@ -63,6 +64,7 @@ std::chrono::steady_clock::time_point event_time_from_milliseconds(
   return bounded_event_time(std::chrono::steady_clock::time_point(
       std::chrono::milliseconds(milliseconds)));
 }
+#endif
 
 void append_key_part(std::string &key, std::string_view value) {
   key += std::to_string(value.size());
@@ -78,7 +80,9 @@ struct PlatformBridge::Implementation {
 #ifndef _WIN32
   void refreshCapabilityReport() {
     lf_linux::SystemHostProbe probe;
-    capabilities = lf_linux::CapabilityDetector().detect(probe);
+    auto detected = lf_linux::CapabilityDetector().detect(probe);
+    std::lock_guard lock(mutex);
+    capabilities = std::move(detected);
   }
 #endif
 
@@ -92,6 +96,9 @@ struct PlatformBridge::Implementation {
   bool finishing = false;
   bool releasePending = false;
   bool pendingCancelled = false;
+  bool startingWarmAudio = false;
+  bool warmAudioStartupFailed = false;
+  std::string warmAudioStartupFailure;
   std::uint64_t nextSession = 1;
   std::uint64_t activeSession = 0;
   std::chrono::steady_clock::time_point pressedAt{};
@@ -134,7 +141,7 @@ struct PlatformBridge::Implementation {
     if (ownsApartment)
       CoUninitialize();
 
-    detectedCapabilities = {
+    std::vector<PlatformCapability> report = {
         {"shortcut", "Push-to-talk shortcut", "ready",
          "Windows global keyboard monitoring is available; the selected shortcut is verified when listening starts.",
          {}, true},
@@ -158,6 +165,8 @@ struct PlatformBridge::Implementation {
          "On-device UI Automation text and OCR are available for optional screen terminology context.",
          {}, false},
     };
+    std::lock_guard lock(mutex);
+    detectedCapabilities = std::move(report);
     requiredCapabilitiesReady = microphoneReady && automationReady;
   }
 
@@ -309,7 +318,14 @@ struct PlatformBridge::Implementation {
             std::uint64_t session = 0;
             {
               std::lock_guard lock(mutex);
-              if (!running || finishing)
+              if (!running) {
+                if (startingWarmAudio && !warmAudioStartupFailed) {
+                  warmAudioStartupFailed = true;
+                  warmAudioStartupFailure = failure.message();
+                }
+                return;
+              }
+              if (finishing)
                 return;
               session = activeSession;
               accepting = false;
@@ -521,6 +537,8 @@ struct PlatformBridge::Implementation {
                                          configuration.holdThresholdMs)
                      ? PlatformEventKind::cancelled
                      : PlatformEventKind::ended;
+    if (event.kind == PlatformEventKind::cancelled)
+      screenTermCaptures.reset();
     emitTerminal(std::move(event));
   }
 
@@ -564,16 +582,21 @@ struct PlatformBridge::Implementation {
   }
 
   std::string summary() const {
+    std::lock_guard lock(mutex);
     return requiredCapabilitiesReady
                ? "Windows is ready for local dictation, safe field insertion, and optional on-device screen terminology."
                : "Windows needs attention before LocalFlow can dictate safely. Review the blocked capability below.";
   }
 
   std::vector<PlatformCapability> capabilityItems() const {
+    std::lock_guard lock(mutex);
     return detectedCapabilities;
   }
 
-  bool ready() const noexcept { return requiredCapabilitiesReady; }
+  bool ready() const noexcept {
+    std::lock_guard lock(mutex);
+    return requiredCapabilitiesReady;
+  }
 
   std::vector<PlatformMicrophone> microphones() {
     std::vector<PlatformMicrophone> result;
@@ -597,6 +620,12 @@ struct PlatformBridge::Implementation {
   std::shared_ptr<lf_linux::TextInsertionCoordinator> inserter;
   std::map<std::uint64_t, Target> targets;
   std::string resolvedMicrophoneId;
+  lf_linux::SessionType activeSessionType{lf_linux::SessionType::unknown};
+
+  lf_linux::CapabilityReport capabilitySnapshot() const {
+    std::lock_guard lock(mutex);
+    return capabilities;
+  }
 
   static std::string linuxHotkey(const std::string &value) {
     if (value == "RightCtrl")
@@ -709,7 +738,14 @@ struct PlatformBridge::Implementation {
           std::uint64_t session = 0;
           {
             std::lock_guard lock(mutex);
-            if (!running || finishing)
+            if (!running) {
+              if (startingWarmAudio && !warmAudioStartupFailed) {
+                warmAudioStartupFailed = true;
+                warmAudioStartupFailure = failure.message;
+              }
+              return;
+            }
+            if (finishing)
               return;
             session = activeSession;
             accepting = false;
@@ -747,6 +783,7 @@ struct PlatformBridge::Implementation {
   void begin(std::chrono::steady_clock::time_point shortcutTime,
              std::string triggerId) {
     std::uint64_t session = 0;
+    lf_linux::SessionType sessionType = lf_linux::SessionType::unknown;
     {
       std::lock_guard lock(mutex);
       if (!running || !accepting || arming || recording || finishing)
@@ -759,6 +796,7 @@ struct PlatformBridge::Implementation {
       pendingCancelled = false;
       samples.clear();
       sampleRate = 16000;
+      sessionType = activeSessionType;
     }
 
     const auto audioStatus = configuration.keepMicrophoneWarm
@@ -830,7 +868,7 @@ struct PlatformBridge::Implementation {
     Target target = std::move(capturedTarget).value();
     std::optional<Target> screenTarget;
     if (configuration.screenTerminology && screen) {
-      if (capabilities.session.type == lf_linux::SessionType::x11) {
+      if (sessionType == lf_linux::SessionType::x11) {
         auto current = screen->activeApplication();
         if (current) {
           auto candidate = std::move(current).value();
@@ -929,6 +967,8 @@ struct PlatformBridge::Implementation {
                                          configuration.holdThresholdMs)
                      ? PlatformEventKind::cancelled
                      : PlatformEventKind::ended;
+    if (event.kind == PlatformEventKind::cancelled)
+      screenTermCaptures.reset();
     emitTerminal(std::move(event));
   }
 
@@ -963,10 +1003,11 @@ struct PlatformBridge::Implementation {
   }
 
   std::string summary() const {
+    const auto report = capabilitySnapshot();
     std::string result = std::string("Linux ") +
-                         lf_linux::toString(capabilities.session.type) + ": ";
+                         lf_linux::toString(report.session.type) + ": ";
     bool first = true;
-    for (const auto &capability : capabilities.capabilities) {
+    for (const auto &capability : report.capabilities) {
       if (!first)
         result += ", ";
       first = false;
@@ -992,10 +1033,10 @@ struct PlatformBridge::Implementation {
     return "blocked";
   }
 
-  PlatformCapability capabilityItem(lf_linux::Feature feature,
-                                    std::string id, std::string label,
-                                    bool required) const {
-    const auto *value = capabilities.find(feature);
+  static PlatformCapability capabilityItem(
+      const lf_linux::CapabilityReport &report, lf_linux::Feature feature,
+      std::string id, std::string label, bool required) {
+    const auto *value = report.find(feature);
     if (value == nullptr) {
       return {std::move(id), std::move(label), "blocked",
               "This capability could not be detected.",
@@ -1007,15 +1048,16 @@ struct PlatformBridge::Implementation {
   }
 
   std::vector<PlatformCapability> capabilityItems() const {
-    auto shortcut = capabilityItem(lf_linux::Feature::global_shortcut,
+    const auto report = capabilitySnapshot();
+    auto shortcut = capabilityItem(report, lf_linux::Feature::global_shortcut,
                                    "shortcut", "Push-to-talk shortcut", true);
-    auto microphone = capabilityItem(lf_linux::Feature::microphone_capture,
+    auto microphone = capabilityItem(report, lf_linux::Feature::microphone_capture,
                                      "microphone", "Microphone", true);
-    auto insertion = capabilityItem(lf_linux::Feature::accessibility_insertion,
+    auto insertion = capabilityItem(report, lf_linux::Feature::accessibility_insertion,
                                     "insertion", "Safe text insertion", true);
     const auto *context =
-        capabilities.find(lf_linux::Feature::accessibility_context);
-    const auto *paste = capabilities.find(lf_linux::Feature::clipboard_paste);
+        report.find(lf_linux::Feature::accessibility_context);
+    const auto *paste = report.find(lf_linux::Feature::clipboard_paste);
     if (context == nullptr || !context->usable()) {
       insertion.state = "blocked";
       insertion.detail = context == nullptr
@@ -1025,7 +1067,7 @@ struct PlatformBridge::Implementation {
           context == nullptr ? "Install at-spi2-core and enable desktop accessibility."
                              : context->remediation;
     } else if (const auto *direct =
-                   capabilities.find(lf_linux::Feature::accessibility_insertion);
+                   report.find(lf_linux::Feature::accessibility_insertion);
                direct == nullptr || !direct->usable()) {
       if (paste != nullptr && paste->usable()) {
         insertion.state = capabilityState(paste->availability);
@@ -1033,16 +1075,19 @@ struct PlatformBridge::Implementation {
         insertion.remediation = paste->remediation;
       }
     }
-    auto screen = capabilityItem(lf_linux::Feature::screen_capture, "screen",
+    auto screen = capabilityItem(report, lf_linux::Feature::screen_capture, "screen",
                                  "Screen-aware terminology", false);
     return {std::move(shortcut), std::move(microphone), std::move(insertion),
             std::move(screen)};
   }
 
-  bool ready() const noexcept { return capabilities.canShipCoreDictation(); }
+  bool ready() const noexcept {
+    std::lock_guard lock(mutex);
+    return capabilities.canShipCoreDictation();
+  }
 
   std::vector<PlatformMicrophone> microphones() {
-    auto backend = lf_linux::makeAudioCaptureBackend(capabilities);
+    auto backend = lf_linux::makeAudioCaptureBackend(capabilitySnapshot());
     auto devices = backend->devices();
     if (!devices)
       return {};
@@ -1084,6 +1129,9 @@ struct PlatformBridge::Implementation {
       std::lock_guard lock(mutex);
       callback = std::move(next);
       accepting = false;
+      startingWarmAudio = false;
+      warmAudioStartupFailed = false;
+      warmAudioStartupFailure.clear();
     }
 #ifdef _WIN32
     localflow::windows::InputMonitorOptions options;
@@ -1100,16 +1148,37 @@ struct PlatformBridge::Implementation {
     // press. Otherwise the first press after enabling listening can be lost or
     // race microphone startup.
     if (config.keepMicrophoneWarm) {
+      {
+        std::lock_guard lock(mutex);
+        startingWarmAudio = true;
+      }
       const auto audioStatus = startAudio();
-      if (audioStatus) {
+      bool asynchronousFailureOccurred = false;
+      std::string asynchronousFailure;
+      {
+        std::lock_guard lock(mutex);
+        startingWarmAudio = false;
+        asynchronousFailureOccurred = warmAudioStartupFailed;
+        warmAudioStartupFailed = false;
+        asynchronousFailure = std::move(warmAudioStartupFailure);
+        warmAudioStartupFailure.clear();
+        if (!audioStatus && !asynchronousFailureOccurred) {
+          running = true;
+          accepting = true;
+        }
+      }
+      if (audioStatus || asynchronousFailureOccurred) {
         if (error)
-          *error =
-              "Could not keep the microphone ready: " + audioStatus.message();
+          *error = "Could not keep the microphone ready: " +
+                   (audioStatus
+                        ? audioStatus.message()
+                        : asynchronousFailure.empty()
+                              ? "the microphone stopped during startup."
+                              : asynchronousFailure);
         stop();
         return false;
       }
-    }
-    {
+    } else {
       std::lock_guard lock(mutex);
       running = true;
       accepting = true;
@@ -1122,10 +1191,12 @@ struct PlatformBridge::Implementation {
       return false;
     }
 #else
-    shortcut = lf_linux::makeGlobalShortcutBackend(capabilities);
-    audio = lf_linux::makeAudioCaptureBackend(capabilities);
-    ducker = lf_linux::makeAudioDucker(capabilities);
-    focusedTargets = lf_linux::makeAtSpiFocusedTargetProvider(capabilities);
+    const auto capabilitiesForRun = capabilitySnapshot();
+    shortcut = lf_linux::makeGlobalShortcutBackend(capabilitiesForRun);
+    audio = lf_linux::makeAudioCaptureBackend(capabilitiesForRun);
+    ducker = lf_linux::makeAudioDucker(capabilitiesForRun);
+    focusedTargets =
+        lf_linux::makeAtSpiFocusedTargetProvider(capabilitiesForRun);
     resolvedMicrophoneId = config.microphoneId;
     if (!resolvedMicrophoneId.empty()) {
       const auto available = audio->devices();
@@ -1140,7 +1211,7 @@ struct PlatformBridge::Implementation {
         resolvedMicrophoneId.clear();
     }
     screen = std::shared_ptr<lf_linux::ScreenContextBackend>(
-        lf_linux::makeScreenContextBackend(capabilities.session.type, {},
+        lf_linux::makeScreenContextBackend(capabilitiesForRun.session.type, {},
                                            focusedTargets)
             .release());
     lf_linux::InsertionOptions insertionOptions;
@@ -1149,24 +1220,48 @@ struct PlatformBridge::Implementation {
     auto accessibility =
         config.insertionMethod == "paste"
             ? std::unique_ptr<lf_linux::AccessibilityTextInserter>{}
-            : lf_linux::makeAtSpiTextInserter(capabilities);
+            : lf_linux::makeAtSpiTextInserter(capabilitiesForRun);
     insertionOptions.allowClipboardFallback = config.insertionMethod != "type";
     inserter = std::make_shared<lf_linux::TextInsertionCoordinator>(
-        std::move(accessibility), lf_linux::makeSystemClipboard(capabilities),
-        lf_linux::makePasteInjector(capabilities), insertionOptions,
+        std::move(accessibility),
+        lf_linux::makeSystemClipboard(capabilitiesForRun),
+        lf_linux::makePasteInjector(capabilitiesForRun), insertionOptions,
         focusedTargets);
 
     if (config.keepMicrophoneWarm) {
+      {
+        std::lock_guard lock(mutex);
+        startingWarmAudio = true;
+      }
       const auto audioStatus = startAudio();
-      if (!audioStatus.ok()) {
+      bool asynchronousFailureOccurred = false;
+      std::string asynchronousFailure;
+      {
+        std::lock_guard lock(mutex);
+        startingWarmAudio = false;
+        asynchronousFailureOccurred = warmAudioStartupFailed;
+        warmAudioStartupFailed = false;
+        asynchronousFailure = std::move(warmAudioStartupFailure);
+        warmAudioStartupFailure.clear();
+        if (audioStatus.ok() && !asynchronousFailureOccurred) {
+          activeSessionType = capabilitiesForRun.session.type;
+          running = true;
+          accepting = true;
+        }
+      }
+      if (!audioStatus.ok() || asynchronousFailureOccurred) {
         if (error)
-          *error = audioStatus.message;
+          *error = !audioStatus.ok()
+                       ? audioStatus.message
+                       : asynchronousFailure.empty()
+                             ? "The microphone stopped during startup."
+                             : asynchronousFailure;
         stop();
         return false;
       }
-    }
-    {
+    } else {
       std::lock_guard lock(mutex);
+      activeSessionType = capabilitiesForRun.session.type;
       running = true;
       accepting = true;
     }
@@ -1185,8 +1280,9 @@ struct PlatformBridge::Implementation {
     }
     const auto configuredMouseButton = linuxMouseButton(config.mouseTrigger);
     if (configuredMouseButton != 0 &&
-        capabilities.session.type == lf_linux::SessionType::x11) {
-      mouseShortcut = lf_linux::makeGlobalShortcutBackend(capabilities);
+        capabilitiesForRun.session.type == lf_linux::SessionType::x11) {
+      mouseShortcut =
+          lf_linux::makeGlobalShortcutBackend(capabilitiesForRun);
       lf_linux::ShortcutSpec mouseSpecification;
       mouseSpecification.id = "push-to-talk-mouse";
       mouseSpecification.kind = lf_linux::ShortcutKind::mouse_button;
@@ -1213,6 +1309,12 @@ struct PlatformBridge::Implementation {
       std::lock_guard lock(mutex);
       running = false;
       accepting = false;
+      startingWarmAudio = false;
+      warmAudioStartupFailed = false;
+      warmAudioStartupFailure.clear();
+#ifndef _WIN32
+      activeSessionType = lf_linux::SessionType::unknown;
+#endif
     }
 #ifdef _WIN32
     if (shortcut)

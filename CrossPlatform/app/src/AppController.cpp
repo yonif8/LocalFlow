@@ -11,13 +11,14 @@
 #include <QDesktopServices>
 #include <QFutureWatcher>
 #include <QFuture>
+#include <QIcon>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMenu>
 #include <QMetaObject>
+#include <QSet>
 #include <QSettings>
-#include <QStyle>
 #include <QSysInfo>
 #include <QSystemTrayIcon>
 #include <QThreadPool>
@@ -52,14 +53,19 @@ using localflow::core::Utterance;
 PersonalDictionary loadDictionary(bool spokenPunctuation) {
     PersonalDictionary dictionary;
     dictionary.spoken_punctuation_enabled = spokenPunctuation;
+    QSet<QString> spokenForms;
     const QJsonDocument document = QJsonDocument::fromJson(
         QSettings().value(QStringLiteral("dictionary/rulesJson"), QByteArrayLiteral("[]")).toByteArray());
     for (const auto& entry : document.array()) {
         const QJsonObject rule = entry.toObject();
         const QString spoken = rule.value(QStringLiteral("spoken")).toString().trimmed();
         const QString written = rule.value(QStringLiteral("written")).toString();
-        if (!spoken.isEmpty() && spoken.size() <= 200 && written.size() <= 500) {
+        const QString folded = spoken.toCaseFolded();
+        if (!spoken.isEmpty() && spoken.size() <= 200 &&
+            !written.trimmed().isEmpty() && written.size() <= 500 &&
+            !spokenForms.contains(folded)) {
             dictionary.rules.push_back({spoken.toStdString(), written.toStdString()});
+            spokenForms.insert(folded);
         }
         if (dictionary.rules.size() >= 500) break;
     }
@@ -412,11 +418,15 @@ QString AppController::diagnosticsReport() const {
 
 void AppController::installTray() {
     if (tray_ != nullptr) return;
+    if (!QSystemTrayIcon::isSystemTrayAvailable()) return;
+
+    trayAvailable_ = true;
+    emit trayAvailableChanged();
     tray_ = new QSystemTrayIcon(this);
-    connect(tray_, &QSystemTrayIcon::messageClicked,
-            this, &AppController::showSettings);
-    const auto icon = QApplication::style()->standardIcon(QStyle::SP_MediaVolume);
-    tray_->setIcon(icon);
+    connect(tray_, &QSystemTrayIcon::messageClicked, this, [this] {
+        emit updatesRequested();
+    });
+    tray_->setIcon(QIcon(QStringLiteral(":/LocalFlow/assets/LocalFlow.png")));
     tray_->setToolTip(QStringLiteral("LocalFlow — fully local dictation"));
     trayMenu_ = new QMenu();
     tray_->setContextMenu(trayMenu_);
@@ -460,7 +470,7 @@ void AppController::rebuildTrayMenu() {
             ? QStringLiteral("Install Available Update…")
             : QStringLiteral("Download Available Update…"));
         connect(installUpdate, &QAction::triggered, this, [this] {
-            showSettings();
+            emit updatesRequested();
         });
     }
     auto* diagnosticsAction = trayMenu_->addAction(QStringLiteral("Diagnostics…"));
@@ -521,10 +531,15 @@ void AppController::startListening() {
     if (!started) {
         listening_ = false;
         state_ = QStringLiteral("error");
-        capabilitySummary_ = QString::fromStdString(error);
+        capabilitySummary_ = error.empty()
+            ? QStringLiteral("LocalFlow could not start listening. Review the system access checks below and try again.")
+            : QString::fromStdString(error);
+        recoveryTranscript_.clear();
+        attentionText_ = capabilitySummary_;
         emit listeningChanged();
         emit stateChanged();
         emit capabilitySummaryChanged();
+        emit attentionChanged();
         rebuildTrayMenu();
         showOnboarding();
         return;
@@ -533,6 +548,7 @@ void AppController::startListening() {
     setState(QStringLiteral("idle"));
     emit listeningChanged();
     rebuildTrayMenu();
+    if (!trayAvailable_) showSettings();
 
     runtime_->prewarmFuture = QtConcurrent::run(&runtime_->prewarmPool, [runtime = runtime_.get()] {
         (void)runtime->transcriber.prepare();
@@ -544,6 +560,8 @@ void AppController::stopListening() {
     if (!runtime_) return;
     ++listeningGeneration_;
     startAfterPipeline_ = false;
+    pendingListeningRestart_ = false;
+    pendingRestartMayRecoverError_ = false;
     runtime_->cancelPipeline.store(true);
     runtime_->platform.stop();
     pressContexts_.clear();
@@ -557,14 +575,43 @@ void AppController::stopListening() {
 }
 
 void AppController::restartListening() {
-    if (!listening_ || state_ != QStringLiteral("idle")) return;
+    if (!listening_ && state_ != QStringLiteral("error")) return;
+    pendingListeningRestart_ = true;
+    if (state_ == QStringLiteral("error")) {
+        // A settings edit made after an error is an explicit recovery attempt.
+        // A restart merely queued before the error must wait for dismissal so
+        // the failure is not hidden by immediately reopening native input.
+        pendingRestartMayRecoverError_ = true;
+    }
+    // Settings panels can update several native options in one UI action.
+    // Defer one event-loop turn so those signals collapse into one restart.
+    QMetaObject::invokeMethod(this, [this] {
+        (void)applyPendingListeningRestartIfSafe();
+    }, Qt::QueuedConnection);
+}
+
+bool AppController::applyPendingListeningRestartIfSafe() {
+    if (!pendingListeningRestart_ || activePressSession_.has_value() ||
+        runtime_->watcher != nullptr || state_ == QStringLiteral("recording") ||
+        state_ == QStringLiteral("processing") ||
+        (state_ == QStringLiteral("error") &&
+         !pendingRestartMayRecoverError_)) {
+        return false;
+    }
+    pendingListeningRestart_ = false;
+    pendingRestartMayRecoverError_ = false;
     stopListening();
     startListening();
+    return true;
 }
 
 void AppController::toggleListening() {
     if (listening_) stopListening();
-    else startListening();
+    else {
+        pendingListeningRestart_ = false;
+        pendingRestartMayRecoverError_ = false;
+        startListening();
+    }
 }
 
 void AppController::cancelDictation() {
@@ -609,8 +656,10 @@ void AppController::handlePlatformEvent(PlatformEvent event) {
         pressContexts_.erase(event.sessionId);
         if (activePressSession_ != event.sessionId) return;
         activePressSession_.reset();
-        runtime_->platform.setAcceptingInput(true);
         setState(QStringLiteral("idle"));
+        if (!applyPendingListeningRestartIfSafe()) {
+            runtime_->platform.setAcceptingInput(true);
+        }
         break;
     }
     case PlatformEventKind::rejected:
@@ -635,8 +684,10 @@ void AppController::handlePlatformEvent(PlatformEvent event) {
                 runtime_->watcher == nullptr &&
                 state_ != QStringLiteral("processing") &&
                 state_ != QStringLiteral("error")) {
-                runtime_->platform.setAcceptingInput(true);
                 setState(QStringLiteral("idle"));
+                if (!applyPendingListeningRestartIfSafe()) {
+                    runtime_->platform.setAcceptingInput(true);
+                }
             }
             return;
         }
@@ -645,8 +696,10 @@ void AppController::handlePlatformEvent(PlatformEvent event) {
         pressContexts_.erase(context);
         if (event.samples.size() < std::size_t(event.sampleRate * 0.15)) {
             runtime_->platform.discardSession(event.sessionId);
-            runtime_->platform.setAcceptingInput(true);
             setState(QStringLiteral("idle"));
+            if (!applyPendingListeningRestartIfSafe()) {
+                runtime_->platform.setAcceptingInput(true);
+            }
             return;
         }
         setState(QStringLiteral("processing"));
@@ -667,6 +720,7 @@ void AppController::handlePlatformEvent(PlatformEvent event) {
         emit capabilitySummaryChanged();
         emit attentionChanged();
         setState(QStringLiteral("error"));
+        (void)applyPendingListeningRestartIfSafe();
         break;
     }
 }
@@ -712,11 +766,15 @@ void AppController::runPipeline(PlatformEvent event, PressContext context) {
         if (generation != listeningGeneration_) {
             const bool shouldStart = startAfterPipeline_ && !listening_;
             startAfterPipeline_ = false;
-            if (shouldStart) startListening();
+            if (shouldStart) {
+                pendingListeningRestart_ = false;
+                pendingRestartMayRecoverError_ = false;
+                startListening();
+            } else {
+                (void)applyPendingListeningRestartIfSafe();
+            }
             return;
         }
-        if (listening_) runtime_->platform.setAcceptingInput(true);
-
         if (job.pipeline.inserted()) {
             if (settings_.historyLimit() > 0) {
                 auto values = history_.stringList();
@@ -725,10 +783,16 @@ void AppController::runPipeline(PlatformEvent event, PressContext context) {
                 history_.setStringList(values);
             }
             setState(QStringLiteral("idle"));
+            if (!applyPendingListeningRestartIfSafe() && listening_) {
+                runtime_->platform.setAcceptingInput(true);
+            }
             return;
         }
         if (job.pipeline.diagnostics.completion == PipelineCompletion::cancelled) {
             setState(QStringLiteral("idle"));
+            if (!applyPendingListeningRestartIfSafe() && listening_) {
+                runtime_->platform.setAcceptingInput(true);
+            }
             return;
         }
         if (!job.pipeline.output_text.empty()) {
@@ -821,8 +885,11 @@ void AppController::dismissAttention() {
     recoveryTranscript_.clear();
     emit attentionChanged();
     if (state_ == QStringLiteral("error")) {
-        if (listening_) runtime_->platform.setAcceptingInput(true);
         setState(QStringLiteral("idle"));
+        if (!applyPendingListeningRestartIfSafe() && listening_ &&
+            runtime_->watcher == nullptr && !activePressSession_.has_value()) {
+            runtime_->platform.setAcceptingInput(true);
+        }
     }
     rebuildTrayMenu();
 }
@@ -874,7 +941,7 @@ void AppController::refreshCapabilities() {
 void AppController::checkForUpdates() {
     silentUpdateCheckInFlight_ = false;
     updates_.checkForUpdates();
-    showSettings();
+    emit updatesRequested();
 }
 void AppController::copyDiagnostics() {
     QApplication::clipboard()->setText(diagnosticsReport());

@@ -14,9 +14,25 @@
 #include <X11/XKBlib.h>
 #include <X11/keysym.h>
 #undef Status
+#include "X11ShortcutPolicy.hpp"
 #endif
 
 namespace localflow::platform::linux::detail {
+
+#if defined(LOCALFLOW_LINUX_WITH_X11)
+bool isLegacyAutoRepeatPair(
+    const bool triggerHeld,
+    const KeyCode configuredKeycode,
+    const XEvent& release,
+    const XEvent& next) noexcept {
+    return triggerHeld && release.type == KeyRelease &&
+        release.xkey.keycode == configuredKeycode && next.type == KeyPress &&
+        next.xkey.keycode == release.xkey.keycode &&
+        next.xkey.time == release.xkey.time &&
+        next.xkey.window == release.xkey.window;
+}
+#endif
+
 namespace {
 
 #if defined(LOCALFLOW_LINUX_WITH_X11)
@@ -191,7 +207,6 @@ public:
 
         Bool detectable = False;
         (void)XkbSetDetectableAutoRepeat(display_, True, &detectable);
-        detectableAutoRepeat_ = detectable == True;
         running_ = true;
         eventThread_ = std::thread([this] { eventLoop(); });
         return Status::success();
@@ -232,6 +247,29 @@ public:
     }
 
 private:
+    bool discardAutoRepeatPair(
+        const XEvent& release, const PushToTalkShortcutState& state) noexcept {
+        if (!state.held() || shortcut_.kind != ShortcutKind::key ||
+            release.type != KeyRelease || release.xkey.keycode != keycode_ ||
+            XEventsQueued(display_, QueuedAfterReading) <= 0) {
+            return false;
+        }
+
+        // Legacy X11 autorepeat is encoded as a synthetic KeyRelease followed
+        // immediately by a KeyPress with the same keycode and timestamp. Peek
+        // and consume that exact pair before it reaches the hold state. The
+        // narrow identity check is also a safety net for servers that
+        // misreport XKB support: a deliberate release/repress cannot normally
+        // share a server timestamp and event window.
+        XEvent next{};
+        XPeekEvent(display_, &next);
+        if (!isLegacyAutoRepeatPair(state.held(), keycode_, release, next)) {
+            return false;
+        }
+        XNextEvent(display_, &next);
+        return true;
+    }
+
     bool setEscapeGrabbed(bool grab) noexcept {
         if (escapeKeycode_ == 0 ||
             (shortcut_.kind == ShortcutKind::key && escapeKeycode_ == keycode_) ||
@@ -274,6 +312,7 @@ private:
             while (running_ && XPending(display_) > 0) {
                 XEvent event{};
                 XNextEvent(display_, &event);
+                if (discardAutoRepeatPair(event, state)) continue;
 
                 std::optional<ShortcutEdge> edge;
                 if (shortcut_.kind == ShortcutKind::key &&
@@ -297,9 +336,6 @@ private:
 
                 if (!edge) continue;
 
-                // Detectable autorepeat normally prevents fake release events.
-                // The held-state guard at least suppresses duplicate presses on
-                // older X servers where that XKB mode is unavailable.
                 setEscapeGrabbed(*edge == ShortcutEdge::pressed);
                 try {
                     callback_({shortcut_.id, *edge, nowMs()});
@@ -341,7 +377,6 @@ private:
     KeyCode escapeKeycode_{0};
     unsigned int modifierMask_{0};
     bool escapeGrabbed_{false};
-    bool detectableAutoRepeat_{false};
     ShortcutSpec shortcut_;
     ShortcutCallback callback_;
     std::thread eventThread_;

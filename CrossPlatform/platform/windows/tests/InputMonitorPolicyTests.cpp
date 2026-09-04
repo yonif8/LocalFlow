@@ -8,6 +8,7 @@ namespace {
 
 using localflow::windows::InputMonitorOptions;
 using localflow::windows::MouseButton;
+using localflow::windows::detail::CancelKeyInputState;
 using localflow::windows::mouse_trigger;
 
 int failures = 0;
@@ -23,6 +24,13 @@ MSLLHOOKSTRUCT mouseEvent(const DWORD flags = 0, const DWORD data = 0) {
     MSLLHOOKSTRUCT event{};
     event.flags = flags;
     event.mouseData = data;
+    return event;
+}
+
+KBDLLHOOKSTRUCT keyboardEvent(const DWORD key, const DWORD flags = 0) {
+    KBDLLHOOKSTRUCT event{};
+    event.vkCode = key;
+    event.flags = flags;
     return event;
 }
 
@@ -74,11 +82,56 @@ void supportsExplicitObservationOnlyMode() {
     expect(!decision.consume, "observation-only trigger reaches foreground app");
 }
 
+void consumesOnlyAnActivePhysicalCancelGesture() {
+    InputMonitorOptions options;
+    CancelKeyInputState state;
+
+    const auto idleDown = state.classify(
+        options, WM_KEYDOWN, keyboardEvent(VK_ESCAPE), false);
+    expect(idleDown.matched, "idle Escape is recognized as the cancel key");
+    expect(!idleDown.request_cancel, "idle Escape does not request cancellation");
+    expect(!idleDown.consume, "idle Escape down reaches the foreground app");
+    const auto idleUp = state.classify(
+        options, WM_KEYUP, keyboardEvent(VK_ESCAPE), false);
+    expect(!idleUp.consume, "idle Escape up reaches the foreground app");
+
+    const auto activeDown = state.classify(
+        options, WM_KEYDOWN, keyboardEvent(VK_ESCAPE), true);
+    expect(activeDown.request_cancel, "active Escape requests PTT cancellation");
+    expect(activeDown.consume, "active cancel down is consumed");
+    const auto repeatedDown = state.classify(
+        options, WM_KEYDOWN, keyboardEvent(VK_ESCAPE), false);
+    expect(!repeatedDown.request_cancel, "cancel key repeat does not cancel twice");
+    expect(repeatedDown.consume, "cancel key repeat remains consumed");
+    const auto cancelUp = state.classify(
+        options, WM_KEYUP, keyboardEvent(VK_ESCAPE), false);
+    expect(!cancelUp.request_cancel, "cancel key release does not cancel twice");
+    expect(cancelUp.consume, "the active cancel gesture's release is consumed");
+
+    const auto laterIdleDown = state.classify(
+        options, WM_KEYDOWN, keyboardEvent(VK_ESCAPE), false);
+    expect(!laterIdleDown.consume, "a later idle Escape gesture is not consumed");
+
+    state.reset();
+    const auto injected = state.classify(
+        options, WM_KEYDOWN, keyboardEvent(VK_ESCAPE, LLKHF_INJECTED), true);
+    expect(!injected.matched, "injected Escape is ignored by default");
+    expect(!injected.request_cancel, "injected Escape cannot cancel PTT");
+    expect(!injected.consume, "injected Escape is never consumed");
+
+    const auto lowerIntegrityInjected = state.classify(
+        options, WM_KEYDOWN,
+        keyboardEvent(VK_ESCAPE, LLKHF_LOWER_IL_INJECTED), true);
+    expect(!lowerIntegrityInjected.matched,
+           "lower-integrity injected Escape is ignored by default");
+}
+
 }  // namespace
 
 int main() {
     consumesOnlyConfiguredPhysicalButtonEdges();
     supportsExplicitObservationOnlyMode();
+    consumesOnlyAnActivePhysicalCancelGesture();
     if (failures != 0) {
         std::cerr << failures << " assertion(s) failed\n";
         return EXIT_FAILURE;

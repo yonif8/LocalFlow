@@ -25,6 +25,7 @@ class AppController final : public QObject {
     Q_PROPERTY(QString state READ state NOTIFY stateChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY stateChanged)
     Q_PROPERTY(bool listening READ listening NOTIFY listeningChanged)
+    Q_PROPERTY(bool trayAvailable READ trayAvailable NOTIFY trayAvailableChanged)
     Q_PROPERTY(double inputLevel READ inputLevel NOTIFY inputLevelChanged)
     Q_PROPERTY(QString capabilitySummary READ capabilitySummary NOTIFY capabilitySummaryChanged)
     Q_PROPERTY(QVariantList capabilities READ capabilities NOTIFY capabilitySummaryChanged)
@@ -47,6 +48,7 @@ public:
     QString state() const { return state_; }
     QString statusText() const;
     bool listening() const { return listening_; }
+    bool trayAvailable() const { return trayAvailable_; }
     double inputLevel() const { return inputLevel_; }
     QString capabilitySummary() const { return capabilitySummary_; }
     QVariantList capabilities() const { return capabilities_; }
@@ -84,10 +86,12 @@ public:
 signals:
     void stateChanged();
     void listeningChanged();
+    void trayAvailableChanged();
     void inputLevelChanged();
     void capabilitySummaryChanged();
     void attentionChanged();
     void settingsRequested();
+    void updatesRequested();
     void diagnosticsRequested();
     void settingsDismissed();
     void onboardingRequested();
@@ -101,6 +105,7 @@ private:
     void startListening();
     void stopListening();
     void restartListening();
+    bool applyPendingListeningRestartIfSafe();
     void handlePlatformEvent(PlatformEvent event);
     void runPipeline(PlatformEvent event, PressContext context);
     PlatformConfiguration platformConfiguration() const;
@@ -113,6 +118,7 @@ private:
     UpdateManager updates_;
     QString state_ = QStringLiteral("idle");
     bool listening_ = false;
+    bool trayAvailable_ = false;
     double inputLevel_ = 0.0;
     QString capabilitySummary_ = QStringLiteral("Checking system capabilities…");
     QVariantList capabilities_;
@@ -128,6 +134,8 @@ private:
     std::optional<std::uint64_t> activePressSession_;
     std::uint64_t listeningGeneration_ = 0;
     bool startAfterPipeline_ = false;
+    bool pendingListeningRestart_ = false;
+    bool pendingRestartMayRecoverError_ = false;
     bool pendingLearnedTermsSync_ = false;
     std::uint64_t learnedTermsRevision_ = 0;
     bool silentUpdateCheckInFlight_ = false;
