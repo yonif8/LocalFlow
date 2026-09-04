@@ -168,7 +168,7 @@ EXPECTED_PUBLIC_KEY="$(tr -d '[:space:]' <"$PUBLIC_KEY")"
 file "$METALLIB" | grep -Fq "MetalLib executable" || { echo "error: packaged mlx.metallib is invalid" >&2; exit 1; }
 [[ -d "$MOUNTED_APP/Contents/Frameworks/Sparkle.framework" ]] || { echo "error: Sparkle.framework is missing" >&2; exit 1; }
 codesign --verify --deep --strict --verbose=2 "$MOUNTED_APP"
-codesign -dv --verbose=4 "$MOUNTED_APP" 2>&1 | grep -Fxq "Authority=LocalFlow Signing" || {
+codesign -dv --verbose=4 "$MOUNTED_APP" 2>&1 | grep -Fx "Authority=LocalFlow Signing" >/dev/null || {
     echo "error: macOS release is not signed with the stable LocalFlow identity" >&2
     exit 1
 }

@@ -303,7 +303,7 @@ jobs:
           otool -L "$executable" | grep -Fq "@rpath/Sparkle.framework/Versions/B/Sparkle"
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign -dv --verbose=4 "$app" 2>&1 \
-            | grep -Fxq "Authority=LocalFlow Signing"
+            | grep -Fx "Authority=LocalFlow Signing" >/dev/null
           hdiutil detach "$mount_dir" >/dev/null
           attached=0
 
