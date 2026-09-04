@@ -358,14 +358,33 @@ jobs:
             }
           }
 
+      - name: Probe staged inference runtimes
+        shell: pwsh
+        run: |
+          # This intentionally runs for ordinary PR builds as well as releases.
+          # Compilation cannot prove that Windows resolves backend exports from
+          # the correct DLL in the isolated polish-worker directory.
+          $app = Join-Path $env:STAGE_DIR "bin\LocalFlow.exe"
+          $polishWorker = Join-Path $env:STAGE_DIR "bin\polish\localflow-polish-worker.exe"
           $desktopProbe = Start-Process -FilePath $app -ArgumentList "--probe-runtime" `
             -WorkingDirectory (Split-Path -Parent $app) -Wait -PassThru
           if ($desktopProbe.ExitCode -ne 0) {
             throw "Packaged NeMo runtime probe failed with exit code $($desktopProbe.ExitCode)."
           }
-          $polishProbe = & $polishWorker --probe-runtime | ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or -not $polishProbe.ready) {
-            throw "Packaged llama runtime probe failed."
+
+          $polishOutput = @(& $polishWorker --probe-runtime)
+          $polishExitCode = $LASTEXITCODE
+          if ($polishOutput.Count -ne 1) {
+            throw "Packaged llama runtime probe returned $($polishOutput.Count) output lines instead of one JSON response."
+          }
+          try {
+            $polishProbe = $polishOutput[0] | ConvertFrom-Json -ErrorAction Stop
+          } catch {
+            throw "Packaged llama runtime probe returned invalid JSON: $($polishOutput[0])"
+          }
+          if ($polishExitCode -ne 0 -or -not $polishProbe.ready) {
+            $detail = if ($polishProbe.error) { ": $($polishProbe.error)" } else { "" }
+            throw "Packaged llama runtime probe failed with exit code $polishExitCode$detail"
           }
 
       - name: Sign application binaries
