@@ -1,19 +1,71 @@
-find_package(Qt6 6.4 REQUIRED COMPONENTS Core Concurrent Gui Qml Quick QuickControls2 Widgets Multimedia Network)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Core Concurrent Gui Qml Quick QuickControls2 Widgets Network)
 set(CMAKE_AUTOMOC ON)
 
 qt_add_executable(localflow_desktop
     src/main.cpp
     src/AppController.cpp
+    src/LearnedTermModel.cpp
     src/LocalOcr.cpp
     src/ModelManager.cpp
     src/ModelVerification.cpp
     src/PlatformBridge.cpp
     src/PolishWorkerClient.cpp
+    src/ReplacementModel.cpp
+    src/ScreenTermCaptureCoordinator.cpp
     src/SettingsModel.cpp
     src/SingleInstance.cpp
+    src/UpdateManager.cpp
+)
+
+qt_add_resources(localflow_desktop "localflow_assets"
+    PREFIX "/LocalFlow"
+    FILES
+        assets/LocalFlow.png
 )
 
 if(BUILD_TESTING)
+    add_executable(localflow_learned_term_model_tests
+        src/LearnedTermModel.cpp
+        src/LearnedTermModelTests.cpp)
+    set_target_properties(localflow_learned_term_model_tests PROPERTIES AUTOMOC ON)
+    target_compile_features(localflow_learned_term_model_tests PRIVATE cxx_std_17)
+    target_include_directories(localflow_learned_term_model_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(localflow_learned_term_model_tests PRIVATE Qt6::Core LocalFlow::Core)
+    add_test(NAME localflow_learned_term_model_tests COMMAND localflow_learned_term_model_tests)
+
+    add_executable(localflow_update_manager_tests
+        src/UpdateManager.cpp
+        tests/UpdateManagerTests.cpp)
+    set_target_properties(localflow_update_manager_tests PROPERTIES AUTOMOC ON)
+    target_compile_features(localflow_update_manager_tests PRIVATE cxx_std_17)
+    target_include_directories(localflow_update_manager_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(localflow_update_manager_tests PRIVATE
+        Qt6::Core Qt6::Concurrent Qt6::Gui Qt6::Network)
+    target_compile_definitions(localflow_update_manager_tests PRIVATE
+        LOCALFLOW_VERSION="1.2.3"
+        LOCALFLOW_WINDOWS_SIGNER_SHA256="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+    add_test(NAME localflow_update_manager_tests COMMAND localflow_update_manager_tests)
+
+    add_executable(localflow_screen_term_capture_tests
+        src/ScreenTermCaptureCoordinator.cpp
+        tests/ScreenTermCaptureCoordinatorTests.cpp)
+    target_compile_features(localflow_screen_term_capture_tests PRIVATE cxx_std_17)
+    target_include_directories(localflow_screen_term_capture_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    add_test(NAME localflow_screen_term_capture_tests
+        COMMAND localflow_screen_term_capture_tests)
+
+    add_executable(localflow_replacement_model_tests
+        src/ReplacementModel.cpp
+        tests/ReplacementModelTests.cpp)
+    set_target_properties(localflow_replacement_model_tests PROPERTIES AUTOMOC ON)
+    target_compile_features(localflow_replacement_model_tests PRIVATE cxx_std_17)
+    target_include_directories(localflow_replacement_model_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(localflow_replacement_model_tests PRIVATE Qt6::Core)
+    add_test(NAME localflow_replacement_model_tests
+        COMMAND localflow_replacement_model_tests)
+
     add_executable(localflow_model_verification_tests
         src/ModelVerification.cpp
         tests/ModelVerificationTests.cpp)
@@ -55,7 +107,7 @@ target_compile_features(localflow_desktop PRIVATE cxx_std_17)
 target_include_directories(localflow_desktop PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_libraries(localflow_desktop PRIVATE
     Qt6::Core Qt6::Concurrent Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2
-    Qt6::Widgets Qt6::Multimedia Qt6::Network
+    Qt6::Widgets Qt6::Network
     LocalFlow::Core LocalFlow::ASR LocalFlow::Platform
 )
 if(WIN32)
@@ -78,9 +130,25 @@ if(UNIX AND NOT APPLE)
             target_link_libraries(localflow_desktop PRIVATE PkgConfig::TESSERACT)
         endif()
     endif()
+    if(LOCALFLOW_REQUIRE_OCR AND NOT LOCALFLOW_HAVE_TESSERACT)
+        message(FATAL_ERROR
+            "LOCALFLOW_REQUIRE_OCR is enabled, but Tesseract was not found. "
+            "Install libtesseract-dev before producing a Linux release.")
+    endif()
 endif()
 target_compile_definitions(localflow_desktop PRIVATE
     LOCALFLOW_HAVE_TESSERACT=${LOCALFLOW_HAVE_TESSERACT})
+if(WIN32)
+    string(LENGTH "${LOCALFLOW_WINDOWS_SIGNER_SHA256}" LOCALFLOW_WINDOWS_SIGNER_LENGTH)
+    if(LOCALFLOW_REQUIRE_SIGNED_UPDATES AND
+       (NOT LOCALFLOW_WINDOWS_SIGNER_LENGTH EQUAL 64 OR
+        NOT LOCALFLOW_WINDOWS_SIGNER_SHA256 MATCHES "^[0-9A-Fa-f]+$"))
+        message(FATAL_ERROR
+            "Production Windows builds require LOCALFLOW_WINDOWS_SIGNER_SHA256 as 64 hexadecimal characters.")
+    endif()
+    target_compile_definitions(localflow_desktop PRIVATE
+        LOCALFLOW_WINDOWS_SIGNER_SHA256="${LOCALFLOW_WINDOWS_SIGNER_SHA256}")
+endif()
 
 set_target_properties(localflow_desktop PROPERTIES
     OUTPUT_NAME "LocalFlow"
@@ -88,6 +156,11 @@ set_target_properties(localflow_desktop PROPERTIES
     WIN32_EXECUTABLE TRUE
     MACOSX_BUNDLE FALSE
 )
+
+if(UNIX AND NOT APPLE)
+    set_target_properties(localflow_desktop PROPERTIES
+        INSTALL_RPATH "$ORIGIN/../lib/localflow/asr")
+endif()
 
 set_target_properties(localflow_polish_worker PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
