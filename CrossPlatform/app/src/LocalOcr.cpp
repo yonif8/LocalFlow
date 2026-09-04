@@ -1,5 +1,9 @@
 #include "LocalOcr.hpp"
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -35,6 +39,22 @@ std::string clean_line(std::string value) {
     while (!output.empty() && output.back() == ' ') output.pop_back();
     return output;
 }
+
+#if LOCALFLOW_HAVE_TESSERACT
+QByteArray tessdata_path() {
+    const QByteArray override = qgetenv("LOCALFLOW_TESSDATA_PREFIX");
+    if (!override.isEmpty()) {
+        return QDir::cleanPath(QString::fromLocal8Bit(override)).toLocal8Bit();
+    }
+
+    const QString bundled = QDir::cleanPath(
+        QCoreApplication::applicationDirPath() + QStringLiteral("/../share/localflow/tessdata"));
+    if (QFileInfo::exists(bundled + QStringLiteral("/eng.traineddata"))) {
+        return QFileInfo(bundled).absoluteFilePath().toLocal8Bit();
+    }
+    return {};
+}
+#endif
 }
 
 bool LocalOcr::available() noexcept {
@@ -93,7 +113,12 @@ LocalOcrResult LocalOcr::recognize(const LocalOcrFrame& frame) {
     }
 
     tesseract::TessBaseAPI engine;
-    if (engine.Init(nullptr, "eng", tesseract::OEM_LSTM_ONLY) != 0) {
+    const QByteArray tessdata = tessdata_path();
+    if (tessdata.isEmpty()) {
+        result.error = "The bundled English OCR data is missing";
+        return finish();
+    }
+    if (engine.Init(tessdata.constData(), "eng", tesseract::OEM_LSTM_ONLY) != 0) {
         result.error = "Could not initialize the bundled English OCR data";
         return finish();
     }

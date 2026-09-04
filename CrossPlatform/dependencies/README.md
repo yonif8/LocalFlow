@@ -60,12 +60,14 @@ LocalFlow therefore ships two loader namespaces:
 
 - `LocalFlow` / the ASR process receives only the files listed under
   `runtimeIsolation.desktopProcess` in `runtime-lock.json`, copied from
-  `NEMO_SPEECH_ROOT` into `bin/asr`. In particular, do **not** copy NeMo's
-  llama, NMT, or TTS libraries.
+  `NEMO_SPEECH_ROOT` into its private packaged runtime location. Windows DLLs
+  sit beside `LocalFlow.exe` because imports resolve before `main()`; Linux
+  uses `usr/lib/localflow/asr` with an origin-relative RPATH. In particular,
+  do **not** copy NeMo's llama, NMT, or TTS libraries.
 - `localflow-polish-worker` is a persistent child process. Its private
-  `bin/polish` directory receives only the llama/ggml CPU files listed under
-  `runtimeIsolation.polishWorkerProcess`. On Windows it also receives the
-  locked `libomp.dll`; on Linux OpenMP comes from the distribution runtime.
+  worker directory receives only the llama/ggml CPU files listed under
+  `runtimeIsolation.polishWorkerProcess`. On Windows that is `bin/polish`
+  and includes locked `libomp.dll`; on Linux it is `usr/libexec/localflow`.
 - The app and worker exchange bounded requests over IPC. The desktop process
   never loads a library from `LLAMA_ROOT`, and the worker never loads a
   library from `NEMO_SPEECH_ROOT`.
@@ -74,6 +76,18 @@ Those manifest arrays are the packaging allowlists. Do not replace them with
 `*.dll`, `*.so*`, or a recursive copy: that would silently reintroduce the ABI
 collision this layout exists to prevent. Preserve the complete license and
 third-party-notice trees alongside distributed artifacts.
+
+Both release lanes invoke `stage-runtime.py` after CMake installation. The
+shared stager reads these exact allowlists, refuses non-bootstrap roots and
+missing files, keeps the two ggml families separated, and installs both
+license trees.
+
+On Linux, NeMo's bundled compiler-runtime libraries are deliberately excluded.
+Its `libstdc++.so.6` only exports symbols through GLIBCXX 3.4.28 and would
+override the newer runtime required by Qt 6.8. LocalFlow uses the distribution's
+normal `libstdc++6`, `libgcc-s1`, `libgomp1`, and `libatomic1`; package metadata
+declares those dependencies. Only NeMo and its ABI-matched ggml libraries live
+in the private ASR directory.
 
 ## Updating a runtime
 

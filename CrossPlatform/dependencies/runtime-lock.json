@@ -110,16 +110,18 @@
     "reason": "NeMo-Speech.cpp v0.1.0 carries ggml 0.12.0; llama.cpp b10794 carries ggml 0.22.0. Their identical library names have incompatible ABIs.",
     "desktopProcess": {
       "root": "NEMO_SPEECH_ROOT",
-      "linuxDestination": "bin/asr",
+      "linuxDestination": "usr/lib/localflow/asr",
       "linuxFiles": [
         "libnemo_speech_asr_c.so", "libnemo_speech_asr_c.so.1",
         "libnemo_speech_asr.so",
         "libggml.so", "libggml.so.0", "libggml.so.0.12.0",
         "libggml-base.so", "libggml-base.so.0", "libggml-base.so.0.12.0",
-        "libggml-cpu.so", "libggml-cpu.so.0", "libggml-cpu.so.0.12.0",
+        "libggml-cpu.so", "libggml-cpu.so.0", "libggml-cpu.so.0.12.0"
+      ],
+      "linuxSystemToolchainLibraries": [
         "libatomic.so.1", "libgcc_s.so.1", "libgomp.so.1", "libstdc++.so.6"
       ],
-      "windowsDestination": "bin/asr",
+      "windowsDestination": "bin",
       "windowsFiles": [
         "nemo_speech_asr_c.dll", "nemo_speech_asr.dll",
         "ggml.dll", "ggml-base.dll", "ggml-cpu.dll",
@@ -133,7 +135,7 @@
     },
     "polishWorkerProcess": {
       "root": "LLAMA_ROOT",
-      "linuxDestination": "bin/polish",
+      "linuxDestination": "usr/libexec/localflow",
       "linuxCommonFiles": [
         "libllama.so", "libllama.so.0", "libllama.so.0.3.0",
         "libggml.so", "libggml.so.0", "libggml.so.0.22.0",

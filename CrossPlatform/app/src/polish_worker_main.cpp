@@ -16,6 +16,14 @@ void send(const QJsonObject& value) {
 int main(int argc, char* argv[]) {
     QCoreApplication application(argc, argv);
     const QStringList arguments = application.arguments();
+    if (arguments.contains(QStringLiteral("--probe-runtime"))) {
+        const auto probe = localflow::inference::S1MiniPolisher::probeRuntime();
+        send({
+            {QStringLiteral("ready"), bool(probe)},
+            {QStringLiteral("error"), probe ? QString() : QString::fromStdString(probe.error())},
+        });
+        return probe ? 0 : 4;
+    }
     const int modelIndex = arguments.indexOf(QStringLiteral("--model"));
     if (modelIndex < 0 || modelIndex + 1 >= arguments.size()) {
         send({{QStringLiteral("ready"), false}, {QStringLiteral("error"), QStringLiteral("Missing --model")}});
@@ -23,7 +31,7 @@ int main(int argc, char* argv[]) {
     }
 
     localflow::inference::S1MiniPolisher model({
-        arguments.at(modelIndex + 1).toStdString(),
+        arguments.at(modelIndex + 1).toUtf8().toStdString(),
         4096,
         0,
     });
@@ -51,7 +59,7 @@ int main(int argc, char* argv[]) {
         request.transcript = text.toStdString();
         request.tone = object.value(QStringLiteral("tone")).toString() == QStringLiteral("casual")
             ? localflow::inference::Tone::Casual : localflow::inference::Tone::Neutral;
-        request.timeout = std::chrono::milliseconds(qBound(250, object.value(QStringLiteral("timeoutMs")).toInt(1500), 10000));
+        request.timeout = std::chrono::milliseconds(qBound(250, object.value(QStringLiteral("timeoutMs")).toInt(3000), 10000));
         request.maxOutputTokens = std::size_t(qBound(16, object.value(QStringLiteral("maxOutputTokens")).toInt(1024), 2048));
         const auto result = model.polish(request);
         if (!result) {

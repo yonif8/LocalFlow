@@ -26,6 +26,7 @@ public:
     Result<PolishResponse> polish(const PolishRequest& request) override;
 
     static bool runtimeLinked() noexcept;
+    static Result<bool> probeRuntime();
     static std::string promptFor(const PolishRequest& request);
 
 private:

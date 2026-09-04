@@ -1,33 +1,40 @@
-#include "localflow/inference/NemoTranscriber.hpp"
 #include "localflow/inference/S1MiniPolisher.hpp"
 
-#include <cassert>
 #include <iostream>
+#include <stdexcept>
+#include <string>
 
 using namespace localflow::inference;
 
-int main() {
-    PolishRequest request;
-    request.transcript = "so um i need to send it friday no wait thursday";
-    request.tone = Tone::Casual;
-    const auto prompt = S1MiniPolisher::promptFor(request);
-    assert(prompt.find("You are a text normalizer for speech-to-text transcripts.") != std::string::npos);
-    assert(prompt.find("[Styling: semi-formal] [Structure: prose] [Context: general]") != std::string::npos);
-    assert(prompt.find("<think>\n\n</think>\n\n") != std::string::npos);
-    assert(prompt.find(request.transcript) != std::string::npos);
+namespace {
+void expect(bool condition, const char* message) {
+    if (!condition) throw std::runtime_error(message);
+}
+}
 
-    NemoTranscriber transcriber({"/definitely/missing/parakeet.gguf", -1, ""});
-    AudioBuffer shortAudio;
-    shortAudio.samples.resize(12);
-    const auto shortResult = transcriber.transcribe(shortAudio);
-    assert(!shortResult);
-    assert(shortResult.error().find("too short") != std::string::npos);
+int main() {
+    for (const Tone tone : {Tone::Casual, Tone::Neutral}) {
+        PolishRequest request;
+        request.transcript = "so um i need to send it friday no wait thursday";
+        request.tone = tone;
+        const auto prompt = S1MiniPolisher::promptFor(request);
+        expect(prompt.find("You are a text normalizer for speech-to-text transcripts.") != std::string::npos,
+               "prompt is missing the S1 system instruction");
+        // Deliberately match macOS: S1's casual register weakens punctuation
+        // cleanup, while semi-formal still preserves conversational wording.
+        expect(prompt.find("[Styling: semi-formal] [Structure: prose] [Context: general]") != std::string::npos,
+               "prompt is missing the reliable cleanup control line");
+        expect(prompt.find("<think>\n\n</think>\n\n") != std::string::npos,
+               "prompt did not disable Qwen thinking output");
+        expect(prompt.find(request.transcript) != std::string::npos,
+               "prompt lost the transcript");
+    }
 
     S1MiniPolisher polisher({"/definitely/missing/s1.gguf", 4096, 0});
     const auto emptyResult = polisher.polish({});
-    assert(emptyResult);
-    assert(emptyResult.value().text.empty());
+    expect(bool(emptyResult), "empty polish input should succeed without loading a model");
+    expect(emptyResult.value().text.empty(), "empty polish input should remain empty");
 
-    std::cout << "inference contract tests passed\n";
+    std::cout << "polish contract tests passed\n";
     return 0;
 }

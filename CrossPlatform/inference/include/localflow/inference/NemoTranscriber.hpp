@@ -26,6 +26,7 @@ public:
     Result<Transcription> transcribe(const AudioBuffer& audio) override;
 
     static bool runtimeLinked() noexcept;
+    static Result<bool> probeRuntime();
 
 private:
     struct Implementation;

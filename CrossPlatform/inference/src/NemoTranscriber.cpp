@@ -41,6 +41,17 @@ bool NemoTranscriber::runtimeLinked() noexcept {
 #endif
 }
 
+Result<bool> NemoTranscriber::probeRuntime() {
+#if LOCALFLOW_HAVE_NEMO_SPEECH
+    // Touch the C API as well as the import table; packaged smoke tests use
+    // this before any model has been downloaded.
+    (void)nemo_speech_asr_last_error();
+    return Result<bool>::success(true);
+#else
+    return Result<bool>::failure("NeMo-Speech.cpp was not available when LocalFlow was built");
+#endif
+}
+
 Result<bool> NemoTranscriber::prepare() {
 #if !LOCALFLOW_HAVE_NEMO_SPEECH
     return Result<bool>::failure("NeMo-Speech.cpp was not linked into this build");
@@ -52,7 +63,9 @@ Result<bool> NemoTranscriber::prepare() {
     if (implementation_->configuration.modelPath.empty()) {
         return Result<bool>::failure("Parakeet model path is empty");
     }
-    if (!std::filesystem::is_regular_file(implementation_->configuration.modelPath)) {
+    std::error_code modelError;
+    if (!std::filesystem::is_regular_file(
+            std::filesystem::u8path(implementation_->configuration.modelPath), modelError)) {
         return Result<bool>::failure("Parakeet model is missing: " + implementation_->configuration.modelPath);
     }
 

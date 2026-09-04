@@ -6,6 +6,11 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QProcessEnvironment>
+
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#endif
 
 PolishWorkerClient::PolishWorkerClient(QString modelPath)
     : modelPath_(std::move(modelPath)) {}
@@ -32,7 +37,26 @@ bool PolishWorkerClient::ensureStarted(QString* error) {
     process_ = std::make_unique<QProcess>();
     process_->setProcessChannelMode(QProcess::SeparateChannels);
     pendingOutput_.clear();
-    process_->setProgram(workerPath());
+    recentStderr_.clear();
+#ifdef Q_OS_WIN
+    process_->setCreateProcessArgumentsModifier([](QProcess::CreateProcessArguments* arguments) {
+        arguments->flags |= CREATE_NO_WINDOW;
+    });
+#endif
+    const QString program = workerPath();
+    process_->setProgram(program);
+#ifndef Q_OS_WIN
+    // AppImage launchers prepend their shared Qt directory to LD_LIBRARY_PATH.
+    // Put the private worker directory first so its llama/ggml ABI can never
+    // resolve to the incompatible NeMo ggml used by the desktop process.
+    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    const QString workerDirectory = QFileInfo(program).absolutePath();
+    const QString inherited = environment.value(QStringLiteral("LD_LIBRARY_PATH"));
+    environment.insert(QStringLiteral("LD_LIBRARY_PATH"), inherited.isEmpty()
+        ? workerDirectory
+        : workerDirectory + QLatin1Char(':') + inherited);
+    process_->setProcessEnvironment(environment);
+#endif
     process_->setArguments({QStringLiteral("--model"), modelPath_});
     process_->start();
     if (!process_->waitForStarted(5000)) {
@@ -57,10 +81,20 @@ bool PolishWorkerClient::ensureStarted(QString* error) {
     return true;
 }
 
+void PolishWorkerClient::drainStderr() {
+    if (!process_) return;
+    recentStderr_ += process_->readAllStandardError();
+    constexpr qsizetype kDiagnosticLimit = 16 * 1024;
+    if (recentStderr_.size() > kDiagnosticLimit) {
+        recentStderr_.remove(0, recentStderr_.size() - kDiagnosticLimit);
+    }
+}
+
 bool PolishWorkerClient::readLine(QByteArray* line, int timeoutMs, QString* error) {
     QElapsedTimer timer;
     timer.start();
     for (;;) {
+        drainStderr();
         const qsizetype newline = pendingOutput_.indexOf('\n');
         if (newline >= 0) {
             *line = pendingOutput_.left(newline);
@@ -74,10 +108,11 @@ bool PolishWorkerClient::readLine(QByteArray* line, int timeoutMs, QString* erro
         }
         if (remaining == 0 || !process_->waitForReadyRead(remaining)) {
             pendingOutput_ += process_->readAllStandardOutput();
+            drainStderr();
             const qsizetype finalNewline = pendingOutput_.indexOf('\n');
             if (finalNewline >= 0) continue;
             if (error) {
-                const QString stderrText = QString::fromUtf8(process_->readAllStandardError()).trimmed();
+                const QString stderrText = QString::fromUtf8(recentStderr_).trimmed();
                 *error = process_->state() == QProcess::NotRunning
                     ? QStringLiteral("Polish worker stopped unexpectedly%1")
                         .arg(stderrText.isEmpty() ? QString() : QStringLiteral(": ") + stderrText.left(500))
@@ -86,6 +121,7 @@ bool PolishWorkerClient::readLine(QByteArray* line, int timeoutMs, QString* erro
             return false;
         }
         pendingOutput_ += process_->readAllStandardOutput();
+        drainStderr();
         if (pendingOutput_.size() > 1024 * 1024) {
             if (error) *error = QStringLiteral("Polish worker response exceeded the safety limit");
             return false;
@@ -148,5 +184,6 @@ void PolishWorkerClient::stop() {
         }
     }
     pendingOutput_.clear();
+    recentStderr_.clear();
     process_.reset();
 }

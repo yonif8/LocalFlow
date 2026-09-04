@@ -31,10 +31,12 @@ public:
 private:
     bool ensureStarted(QString* error);
     bool readLine(QByteArray* line, int timeoutMs, QString* error);
+    void drainStderr();
     static QString workerPath();
 
     QString modelPath_;
     std::unique_ptr<QProcess> process_;
     QByteArray pendingOutput_;
+    QByteArray recentStderr_;
     quint64 nextId_ = 1;
 };
