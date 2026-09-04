@@ -36,8 +36,10 @@ its mutable `continuous` runtime.
 
 ## Production signing policy
 
-A `vX.Y.Z` Git tag switches `.github/workflows/linux.yml` to release mode. It
-fails before packaging unless all of the following are true:
+The supported production path is `.github/workflows/release.yml` at an exact
+stable `vX.Y.Z` tag. It invokes the Linux lane against that same tagged commit
+with release mode enabled. The build fails before packaging unless all of the
+following are true:
 
 1. Real NeMo-Speech.cpp and llama.cpp runtime archives were downloaded,
    checksum verified, and linked. A build containing inference stubs cannot be
@@ -56,28 +58,22 @@ Required GitHub Actions secrets:
 | `LINUX_GPG_PASSPHRASE` | Passphrase for that key |
 | `LINUX_GPG_FINGERPRINT` | Full 40-hex-character fingerprint, never a short key ID |
 
-Required repository variables:
+Inference runtime locations are not repository variables. The bootstrap reads
+the immutable URL, byte size, SHA-256, architecture, and expected archive layout
+from the checked-in
+[`runtime-lock.json`](../../dependencies/runtime-lock.json). A runtime change
+therefore requires a reviewed lockfile/bootstrap change; never replace an
+archive at an existing URL or override its digest in CI.
 
-| Variable | Purpose |
-| --- | --- |
-| `LINUX_NEMO_RUNTIME_URL` | HTTPS tar archive containing `include/` and `lib/` |
-| `LINUX_NEMO_RUNTIME_SHA256` | Exact archive SHA-256 |
-| `LINUX_LLAMA_RUNTIME_URL` | HTTPS tar archive containing `include/` and `lib/` |
-| `LINUX_LLAMA_RUNTIME_SHA256` | Exact archive SHA-256 |
-
-Each archive must contain one top-level directory; CI strips that directory.
-The runtime archive versions and checksums should be changed in a reviewed pull
-request, never silently replaced at the existing URL.
-
-Pull requests, normal branch pushes, and manual workflow runs never receive or
-use the release key. They intentionally create unsigned smoke artifacts.
+Pull requests and normal branch pushes never receive or use the release key.
+Non-release workflow runs intentionally create unsigned smoke artifacts.
 
 ## AppImage update handoff
 
 The AppImage embeds this update-information contract:
 
 ```text
-gh-releases-zsync|yonif8|LocalFlow|latest|LocalFlow-*-x86_64.AppImage.zsync
+gh-releases-zsync|yonif8|LocalFlow|latest|LocalFlow-x86_64.AppImage.zsync
 ```
 
 The publishing step must upload these exact assets to the same public GitHub
@@ -95,13 +91,11 @@ compare the workflow artifact digest, and ensure the signing fingerprint is the
 fingerprint pinned in the application updater. The release must remain draft if
 any Linux artifact is missing. Never substitute an unsigned smoke build.
 
-The desktop app's **Check for Updates** integration should use the embedded
-zsync information, verify the AppImage signature against the pinned public-key
-fingerprint, download beside the running image, and atomically replace it only
-after verification. A `.deb` install should hand off to the configured package
-manager or download the signed `.deb`; it must not overwrite files managed by
-`dpkg`. Packaging provides the signed artifacts and update hooks, while that UI
-wiring remains application-layer work.
+The desktop app's **Check for Updates** action runs a checksum-pinned
+`appimageupdatetool` locally against the embedded zsync information. It reports
+whether an update exists, verifies the signed update, and replaces the installed
+AppImage in place only after a successful delta download. A `.deb` install opens
+the Releases page instead; it never overwrites files managed by `dpkg`.
 
 ## Desktop integration and uninstall
 

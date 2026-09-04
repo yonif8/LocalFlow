@@ -26,8 +26,10 @@ repository under [`CrossPlatform/`](CrossPlatform/README.md).
   status for all three operating systems
 
 Every product feature must either be implemented on macOS, Windows, and Linux,
-or carry an explicit documented platform exception. Cross-platform behavior is
-verified by shared golden fixtures and CI builds on all three operating systems.
+or carry an explicit, tested platform exception. Native CI lanes build and test
+all three editions; behavior fixtures are shared when the implementations can
+consume the same format. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the parity
+and release rules.
 
 ## Install
 
@@ -92,8 +94,12 @@ also check manually via the menu bar icon → **Check for Updates…**.
 ```sh
 Scripts/setup-signing.sh   # once: stable self-signed identity (TCC persistence)
 Scripts/make-app.sh        # dev build -> dist/LocalFlow.app
-Scripts/release.sh 1.2.3   # versioned build + DMG + signed appcast
+Scripts/release.sh 1.3.0   # versioned macOS build + DMG + signed appcast
+Scripts/publish.sh 1.3.0   # verify and publish one signed three-platform release
 ```
+
+`publish.sh` keeps the GitHub release in draft state unless the macOS, Windows,
+and Linux assets for the same stable version are all present and verified.
 
 ## Credits
 

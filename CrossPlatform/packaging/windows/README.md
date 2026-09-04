@@ -1,4 +1,4 @@
-# Windows packaging and release handoff
+# Windows packaging and updates
 
 The Windows workflow builds `CrossPlatform/CMakeLists.txt` with Visual Studio
 2022 for x64, runs CTest, installs `localflow_desktop` as `LocalFlow.exe`, runs
@@ -18,11 +18,12 @@ history are intentionally retained when uninstalling.
 Pull requests and ordinary `main` builds are smoke builds. They may be unsigned
 and are uploaded only as short-lived GitHub Actions artifacts.
 
-Every `vX.Y.Z` tag is a production build. Manual production builds require the
-workflow's `release` input plus an explicit version. Production builds fail
-closed if any signing input is absent, the PFX has the wrong thumbprint or EKU,
-the certificate is expired, timestamping fails, or Authenticode verification
-does not return `Valid`.
+The supported production path is `.github/workflows/release.yml` at an exact
+stable `vX.Y.Z` tag. It invokes the Windows lane against that same tagged commit
+with release mode enabled. Production builds fail closed if the ref or version
+does not match, any signing input is absent, the PFX has the wrong fingerprint
+or EKU, the certificate is expired, timestamping fails, or Authenticode
+verification does not return `Valid`.
 
 All third-party and GitHub actions in the workflow are pinned to immutable
 commit SHAs. Qt itself is pinned to 6.8.3. `windows-2022` supplies Visual Studio,
@@ -58,10 +59,10 @@ limit repository administration to trusted maintainers. Never add signing
 values to repository variables, workflow files, build logs, artifacts, or the
 update manifest.
 
-## Release and update-feed handoff
+## Unified release and update feed
 
-The workflow deliberately has read-only repository permissions. After a tagged
-build passes, the release publisher takes these immutable workflow artifacts:
+The Windows lane has read-only repository permissions and produces these
+immutable workflow artifacts:
 
 ```text
 LocalFlow-X.Y.Z-windows-x64-setup.exe
@@ -70,10 +71,13 @@ LocalFlow-X.Y.Z-windows-x64-portable.zip
 windows-update.json
 ```
 
-Upload all four, without renaming them, to the matching GitHub release tag
-`vX.Y.Z`. The manifest already contains that tag's immutable installer URL,
-size, SHA-256, Authenticode status, and signer thumbprint. Once the GitHub
-release is public, the stable client feed is:
+The top-level release workflow combines them with the signed macOS and Linux
+artifacts, rejects missing, extra, empty, renamed, or mismatched assets, and
+publishes one release only after the complete set verifies. It never replaces
+a different asset already attached to the draft. The manifest contains the
+tag's immutable installer URL, size, SHA-256, Authenticode status, and signer
+fingerprint. Once that three-platform release is public, the stable client feed
+is:
 
 ```text
 https://github.com/yonif8/LocalFlow/releases/latest/download/windows-update.json
@@ -86,9 +90,11 @@ inside the downloaded manifest is diagnostic metadata—not a trust root. During
 certificate rotation, ship an app version trusting both old and new certificates
 before signing later installers only with the new certificate.
 
-The release publisher should make the GitHub release public only after a clean
-Windows VM install/update/uninstall smoke test. If any artifact changes, rerun
-the workflow; never edit the manifest or checksum by hand.
+CI installs and uninstalls the generated installer on its Windows runner. A
+stable release additionally requires the clean-machine, real-app certification
+in `docs/FEATURE_PARITY.md`; CI installation alone is not sufficient. If any
+artifact changes, rerun the workflow; never edit the manifest or checksum by
+hand.
 
 ## Local packaging
 

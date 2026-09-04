@@ -4,7 +4,18 @@ This is the release contract for LocalFlow on macOS, Windows, and Linux. A row
 may be marked complete only after its behavior and failure modes are exercised
 on the platform's certification matrix.
 
-Status: **Released**, **In progress**, **Not started**, or **Platform exception**.
+Current product status: macOS is released. Windows and Linux are engineering
+betas and are not yet public downloads.
+
+Status meanings:
+
+- **Released** — implemented, covered by regression tests, certified on real
+  supported systems, and available as a signed public stable download.
+- **In progress** — some implementation or automated coverage exists, but one
+  or more release requirements remain. A passing build alone is not completion.
+- **Not started** — no usable implementation exists on that platform.
+- **Platform exception** — the OS cannot provide the identical mechanism; a
+  documented, user-visible substitute and its failure path have been tested.
 
 | Feature | Behavioral contract | macOS | Windows | Linux |
 |---|---|---:|---:|---:|
@@ -45,11 +56,28 @@ tested fallback that gets the user's transcript back safely.
 
 ## Release gates
 
-- Shared transcript, dictionary and terminology regression suites pass.
-- No duplicate insertion or clipboard loss across the certified application matrix.
-- Push-to-talk does not clip the first syllable and release never waits for OCR.
-- Cancellation, errors and forced shutdown restore audio state.
-- The app works with networking blocked after models are installed.
-- Installers and update metadata are signed; a clean machine can install,
-  onboard, update and uninstall successfully.
-- Unsupported capabilities are diagnosed in-app rather than silently ignored.
+- The exact tagged commit passes the macOS, Windows, and Linux native CI lanes
+  with production model runtimes; stubs and unsigned smoke artifacts are barred.
+- Shared or equivalent transcript, dictionary, terminology, polish, and
+  insertion regressions pass in every implementation.
+- Real supported systems complete press/release/cancel, microphone selection,
+  local OCR, ASR, polish, safe insertion, clipboard restoration, audio
+  restoration, history, settings, launch-at-login, and diagnostics checks.
+- No first- or final-syllable clipping, duplicate insertion, cross-field paste,
+  clipboard loss, or stale audio restoration occurs across the certified app
+  matrix. Release never waits for OCR.
+- With models installed and networking blocked, dictation and polish still work
+  and no captured audio, screen pixels, recognized text, or learned terms leave
+  the device.
+- A clean supported machine can install, onboard, and uninstall while
+  preserving user data. A signed predecessor-to-candidate update is proven; a
+  platform's first public release uses an equivalent signed update rehearsal.
+  Secure/elevated targets and unavailable desktop capabilities fail safely with
+  an in-app explanation.
+- The public release contains the same stable version for all three operating
+  systems. macOS update metadata, Windows Authenticode/update metadata, and
+  Linux artifacts/checksums are signed and verified before publication.
+
+Do not change a Windows or Linux cell to **Released** merely because its source,
+CI build, or installer exists. Record the certification evidence in the release
+pull request, then update the row as part of the same tagged release change.

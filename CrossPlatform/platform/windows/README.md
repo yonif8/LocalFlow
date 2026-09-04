@@ -39,15 +39,10 @@ cmake --build build/windows --config Release
 ctest --test-dir build/windows -C Release --output-on-failure
 ```
 
-From the eventual repository-level CMake project:
-
-```cmake
-add_subdirectory(CrossPlatform/platform/windows)
-target_link_libraries(localflow_windows_app PRIVATE
-    LocalFlow::Core
-    LocalFlow::Windows
-)
-```
+The repository-level `CrossPlatform/CMakeLists.txt` already composes this
+adapter with the shared Qt application and inference layers. Use the full-app
+commands in the [cross-platform build guide](../../README.md) when validating a
+distributable build.
 
 On non-Windows hosts, this subproject intentionally builds only
 `LocalFlow::WindowsState` and its tests.
@@ -91,8 +86,8 @@ Call it on the pipeline worker, not the UI thread.
 
 - Most laptop **Fn** keys are handled in keyboard firmware and never reach
   Win32. The shipped default should therefore be user-selectable (F8 and side
-  mouse button are sensible choices; F8 is the adapter default), with the onboarding screen listening
-  for the user's preferred key.
+  mouse button are sensible choices; F8 is the adapter default), with the
+  onboarding screen listening for the user's preferred key.
 - Windows prevents a normal-integrity process from injecting into an elevated
   process (UIPI), and secure-desktop/password fields intentionally reject
   capture or insertion. The UI should report this clearly; LocalFlow should not
@@ -111,10 +106,14 @@ Call it on the pipeline worker, not the UI thread.
   should end the active hold safely, restore ducking, and offer the newly
   selected default microphone on the next hold.
 
-## Remaining Windows application work
+## Remaining Windows release work
 
-This adapter is intentionally below the product shell. A distributable build
-still needs the Qt tray/HUD/settings/onboarding UI, Windows Graphics Capture,
-Parakeet/S1 runtime integration, persistent settings and
-logs, signed MSIX/installer packaging, and a signed update channel. Those belong
-to the shared app/release layers rather than this OS adapter.
+The shared Qt shell, Parakeet/S1 runtimes, persistence, Inno Setup packaging,
+and signed update client now live in the app and release layers. Their presence
+does not make this adapter a public download. Windows remains an engineering
+beta until the exact-field APIs are exercised through the complete app, Windows
+Graphics Capture covers GPU-rendered surfaces, the real application matrix
+passes on clean Windows 11 systems, and the installer/update path is signed with
+the pinned Authenticode identity. Track those gates in
+the [feature parity contract](../../../docs/FEATURE_PARITY.md); do not
+distribute CI smoke artifacts.

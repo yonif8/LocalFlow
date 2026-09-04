@@ -1,0 +1,43 @@
+name: Cross-platform feature request
+description: Propose a LocalFlow behavior for macOS, Windows, and Linux.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: What should become easier or more reliable for the user?
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Shared behavior
+      description: Describe the observable result, including cancellation and failure behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: platforms
+    attributes:
+      label: Platform plan
+      description: Explain the macOS, Windows, Linux X11, and Linux Wayland mechanisms. Identify any unavoidable OS substitution.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation
+      description: Which shared fixtures, native tests, real apps, and supported systems should prove parity?
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Product constraints
+      options:
+        - label: The proposal keeps speech, screen context, and learned terminology local.
+          required: true
+        - label: Unsupported capabilities have a visible, data-safe fallback.
+          required: true

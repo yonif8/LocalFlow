@@ -5,8 +5,10 @@ one portable product core and use small native adapters where the operating
 systems differ.
 
 The released macOS implementation remains in the repository root. It is the
-current behavioral reference while the portable core is established; shared
-golden fixtures prevent the implementations from drifting.
+current behavioral reference while the portable core is established. Product
+changes belong in this one repository and must update all affected editions in
+the same pull request unless `docs/FEATURE_PARITY.md` records a tested operating
+system substitution.
 
 ## Architecture
 
@@ -44,8 +46,8 @@ capability and regression matrices pass.
 4. Clipboard and audio state are restored conditionally and safely.
 5. Unsupported OS capabilities are shown to the user instead of failing
    silently.
-6. A feature is not release-ready until `docs/FEATURE_PARITY.md` and its shared
-   regression fixtures cover macOS, Windows, and Linux.
+6. A feature is not release-ready until `docs/FEATURE_PARITY.md` and shared or
+   equivalent native regressions cover macOS, Windows, and Linux.
 
 ## Model stack
 
@@ -57,8 +59,34 @@ capability and regression matrices pass.
 Models are downloaded on first run with progress, resumption, size limits, and
 cryptographic checksum verification.
 
-## Build status
+## Development status
 
-The cross-platform application is under active development and is not yet a
-public download. Build and test commands will be added here as each target
-becomes runnable. Do not distribute development artifacts to end users.
+The Windows and Linux application, platform adapters, model runtimes, tests,
+installers, and update clients are buildable in their native CI lanes. That is
+an engineering beta, not a public release: the complete certification matrix
+and production-signing gates have not passed. GitHub Actions smoke artifacts
+may be unsigned and must not be sent to end users.
+
+The checked-in CMake presets provide the shortest local build path. Bootstrap
+the checksum-pinned runtimes first, then build and test from `CrossPlatform/`:
+
+```sh
+# Linux
+dependencies/bootstrap-linux.sh
+source dependencies/.runtime/linux-$(uname -m)/activate.sh
+cmake --preset linux-release -DLOCALFLOW_REQUIRE_INFERENCE=ON -DLOCALFLOW_REQUIRE_OCR=ON
+cmake --build --preset linux-release
+ctest --preset linux-release
+```
+
+```powershell
+# Windows x64
+.\dependencies\bootstrap-windows.ps1
+cmake --preset windows-release -DLOCALFLOW_REQUIRE_INFERENCE=ON
+cmake --build --preset windows-release
+ctest --preset windows-release
+```
+
+The native workflows are the canonical dependency and packaging recipes. See
+[`CONTRIBUTING.md`](../CONTRIBUTING.md) for feature-parity rules and
+[`docs/FEATURE_PARITY.md`](../docs/FEATURE_PARITY.md) for the release gates.
