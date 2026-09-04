@@ -133,6 +133,11 @@ if [[ -z "${QMAKE:-}" || ! -x "$QMAKE" ]]; then
     echo "QMAKE must name the exact Qt deployment used for packaging." >&2
     exit 1
 fi
+qt_library_dir="$("$QMAKE" -query QT_INSTALL_LIBS)"
+if [[ "$qt_library_dir" != /* || ! -d "$qt_library_dir" ]]; then
+    echo "QMAKE returned an invalid Qt library directory: $qt_library_dir" >&2
+    exit 1
+fi
 qt_license_source="${repository_root}/CrossPlatform/packaging/licenses/Qt"
 for required_license in \
     SOURCE.md MANIFEST.sha256 \
@@ -177,7 +182,8 @@ for required_notice in \
     fi
 done
 
-"${tools_dir}/linuxdeploy-x86_64.AppImage" \
+env LD_LIBRARY_PATH="${qt_library_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+    "${tools_dir}/linuxdeploy-x86_64.AppImage" \
     --appdir "$app_dir" \
     --executable "${app_dir}/usr/bin/LocalFlow" \
     --executable "${app_dir}/usr/libexec/localflow/localflow-polish-worker" \
