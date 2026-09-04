@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=LocalFlow
+GenericName=Voice Dictation
+Comment=Private, fully local push-to-talk dictation
+Exec=localflow
+TryExec=localflow
+Icon=com.localflow.LocalFlow
+Terminal=false
+Categories=Utility;Accessibility;
+Keywords=dictation;speech;voice;transcription;accessibility;
+StartupNotify=false
+StartupWMClass=LocalFlow
+X-GNOME-UsesNotifications=true

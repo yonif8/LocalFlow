@@ -39,6 +39,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if [[ $RELEASE -eq 1 && ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+    echo "error: release versions must have the exact stable form X.Y.Z (got: $VERSION)" >&2
+    exit 2
+fi
+
 # CFBundleVersion must be numeric and monotonically increasing across
 # releases for Sparkle's version comparison. Derive it from the numeric part
 # of the version: major*10000 + minor*100 + patch (so 1.0.0 -> 10000,
@@ -73,11 +78,22 @@ fi
 
 echo "==> Building $APP_NAME $VERSION (release, build $BUILD_NUM)…"
 # ${arr[@]+...} guard: bash 3.2's set -u treats an empty array as unbound.
-swift build -c release --product LocalFlowApp ${SCRATCH_ARGS[@]+"${SCRATCH_ARGS[@]}"}
+BUILD_ARGS=(-c release --product LocalFlowApp)
+if [[ $RELEASE -eq 1 ]]; then
+    BUILD_ARGS+=(--disable-automatic-resolution)
+fi
+swift build "${BUILD_ARGS[@]}" ${SCRATCH_ARGS[@]+"${SCRATCH_ARGS[@]}"}
 # (not `swift build --show-bin-path` — that trips an Xcode license check on
 # machines with a dormant Xcode.app; the layout below is stable for SwiftPM)
 BIN_PATH="$SCRATCH_DIR/release/LocalFlowApp"
 [[ -x "$BIN_PATH" ]] || { echo "error: built binary not found at $BIN_PATH" >&2; exit 1; }
+if [[ $RELEASE -eq 1 ]]; then
+    BUILT_ARCHS="$(lipo -archs "$BIN_PATH")"
+    [[ "$BUILT_ARCHS" == "arm64" ]] || {
+        echo "error: release app must be a thin arm64 binary (got: $BUILT_ARCHS)" >&2
+        exit 1
+    }
+fi
 
 echo "==> Assembling ${APP}…"
 rm -rf "$APP"
@@ -85,20 +101,30 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Framewor
 
 cp "$BIN_PATH" "$APP/Contents/MacOS/$APP_NAME"
 
-# MLX (the S1-mini polish backend) loads its GPU kernels from an mlx.metallib
-# colocated with the executable. Copy it into Contents/MacOS when the build
-# produced one; warn otherwise (the mock-transcriber app runs fine without it,
-# the real engine will not).
-METALLIB=""
-for candidate in \
-    "$SCRATCH_DIR/release/mlx.metallib" \
-    "$REPO_ROOT/.build/release/mlx.metallib" \
-    "$REPO_ROOT/.build/debug/mlx.metallib"; do
-    if [[ -f "$candidate" ]]; then METALLIB="$candidate"; break; fi
-done
-if [[ -n "$METALLIB" ]]; then
+# MLX (the S1-mini polish backend) loads GPU kernels from mlx.metallib next to
+# the executable. SwiftPM does not always build it as part of an executable
+# product, so generate it from the exact pinned checkout in this scratch tree.
+# Never borrow one from another/debug build: that can package stale kernels.
+METALLIB="$SCRATCH_DIR/release/mlx.metallib"
+if [[ ! -f "$METALLIB" && $RELEASE -eq 1 ]]; then
+    METALLIB_BUILDER="$SCRATCH_DIR/checkouts/Granite-MLX/Scripts/build_mlx_metallib.sh"
+    [[ -x "$METALLIB_BUILDER" ]] || {
+        echo "error: pinned MLX Metal-library builder not found at $METALLIB_BUILDER" >&2
+        exit 1
+    }
+    echo "==> Building the pinned MLX Metal library…"
+    GRANITE_BUILD_DIR="$SCRATCH_DIR" "$METALLIB_BUILDER" release
+fi
+if [[ -f "$METALLIB" ]]; then
+    if [[ $RELEASE -eq 1 ]] && ! file "$METALLIB" | grep -Fq "MetalLib executable"; then
+        echo "error: release Metal library is not a valid MetalLib executable: $METALLIB" >&2
+        exit 1
+    fi
     cp "$METALLIB" "$APP/Contents/MacOS/mlx.metallib"
-    echo "==> Copied mlx.metallib ($(basename "$(dirname "$METALLIB")") build)"
+    echo "==> Copied mlx.metallib from this release scratch tree"
+elif [[ $RELEASE -eq 1 ]]; then
+    echo "error: release build did not produce $METALLIB" >&2
+    exit 1
 else
     echo "==> WARNING: mlx.metallib not found next to the built products;"
     echo "    the S1-mini polish model will not run from this bundle."
@@ -107,10 +133,19 @@ fi
 # ---- Sparkle.framework ----------------------------------------------------
 # SwiftPM stages the (binary-artifact) framework next to the built products.
 SPARKLE_SRC=""
-for candidate in \
-    "$SCRATCH_DIR/release/Sparkle.framework" \
-    "$REPO_ROOT/.build/release/Sparkle.framework" \
-    "$REPO_ROOT"/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-*/Sparkle.framework; do
+if [[ $RELEASE -eq 1 ]]; then
+    SPARKLE_CANDIDATES=(
+        "$SCRATCH_DIR/release/Sparkle.framework"
+        "$SCRATCH_DIR"/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-*/Sparkle.framework
+    )
+else
+    SPARKLE_CANDIDATES=(
+        "$SCRATCH_DIR/release/Sparkle.framework"
+        "$REPO_ROOT/.build/release/Sparkle.framework"
+        "$REPO_ROOT"/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-*/Sparkle.framework
+    )
+fi
+for candidate in "${SPARKLE_CANDIDATES[@]}"; do
     if [[ -d "$candidate" ]]; then SPARKLE_SRC="$candidate"; break; fi
 done
 [[ -n "$SPARKLE_SRC" ]] || { echo "error: Sparkle.framework not found in build products" >&2; exit 1; }
@@ -209,9 +244,13 @@ IDENTITY="LocalFlow Signing"
 # setup-signing.sh). Unlock it so signing works in non-interactive shells
 # (a locked keychain fails codesign with errSecInternalComponent).
 security unlock-keychain -p localflow-signing localflow-signing.keychain 2>/dev/null || true
-if ! security find-identity -v -p codesigning 2>/dev/null | grep -q "$IDENTITY"; then
-    echo "==> Codesigning (ad-hoc — permissions will NOT survive rebuilds;"
-    echo "    run Scripts/setup-signing.sh once to fix)…"
+if ! security find-identity -v -p codesigning 2>/dev/null | grep -Fq "$IDENTITY"; then
+    if [[ $RELEASE -eq 1 ]]; then
+        echo "error: release signing identity '$IDENTITY' is unavailable" >&2
+        echo "       run Scripts/setup-signing.sh and retry; release builds never fall back to ad-hoc signing" >&2
+        exit 1
+    fi
+    echo "==> Codesigning development build ad-hoc…"
     IDENTITY="-"
 else
     echo "==> Codesigning (stable identity: $IDENTITY)…"
@@ -227,6 +266,6 @@ if [[ -f "$APP/Contents/MacOS/mlx.metallib" ]]; then
     codesign --force -s "$IDENTITY" "$APP/Contents/MacOS/mlx.metallib"
 fi
 codesign --force -s "$IDENTITY" --identifier "$BUNDLE_ID" "$APP"
-codesign --verify --verbose=1 "$APP"
+codesign --verify --strict --verbose=2 "$APP"
 
 echo "==> Done: $APP ($VERSION, build $BUILD_NUM)"

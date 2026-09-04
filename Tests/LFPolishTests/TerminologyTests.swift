@@ -131,6 +131,30 @@ struct TerminologyCorrectorTests {
         #expect(result.matches.isEmpty)
     }
 
+    @Test func contaminatedLegacyTermsCannotAlterCasualProse() {
+        let text = "Can you just list all the disabled shit? Like, I didn't disable anything. So let me look at it so I can decide what to enable and what to disable."
+        let polluted = ["it.", "enable.", "WITH", "You", "And", "Can You"]
+            .map { LearnedTerm(canonical: $0) }
+        let result = TerminologyCorrector.correct(
+            text,
+            screenTerms: ["You", "And", "Check", "WITH"],
+            learnedTerms: polluted)
+        #expect(result.text == text)
+        #expect(result.matches.isEmpty)
+    }
+
+    @Test func technicalCasingDoesNotDamageSurroundingProse() {
+        let text = "So I don't understand. Okay, so v2 is the only version. But is it enabled? Like, if I ask him to have a sub agent, will he run a sub agent? And how will I see it on Telegram?"
+        let polluted = ["it.", "enable.", "WITH"]
+            .map { LearnedTerm(canonical: $0) }
+        let result = TerminologyCorrector.correct(
+            text,
+            screenTerms: ["V2", "You", "And"],
+            learnedTerms: polluted)
+        #expect(result.text == "So I don't understand. Okay, so V2 is the only version. But is it enabled? Like, if I ask him to have a sub agent, will he run a sub agent? And how will I see it on Telegram?")
+        #expect(result.matches.map(\.canonical) == ["V2"])
+    }
+
     @Test func explicitlyLearnedSingleWordCanRestoreCapitalization() {
         let result = TerminologyCorrector.correct(
             "ask alice tomorrow", screenTerms: [],
@@ -144,6 +168,14 @@ struct TerminologyCorrectorTests {
             "the option is enabled", screenTerms: [],
             learnedTerms: [.init(canonical: "enable.", aliases: ["enable"])])
         #expect(result.text == "the option is enabled")
+        #expect(result.matches.isEmpty)
+    }
+
+    @Test func contaminatedLegacyAliasCannotRewriteOrdinaryProse() {
+        let result = TerminologyCorrector.correct(
+            "it works and it is enabled", screenTerms: [],
+            learnedTerms: [.init(canonical: "PostgreSQL", aliases: ["it.", "enabled"])])
+        #expect(result.text == "it works and it is enabled")
         #expect(result.matches.isEmpty)
     }
 

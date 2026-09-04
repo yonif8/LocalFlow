@@ -1,0 +1,175 @@
+{
+  "schemaVersion": 1,
+  "policy": {
+    "allowFloatingVersions": false,
+    "backend": "cpu",
+    "bootstrapPlatformArchitectures": [
+      "linux-x86_64",
+      "linux-aarch64",
+      "windows-x86_64"
+    ],
+    "windowsAarch64": "unsupported: NeMo-Speech.cpp v0.1.0 has no Windows aarch64 CPU SDK; bootstrap must fail rather than build from another ref"
+  },
+  "components": [
+    {
+      "id": "nemo-speech-cpp",
+      "version": "0.1.0",
+      "tag": "v0.1.0",
+      "commit": "4f9676226f667d14608487df744f375db87127f8",
+      "repository": "https://github.com/NVIDIA/NeMo-Speech.cpp",
+      "license": "Apache-2.0",
+      "licenseFilesInSdk": [
+        "share/licenses/nemo-speech/LICENSE",
+        "share/licenses/nemo-speech/NOTICE",
+        "share/licenses/nemo-speech/THIRD_PARTY_NOTICES.md",
+        "share/licenses/nemo-speech/third_party/"
+      ],
+      "assets": [
+        {
+          "platform": "linux",
+          "architecture": "x86_64",
+          "filename": "nemo-speech-0.1.0-linux-x86_64-cpu.tar.gz",
+          "url": "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-linux-x86_64-cpu.tar.gz",
+          "sizeBytes": 4583913,
+          "sha256": "0f74131d631ad2c694cf0ec53490866bb6461147959589a69fb6fc231944065b"
+        },
+        {
+          "platform": "linux",
+          "architecture": "aarch64",
+          "filename": "nemo-speech-0.1.0-linux-aarch64-cpu.tar.gz",
+          "url": "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-linux-aarch64-cpu.tar.gz",
+          "sizeBytes": 4328117,
+          "sha256": "0e4112255d566de7bdd142f239e984995c4447103ba8feb41f2bb5c559d561d3"
+        },
+        {
+          "platform": "windows",
+          "architecture": "x86_64",
+          "filename": "nemo-speech-0.1.0-windows-x86_64-cpu.zip",
+          "url": "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-windows-x86_64-cpu.zip",
+          "sizeBytes": 4730421,
+          "sha256": "5e4ea81046012edcd77fd8848de8eefb5a4ba38cc26f52eb544ab184695a75d6"
+        }
+      ]
+    },
+    {
+      "id": "llama-cpp",
+      "version": "b10794",
+      "tag": "b10794",
+      "commit": "f9f09f02cc44d87d842dbd2d578857d92d4bb63b",
+      "repository": "https://github.com/ggml-org/llama.cpp",
+      "license": "MIT",
+      "runtimeAdditionalLicenses": [
+        "Apache-2.0 WITH LLVM-exception (LLVM OpenMP binary on Windows)"
+      ],
+      "sourceHeaders": {
+        "filename": "llama.cpp-f9f09f02cc44d87d842dbd2d578857d92d4bb63b.tar.gz",
+        "url": "https://codeload.github.com/ggml-org/llama.cpp/tar.gz/f9f09f02cc44d87d842dbd2d578857d92d4bb63b",
+        "sizeBytes": 37295615,
+        "sha256": "50b96e851f70552ae3bb7bd5192107a052e6148ccc45a180db08fc1fe7b5bc4f",
+        "copiedDirectories": ["include", "ggml/include"],
+        "copiedLicense": "LICENSE"
+      },
+      "assets": [
+        {
+          "platform": "linux",
+          "architecture": "x86_64",
+          "filename": "llama-b10794-bin-ubuntu-x64.tar.gz",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10794/llama-b10794-bin-ubuntu-x64.tar.gz",
+          "sizeBytes": 16734681,
+          "sha256": "175312e0aad5e4eac77eb0736c4ddefe482f04386741f59b0222be158932c29f"
+        },
+        {
+          "platform": "linux",
+          "architecture": "aarch64",
+          "filename": "llama-b10794-bin-ubuntu-arm64.tar.gz",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10794/llama-b10794-bin-ubuntu-arm64.tar.gz",
+          "sizeBytes": 13374927,
+          "sha256": "d1e1256e90425c82477ed1fc9bdafed4422fe4e16e0a4ff9ed3a47123ab0e7d5"
+        },
+        {
+          "platform": "windows",
+          "architecture": "x86_64",
+          "filename": "llama-b10794-bin-win-cpu-x64.zip",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10794/llama-b10794-bin-win-cpu-x64.zip",
+          "sizeBytes": 18389889,
+          "sha256": "94d950efccc261b345a7e55640c746aaed125a761beeb15ead075d768d8cfd38"
+        },
+        {
+          "platform": "windows",
+          "architecture": "aarch64",
+          "filename": "llama-b10794-bin-win-cpu-arm64.zip",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10794/llama-b10794-bin-win-cpu-arm64.zip",
+          "sizeBytes": 11961519,
+          "sha256": "4d095449da1d10155232f3b631238c10979f6598412a91692fa95f0f506ade78",
+          "bootstrapStatus": "recorded for provenance but not installable with the locked NeMo dependency"
+        }
+      ]
+    }
+  ],
+  "runtimeIsolation": {
+    "reason": "NeMo-Speech.cpp v0.1.0 carries ggml 0.12.0; llama.cpp b10794 carries ggml 0.22.0. Their identical library names have incompatible ABIs.",
+    "desktopProcess": {
+      "root": "NEMO_SPEECH_ROOT",
+      "linuxDestination": "usr/lib/localflow/asr",
+      "linuxFiles": [
+        "libnemo_speech_asr_c.so", "libnemo_speech_asr_c.so.1",
+        "libnemo_speech_asr.so",
+        "libggml.so", "libggml.so.0", "libggml.so.0.12.0",
+        "libggml-base.so", "libggml-base.so.0", "libggml-base.so.0.12.0",
+        "libggml-cpu.so", "libggml-cpu.so.0", "libggml-cpu.so.0.12.0"
+      ],
+      "linuxSystemToolchainLibraries": [
+        "libatomic.so.1", "libgcc_s.so.1", "libgomp.so.1", "libstdc++.so.6"
+      ],
+      "windowsDestination": "bin",
+      "windowsFiles": [
+        "nemo_speech_asr_c.dll", "nemo_speech_asr.dll",
+        "ggml.dll", "ggml-base.dll", "ggml-cpu.dll",
+        "msvcp140.dll", "vcomp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"
+      ],
+      "neverCopyFromNemoSdk": [
+        "libllama.so*", "llama.dll",
+        "libnemo_speech_nmt*", "nemo_speech_nmt*.dll",
+        "libnemo_speech_tts*", "nemo_speech_tts*.dll"
+      ]
+    },
+    "polishWorkerProcess": {
+      "root": "LLAMA_ROOT",
+      "linuxDestination": "usr/libexec/localflow",
+      "linuxCommonFiles": [
+        "libllama.so", "libllama.so.0", "libllama.so.0.3.0",
+        "libggml.so", "libggml.so.0", "libggml.so.0.22.0",
+        "libggml-base.so", "libggml-base.so.0", "libggml-base.so.0.22.0"
+      ],
+      "linuxX86_64CpuFiles": [
+        "libggml-cpu-alderlake.so", "libggml-cpu-cannonlake.so",
+        "libggml-cpu-cascadelake.so", "libggml-cpu-cooperlake.so",
+        "libggml-cpu-haswell.so", "libggml-cpu-icelake.so",
+        "libggml-cpu-ivybridge.so", "libggml-cpu-piledriver.so",
+        "libggml-cpu-sandybridge.so", "libggml-cpu-sapphirerapids.so",
+        "libggml-cpu-skylakex.so", "libggml-cpu-sse42.so",
+        "libggml-cpu-x64.so", "libggml-cpu-zen4.so"
+      ],
+      "linuxAarch64CpuFiles": [
+        "libggml-cpu-armv8.0_1.so", "libggml-cpu-armv8.2_1.so",
+        "libggml-cpu-armv8.2_2.so", "libggml-cpu-armv8.2_3.so",
+        "libggml-cpu-armv8.6_1.so", "libggml-cpu-armv8.6_2.so",
+        "libggml-cpu-armv9.2_1.so", "libggml-cpu-armv9.2_2.so"
+      ],
+      "windowsDestination": "bin/polish",
+      "windowsCommonFiles": [
+        "llama.dll", "ggml.dll", "ggml-base.dll", "libomp.dll"
+      ],
+      "windowsX86_64CpuFiles": [
+        "ggml-cpu-alderlake.dll", "ggml-cpu-cannonlake.dll",
+        "ggml-cpu-cascadelake.dll", "ggml-cpu-cooperlake.dll",
+        "ggml-cpu-haswell.dll", "ggml-cpu-icelake.dll",
+        "ggml-cpu-ivybridge.dll", "ggml-cpu-piledriver.dll",
+        "ggml-cpu-sandybridge.dll", "ggml-cpu-sapphirerapids.dll",
+        "ggml-cpu-skylakex.dll", "ggml-cpu-sse42.dll",
+        "ggml-cpu-x64.dll", "ggml-cpu-zen4.dll"
+      ]
+    },
+    "requiredRule": "Never put NEMO_SPEECH_ROOT/lib and LLAMA_ROOT/lib (or their Windows DLLs) in one process directory or global loader path. The desktop/ASR process and persistent polish worker communicate over IPC."
+  }
+}

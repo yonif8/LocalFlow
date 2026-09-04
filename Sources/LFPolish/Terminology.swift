@@ -176,6 +176,20 @@ public enum ScreenTermExtractor {
         return distinctive(token)
     }
 
+    /// Safe to consume from an existing learned-term file. This is slightly
+    /// broader than `isPersistentCandidate`: an explicitly learned proper name
+    /// such as "Alice" is useful, while ordinary screen words such as "And"
+    /// and legacy punctuation fragments must never become formatting rules.
+    public static func isCorrectableLearnedCandidate(_ term: String) -> Bool {
+        let cleaned = cleanTerm(term)
+        guard cleaned == term.trimmingCharacters(in: .whitespacesAndNewlines),
+              isSafe(cleaned) else { return false }
+        if isPersistentCandidate(cleaned) { return true }
+        let tokens = cleaned.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard tokens.count == 1, let token = tokens.first else { return false }
+        return titleCased(token) && !commonCapitalized.contains(token.lowercased())
+    }
+
     public static func normalized(_ value: String) -> String {
         value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
             .filter { $0.isLetter || $0.isNumber }
@@ -260,13 +274,27 @@ public enum TerminologyCorrector {
         // cannot override what is currently on screen.
         let screenKeys = screenCandidates.map { ScreenTermExtractor.normalized($0.canonical) }
         let learnedCandidates = learnedTerms.filter { learned in
+            guard ScreenTermExtractor.isCorrectableLearnedCandidate(learned.canonical)
+            else { return false }
             let key = ScreenTermExtractor.normalized(learned.canonical)
             return !screenKeys.contains { visible in
                 key != visible && min(key.count, visible.count) >= 5
                     && similarity(key, visible) >= 0.78
             }
-        }.map {
-            Candidate(canonical: $0.canonical, aliases: [$0.canonical] + $0.aliases, source: .learned)
+        }.map { learned in
+            let canonicalKey = ScreenTermExtractor.normalized(learned.canonical)
+            let safeAliases = learned.aliases.filter { alias in
+                let aliasKey = ScreenTermExtractor.normalized(alias)
+                guard !aliasKey.isEmpty else { return false }
+                return aliasKey == canonicalKey
+                    || (min(aliasKey.count, canonicalKey.count) >= 6
+                        && similarity(aliasKey, canonicalKey) >= 0.72)
+                    || isStructuredSpokenMatch(canonical: learned.canonical, heard: alias)
+            }
+            return Candidate(
+                canonical: learned.canonical,
+                aliases: [learned.canonical] + safeAliases,
+                source: .learned)
         }
         let candidates = screenCandidates + learnedCandidates
         let componentsCoveredByFullPath = Set(candidates.flatMap { candidate -> [String] in

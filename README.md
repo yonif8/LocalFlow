@@ -13,7 +13,23 @@ Mac: no accounts, no cloud, no audio uploaded anywhere.
 
 Models (~1.2 GB) are downloaded automatically on first run.
 
-Requires an Apple Silicon Mac running macOS 15 or later.
+The shipping release currently requires an Apple Silicon Mac running macOS 15
+or later. Windows and Linux versions are being developed in this same
+repository under [`CrossPlatform/`](CrossPlatform/README.md).
+
+## Platform layout
+
+- `Sources/`, `Tests/`, `Scripts/` — shipping macOS application
+- `CrossPlatform/` — shared Windows/Linux application, portable core, native
+  adapters, and installers
+- `docs/FEATURE_PARITY.md` — product-wide feature contract and implementation
+  status for all three operating systems
+
+Every product feature must either be implemented on macOS, Windows, and Linux,
+or carry an explicit, tested platform exception. Native CI lanes build and test
+all three editions; behavior fixtures are shared when the implementations can
+consume the same format. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the parity
+and release rules.
 
 ## Install
 
@@ -78,8 +94,12 @@ also check manually via the menu bar icon → **Check for Updates…**.
 ```sh
 Scripts/setup-signing.sh   # once: stable self-signed identity (TCC persistence)
 Scripts/make-app.sh        # dev build -> dist/LocalFlow.app
-Scripts/release.sh 1.2.3   # versioned build + DMG + signed appcast
+Scripts/release.sh 1.3.0   # versioned macOS build + DMG + signed appcast
+Scripts/publish.sh 1.3.0   # verify and publish one signed three-platform release
 ```
+
+`publish.sh` keeps the GitHub release in draft state unless the macOS, Windows,
+and Linux assets for the same stable version are all present and verified.
 
 ## Credits
 

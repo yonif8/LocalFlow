@@ -1,0 +1,789 @@
+name: Windows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - "CrossPlatform/**"
+      - "Package.swift"
+      - "Package.resolved"
+      - "Sources/**"
+      - "Tests/**"
+      - "Fixtures/**"
+      - "docs/FEATURE_PARITY.md"
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Require production signing and produce release handoff artifacts"
+        required: true
+        default: false
+        type: boolean
+      version:
+        description: "Release version (X.Y.Z); required when release is enabled"
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      release:
+        description: "Require production signing"
+        required: false
+        default: false
+        type: boolean
+      version:
+        description: "Release version (X.Y.Z or vX.Y.Z)"
+        required: false
+        default: ""
+        type: string
+    secrets:
+      LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY:
+        required: false
+      WINDOWS_CODESIGN_PFX_BASE64:
+        required: false
+      WINDOWS_CODESIGN_PFX_PASSWORD:
+        required: false
+      WINDOWS_CODESIGN_CERT_SHA256:
+        required: false
+      WINDOWS_CODESIGN_TIMESTAMP_URL:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  build-package:
+    name: Windows x64 Release
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 120
+
+    env:
+      QT_VERSION: "6.8.3"
+      BUILD_DIR: "${{ github.workspace }}\\build\\windows-x64"
+      STAGE_DIR: "${{ github.workspace }}\\build\\windows-stage"
+      PACKAGE_DIR: "${{ github.workspace }}\\build\\windows-package"
+      REQUESTED_VERSION: "${{ inputs.version }}"
+      REQUESTED_RELEASE: "${{ inputs.release }}"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify supported Windows host
+        shell: pwsh
+        run: |
+          $minimumBuild = 22000
+          $hostBuild = [Environment]::OSVersion.Version.Build
+          if ($hostBuild -lt $minimumBuild) {
+            throw "The Windows packaging contract requires build $minimumBuild or newer; this runner is build $hostBuild."
+          }
+          Write-Host "Windows host build $hostBuild satisfies the build $minimumBuild app contract."
+
+      - name: Resolve build identity
+        shell: pwsh
+        run: |
+          $isTag = $env:GITHUB_REF_TYPE -eq "tag"
+          $isRequestedRelease = $env:REQUESTED_RELEASE -eq "true"
+          $isRelease = $isTag -or $isRequestedRelease
+
+          if ($isRelease) {
+            if ($isTag) {
+              if ($env:GITHUB_REF_NAME -notmatch '^v((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))$') {
+                throw "Production Windows release tags must have the stable form vX.Y.Z."
+              }
+              $version = $Matches[1]
+              $releaseTag = $env:GITHUB_REF_NAME
+            } else {
+              $version = $env:REQUESTED_VERSION.Trim() -replace '^v', ''
+              if ($version -notmatch '^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$') {
+                throw "A production Windows build requires a stable version in the form X.Y.Z."
+              }
+              $releaseTag = "v$version"
+            }
+            foreach ($component in $version.Split('.')) {
+              [uint32] $parsedComponent = 0
+              if (-not [uint32]::TryParse($component, [ref] $parsedComponent)) {
+                throw "Each production Windows version component must fit in an unsigned 32-bit integer."
+              }
+            }
+
+            $requestedVersion = $env:REQUESTED_VERSION.Trim() -replace '^v', ''
+            if ($requestedVersion -and $requestedVersion -cne $version) {
+              throw "Requested version $requestedVersion does not match checked-out tag $releaseTag."
+            }
+            $expectedRef = "refs/tags/$releaseTag"
+            if ($env:GITHUB_REF -cne $expectedRef) {
+              throw "Production Windows builds must check out the exact $releaseTag tag, not $($env:GITHUB_REF)."
+            }
+            $checkedOutCommitOutput = @(& git rev-parse HEAD)
+            if ($LASTEXITCODE -ne 0 -or $checkedOutCommitOutput.Count -ne 1) {
+              throw "Could not resolve the checked-out commit."
+            }
+            $checkedOutCommit = $checkedOutCommitOutput[0].Trim()
+            $tagCommitOutput = @(& git rev-list -n 1 $releaseTag --)
+            if ($LASTEXITCODE -ne 0 -or $tagCommitOutput.Count -ne 1) {
+              throw "Could not resolve release tag $releaseTag."
+            }
+            $tagCommit = $tagCommitOutput[0].Trim()
+            if ($checkedOutCommit -cne $env:GITHUB_SHA `
+                -or $tagCommit -cne $env:GITHUB_SHA) {
+              throw "The Windows release checkout is not the commit selected by $releaseTag."
+            }
+          } else {
+            $version = "0.0.0-ci.$($env:GITHUB_RUN_NUMBER).$($env:GITHUB_RUN_ATTEMPT)"
+            $releaseTag = ""
+          }
+          $updateChannel = if ($isRelease) { "stable" } else { "ci" }
+
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+          "RELEASE_TAG=$releaseTag" >> $env:GITHUB_ENV
+          "IS_RELEASE=$($isRelease.ToString().ToLowerInvariant())" >> $env:GITHUB_ENV
+          "UPDATE_CHANNEL=$updateChannel" >> $env:GITHUB_ENV
+          "INSTALLER_BASENAME=LocalFlow-$version-windows-x64-setup" >> $env:GITHUB_ENV
+
+      - name: Normalize trusted update signer
+        shell: pwsh
+        env:
+          RAW_WINDOWS_CODESIGN_CERT_SHA256: ${{ secrets.WINDOWS_CODESIGN_CERT_SHA256 }}
+        run: |
+          $rawFingerprint = $env:RAW_WINDOWS_CODESIGN_CERT_SHA256
+          $normalizedFingerprint = ""
+          if (-not [string]::IsNullOrWhiteSpace($rawFingerprint)) {
+            if ($rawFingerprint -notmatch '^[0-9A-Fa-f:\s-]+$') {
+              throw "WINDOWS_CODESIGN_CERT_SHA256 contains unsupported characters."
+            }
+            $normalizedFingerprint = ($rawFingerprint -replace '[:\s-]', '').ToUpperInvariant()
+            if ($normalizedFingerprint -notmatch '^[0-9A-F]{64}$') {
+              throw "WINDOWS_CODESIGN_CERT_SHA256 must normalize to exactly 64 hexadecimal characters."
+            }
+          }
+          "WINDOWS_CODESIGN_CERT_SHA256=$normalizedFingerprint" >> $env:GITHUB_ENV
+
+      - name: Validate private release key availability
+        if: env.IS_RELEASE == 'true'
+        shell: pwsh
+        env:
+          LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY: ${{ secrets.LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY }}
+        run: |
+          $encodedSeed = $env:LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY
+          if ([string]::IsNullOrWhiteSpace($encodedSeed)) {
+            throw "Production Windows builds require LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY."
+          }
+          if ($encodedSeed -cne $encodedSeed.Trim()) {
+            throw "LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY must not contain surrounding whitespace."
+          }
+          try {
+            $seed = [Convert]::FromBase64String($encodedSeed)
+          } catch {
+            throw "LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY is invalid base64."
+          }
+          if ($seed.Length -ne 32 `
+              -or [Convert]::ToBase64String($seed) -cne $encodedSeed) {
+            throw "LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY must be one canonical 32-byte seed."
+          }
+          [Array]::Clear($seed, 0, $seed.Length)
+
+      - name: Install pinned Qt
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: "6.8.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Bootstrap checksum-pinned inference runtimes
+        shell: pwsh
+        run: |
+          $runtimePrefix = Join-Path $env:RUNNER_TEMP "localflow-runtimes"
+          & "CrossPlatform/dependencies/bootstrap-windows.ps1" `
+            -Prefix $runtimePrefix -Architecture x86_64
+          if ($LASTEXITCODE -ne 0) { throw "Runtime bootstrap failed." }
+          if (-not $env:NEMO_SPEECH_ROOT -or -not $env:LLAMA_ROOT) {
+            throw "Runtime bootstrap did not export its verified roots."
+          }
+          "NEMO_SPEECH_ROOT=$env:NEMO_SPEECH_ROOT" >> $env:GITHUB_ENV
+          "LLAMA_ROOT=$env:LLAMA_ROOT" >> $env:GITHUB_ENV
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          $requireSignedUpdates = if ($env:IS_RELEASE -eq "true") { "ON" } else { "OFF" }
+          $requireAuthenticode = if ($env:WINDOWS_CODESIGN_CERT_SHA256) { "ON" } else { "OFF" }
+          cmake -S CrossPlatform -B $env:BUILD_DIR `
+            -G "Visual Studio 18 2026" -A x64 `
+            -DBUILD_TESTING=ON `
+            -DLOCALFLOW_BUILD_APP=ON `
+            -DLOCALFLOW_STRICT_WARNINGS=ON `
+            -DLOCALFLOW_REQUIRE_INFERENCE=ON `
+            "-DLOCALFLOW_REQUIRE_SIGNED_UPDATES=$requireSignedUpdates" `
+            "-DLOCALFLOW_REQUIRE_AUTHENTICODE_UPDATES=$requireAuthenticode" `
+            "-DLOCALFLOW_WINDOWS_SIGNER_SHA256=$env:WINDOWS_CODESIGN_CERT_SHA256" `
+            -DLOCALFLOW_ENABLE_NEMO_SPEECH=ON `
+            -DLOCALFLOW_ENABLE_LLAMA=ON `
+            "-DNEMO_SPEECH_ROOT=$env:NEMO_SPEECH_ROOT" `
+            "-DLLAMA_ROOT=$env:LLAMA_ROOT" `
+            -DLOCALFLOW_VERSION_STRING="$env:APP_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw "CMake configure failed." }
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake --build $env:BUILD_DIR --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw "Windows build failed." }
+
+      - name: Test
+        shell: pwsh
+        run: |
+          ctest --test-dir $env:BUILD_DIR -C Release --output-on-failure --timeout 180
+          if ($LASTEXITCODE -ne 0) { throw "Windows tests failed." }
+          $env:QT_FATAL_WARNINGS = "1"
+          & "$env:BUILD_DIR\bin\Release\LocalFlow.exe" --smoke-ui
+          if ($LASTEXITCODE -ne 0) { throw "Windows QML smoke test failed." }
+
+      - name: Exercise production models with release binaries
+        if: env.IS_RELEASE == 'true'
+        shell: pwsh
+        run: |
+          $modelRoot = Join-Path $env:RUNNER_TEMP "localflow-production-models"
+          New-Item -ItemType Directory -Force -Path $modelRoot | Out-Null
+          function Get-VerifiedModel {
+            param(
+              [Parameter(Mandatory)][string] $Uri,
+              [Parameter(Mandatory)][string] $Destination,
+              [Parameter(Mandatory)][long] $ExpectedSize,
+              [Parameter(Mandatory)][string] $ExpectedSha256
+            )
+            Invoke-WebRequest -Uri $Uri -OutFile $Destination -UseBasicParsing
+            $item = Get-Item -LiteralPath $Destination
+            $hash = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash
+            if ($item.Length -ne $ExpectedSize -or $hash -cne $ExpectedSha256) {
+              throw "Production model integrity check failed: $Destination"
+            }
+          }
+          $asrModel = Join-Path $modelRoot "parakeet-tdt-0.6b-v3.q8_0.gguf"
+          $polishModel = Join-Path $modelRoot "s1-mini-q4_k_m.gguf"
+          Get-VerifiedModel `
+            -Uri "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/resolve/541d1f99c6b0c3cd0b11a95167540bb8edefd82b/parakeet-tdt-0.6b-v3.q8_0.gguf" `
+            -Destination $asrModel -ExpectedSize 713975456 `
+            -ExpectedSha256 "E3880D0AAAAF2C308EA2C35016B2B895C423EB3FDA924C1B463D1C19B7F4D32E"
+          Get-VerifiedModel `
+            -Uri "https://huggingface.co/superwhisper/s1-mini-GGUF/resolve/34add00a48a2e5d24e5a4ee5405a99620a3a240c/s1-mini-q4_k_m.gguf" `
+            -Destination $polishModel -ExpectedSize 484219808 `
+            -ExpectedSha256 "3B41EBE2502CBD03E811D5D16B022F5AB551EDA58D62597D152F89535003C634"
+          python "CrossPlatform/packaging/verify-real-models.py" `
+            --asr-test "$env:BUILD_DIR\inference\Release\localflow_asr_contract_tests.exe" `
+            --asr-runtime "$env:NEMO_SPEECH_ROOT\bin" `
+            --asr-model $asrModel `
+            --wav "Fixtures\short_3s.wav" `
+            --polish-worker "$env:BUILD_DIR\bin\Release\localflow-polish-worker.exe" `
+            --polish-runtime "$env:LLAMA_ROOT\bin" `
+            --polish-model $polishModel
+          if ($LASTEXITCODE -ne 0) { throw "Production model fixtures failed." }
+
+      - name: Stage application and Qt runtime
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:STAGE_DIR | Out-Null
+          cmake --install $env:BUILD_DIR --config Release --prefix $env:STAGE_DIR
+          if ($LASTEXITCODE -ne 0) { throw "CMake install failed." }
+
+          $app = Join-Path $env:STAGE_DIR "bin\LocalFlow.exe"
+          if (-not (Test-Path -LiteralPath $app -PathType Leaf)) {
+            throw "Expected installed executable was not found: $app"
+          }
+          $deployQt = (Get-Command windeployqt.exe -ErrorAction Stop).Source
+          & $deployQt --release --compiler-runtime `
+            --qmldir (Resolve-Path "CrossPlatform/app/qml") `
+            --dir (Split-Path -Parent $app) $app
+          if ($LASTEXITCODE -ne 0) { throw "windeployqt failed." }
+          if (-not (Test-Path (Join-Path (Split-Path -Parent $app) "Qt6Core.dll"))) {
+            throw "Qt runtime deployment did not produce Qt6Core.dll."
+          }
+          $polishWorker = Join-Path $env:STAGE_DIR "bin\polish\localflow-polish-worker.exe"
+          if (-not (Test-Path -LiteralPath $polishWorker -PathType Leaf)) {
+            throw "Expected S1 polish worker was not found: $polishWorker"
+          }
+          & $deployQt --release --compiler-runtime `
+            --dir (Split-Path -Parent $polishWorker) $polishWorker
+          if ($LASTEXITCODE -ne 0) { throw "windeployqt failed for the S1 polish worker." }
+          if (-not (Test-Path (Join-Path (Split-Path -Parent $polishWorker) "Qt6Core.dll"))) {
+            throw "Qt runtime deployment for the S1 polish worker is incomplete."
+          }
+
+          $qtLicenses = Join-Path $env:GITHUB_WORKSPACE "CrossPlatform\packaging\licenses\Qt"
+          foreach ($name in @(
+            "SOURCE.md", "MANIFEST.sha256",
+            "qtbase\LGPL-3.0-only.txt",
+            "qtbase\GPL-3.0-only.txt",
+            "qtdeclarative\LGPL-3.0-only.txt",
+            "qtshadertools\LGPL-3.0-only.txt",
+            "qtwayland\LGPL-3.0-only.txt"
+          )) {
+            if (-not (Test-Path -LiteralPath (Join-Path $qtLicenses $name) -PathType Leaf)) {
+              throw "The reviewed Qt notice bundle is missing $name."
+            }
+          }
+          $manifestPath = Join-Path $qtLicenses "MANIFEST.sha256"
+          $manifestEntries = @(Get-Content -LiteralPath $manifestPath | ForEach-Object {
+            if ($_ -notmatch '^([0-9a-f]{64})  ([A-Za-z0-9._/-]+)$') {
+              throw "The Qt notice manifest contains an invalid line: $_"
+            }
+            $relative = $Matches[2].Replace('/', '\')
+            $candidate = Join-Path $qtLicenses $relative
+            if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+              throw "The Qt notice manifest names a missing file: $relative"
+            }
+            if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() `
+                -cne $Matches[1]) {
+              throw "The Qt notice bundle has changed unexpectedly: $relative"
+            }
+            $relative.ToLowerInvariant()
+          })
+          $actualEntries = @(Get-ChildItem -LiteralPath $qtLicenses -File -Recurse `
+            | Where-Object { $_.Name -notin @("SOURCE.md", "MANIFEST.sha256") } `
+            | ForEach-Object {
+                [IO.Path]::GetRelativePath($qtLicenses, $_.FullName).ToLowerInvariant()
+              })
+          if ($manifestEntries.Count -ne 74 `
+              -or (Compare-Object $manifestEntries $actualEntries)) {
+            throw "The reviewed Qt notice inventory is incomplete or contains an unreviewed file."
+          }
+          $qtLicenseDestination = Join-Path $env:STAGE_DIR "share\licenses\Qt"
+          New-Item -ItemType Directory -Force -Path $qtLicenseDestination | Out-Null
+          Copy-Item -Path (Join-Path $qtLicenses "*") `
+            -Destination $qtLicenseDestination -Recurse -Force
+
+          $ed25519Licenses = Join-Path $env:GITHUB_WORKSPACE "CrossPlatform\packaging\licenses\ed25519"
+          $ed25519LicenseDestination = Join-Path $env:STAGE_DIR "share\licenses\ed25519"
+          foreach ($name in @("LICENSE.txt", "SOURCE.md")) {
+            $source = Join-Path $ed25519Licenses $name
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf) `
+                -or (Get-Item -LiteralPath $source).Length -eq 0) {
+              throw "The portable Ed25519 notice bundle is missing $name."
+            }
+          }
+          New-Item -ItemType Directory -Force -Path $ed25519LicenseDestination | Out-Null
+          Copy-Item -Path (Join-Path $ed25519Licenses "*") `
+            -Destination $ed25519LicenseDestination -Force
+
+          # Stage the locked inference files after Qt deployment so no deploy
+          # helper can silently replace their runtime DLLs.
+          python "CrossPlatform/dependencies/stage-runtime.py" `
+            --platform windows `
+            --arch x86_64 `
+            --stage $env:STAGE_DIR `
+            --nemo-root $env:NEMO_SPEECH_ROOT `
+            --llama-root $env:LLAMA_ROOT
+          if ($LASTEXITCODE -ne 0) { throw "Inference runtime staging failed." }
+          & "CrossPlatform/packaging/windows/Test-StagedRuntime.ps1" `
+            -StageRoot $env:STAGE_DIR `
+            -NemoRoot $env:NEMO_SPEECH_ROOT `
+            -LlamaRoot $env:LLAMA_ROOT
+          foreach ($notice in @(
+            "share\licenses\Qt\SOURCE.md",
+            "share\licenses\Qt\qtbase\LGPL-3.0-only.txt",
+            "share\licenses\Qt\qtdeclarative\LGPL-3.0-only.txt",
+            "share\licenses\Qt\qtshadertools\LGPL-3.0-only.txt",
+            "share\licenses\Qt\qtwayland\LGPL-3.0-only.txt",
+            "share\licenses\ed25519\LICENSE.txt",
+            "share\licenses\ed25519\SOURCE.md",
+            "share\licenses\nemo-speech\LICENSE",
+            "share\licenses\nemo-speech\NOTICE",
+            "share\licenses\nemo-speech\THIRD_PARTY_NOTICES.md",
+            "share\licenses\llama.cpp\LICENSE",
+            "share\licenses\llama.cpp\LICENSE-LLVM-OpenMP"
+          )) {
+            $noticePath = Join-Path $env:STAGE_DIR $notice
+            if (-not (Test-Path -LiteralPath $noticePath -PathType Leaf) `
+                -or (Get-Item -LiteralPath $noticePath).Length -eq 0) {
+              throw "A required redistribution notice is missing: $notice"
+            }
+          }
+
+      - name: Probe staged inference runtimes
+        shell: pwsh
+        run: |
+          # This intentionally runs for ordinary PR builds as well as releases.
+          # Compilation cannot prove that Windows resolves backend exports from
+          # the correct DLL in the isolated polish-worker directory.
+          $app = Join-Path $env:STAGE_DIR "bin\LocalFlow.exe"
+          $polishWorker = Join-Path $env:STAGE_DIR "bin\polish\localflow-polish-worker.exe"
+          $desktopProbe = Start-Process -FilePath $app -ArgumentList "--probe-runtime" `
+            -WorkingDirectory (Split-Path -Parent $app) -Wait -PassThru
+          if ($desktopProbe.ExitCode -ne 0) {
+            throw "Packaged NeMo runtime probe failed with exit code $($desktopProbe.ExitCode)."
+          }
+
+          $polishOutput = @(& $polishWorker --probe-runtime)
+          $polishExitCode = $LASTEXITCODE
+          if ($polishOutput.Count -ne 1) {
+            throw "Packaged llama runtime probe returned $($polishOutput.Count) output lines instead of one JSON response."
+          }
+          try {
+            $polishProbe = $polishOutput[0] | ConvertFrom-Json -ErrorAction Stop
+          } catch {
+            throw "Packaged llama runtime probe returned invalid JSON: $($polishOutput[0])"
+          }
+          if ($polishExitCode -ne 0 -or -not $polishProbe.ready) {
+            $detail = if ($polishProbe.error) { ": $($polishProbe.error)" } else { "" }
+            throw "Packaged llama runtime probe failed with exit code $polishExitCode$detail"
+          }
+
+      - name: Sign application binaries
+        shell: pwsh
+        env:
+          WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 }}
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
+          WINDOWS_CODESIGN_TIMESTAMP_URL: ${{ secrets.WINDOWS_CODESIGN_TIMESTAMP_URL }}
+        run: |
+          $requireSigning = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_CERT_SHA256)
+          $binaries = @(
+            (Join-Path $env:STAGE_DIR "bin\LocalFlow.exe")
+            (Join-Path $env:STAGE_DIR "bin\polish\localflow-polish-worker.exe")
+          )
+          & "CrossPlatform/packaging/windows/Sign-Artifacts.ps1" `
+            -Path $binaries `
+            -RequireSigning:$requireSigning
+
+      - name: Create per-user installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:PACKAGE_DIR | Out-Null
+          $isccCommand = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          $iscc = if ($isccCommand) { $isccCommand.Source } else {
+            Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup *" -Filter ISCC.exe -Recurse `
+              | Sort-Object FullName -Descending `
+              | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $iscc -or -not (Test-Path -LiteralPath $iscc)) {
+            throw "Inno Setup compiler is not installed on this Windows runner image."
+          }
+          & $iscc `
+            "/DAppVersion=$env:APP_VERSION" `
+            "/DSourceDir=$env:STAGE_DIR" `
+            "/DOutputDir=$env:PACKAGE_DIR" `
+            "/DOutputBaseFilename=$env:INSTALLER_BASENAME" `
+            "/DSetupIconFile=$((Resolve-Path 'CrossPlatform/packaging/windows/LocalFlow.ico').Path)" `
+            "CrossPlatform/packaging/windows/LocalFlow.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed." }
+
+      - name: Sign and verify installer
+        shell: pwsh
+        env:
+          WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 }}
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
+          WINDOWS_CODESIGN_TIMESTAMP_URL: ${{ secrets.WINDOWS_CODESIGN_TIMESTAMP_URL }}
+        run: |
+          $requireSigning = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_CERT_SHA256)
+          $installer = Join-Path $env:PACKAGE_DIR "$env:INSTALLER_BASENAME.exe"
+          & "CrossPlatform/packaging/windows/Sign-Artifacts.ps1" `
+            -Path $installer -RequireSigning:$requireSigning
+          $productVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($installer).ProductVersion.TrimEnd()
+          if ([string]::IsNullOrEmpty($productVersion) `
+              -or $productVersion -cne $env:APP_VERSION) {
+            throw "Installer ProductVersion '$productVersion' does not exactly match $($env:APP_VERSION)."
+          }
+
+      - name: Sign installer with the LocalFlow release key
+        if: env.IS_RELEASE == 'true'
+        shell: pwsh
+        env:
+          LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY: ${{ secrets.LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY }}
+        run: |
+          $installer = Join-Path $env:PACKAGE_DIR "$env:INSTALLER_BASENAME.exe"
+          $signer = Join-Path $env:BUILD_DIR "bin\Release\localflow_update_signer.exe"
+          if (-not (Test-Path -LiteralPath $signer -PathType Leaf)) {
+            throw "The LocalFlow update signer was not built."
+          }
+          $signatureOutput = @(& $signer $installer)
+          if ($LASTEXITCODE -ne 0 -or $signatureOutput.Count -ne 1) {
+            throw "The LocalFlow update signer failed."
+          }
+          $signature = $signatureOutput[0].Trim()
+          try {
+            $signatureBytes = [Convert]::FromBase64String($signature)
+          } catch {
+            throw "The LocalFlow update signer returned invalid base64."
+          }
+          if ($signatureBytes.Length -ne 64 `
+              -or [Convert]::ToBase64String($signatureBytes) -cne $signature) {
+            throw "The LocalFlow update signer returned a noncanonical signature."
+          }
+          "INSTALLER_ED25519_SIGNATURE=$signature" >> $env:GITHUB_ENV
+
+      - name: Exercise isolated update verifier
+        if: env.IS_RELEASE == 'true'
+        shell: pwsh
+        run: |
+          function Invoke-UpdateVerifier {
+            param(
+              [Parameter(Mandatory)][string] $Application,
+              [Parameter(Mandatory)][string] $Installer,
+              [Parameter(Mandatory)][long] $Size,
+              [Parameter(Mandatory)][string] $Sha256,
+              [Parameter(Mandatory)][string] $Version,
+              [Parameter(Mandatory)][string] $Ed25519Signature
+            )
+            $startInfo = [Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $Application
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            foreach ($argument in @(
+              "--localflow-private-verify-windows-update-v1",
+              $Installer, $Size.ToString([Globalization.CultureInfo]::InvariantCulture),
+              $Sha256, $Version, $Ed25519Signature
+            )) {
+              $startInfo.ArgumentList.Add($argument)
+            }
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo = $startInfo
+            if (-not $process.Start()) { throw "Could not start the update verifier." }
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(130000)) {
+              try { $process.Kill($true) } catch {}
+              throw "The update verifier exceeded its 130-second CI limit."
+            }
+            $result = [PSCustomObject]@{
+              ExitCode = $process.ExitCode
+              Stdout = $stdoutTask.Result
+              Stderr = $stderrTask.Result
+            }
+            $process.Dispose()
+            return $result
+          }
+
+          function ConvertFrom-VerifierResult {
+            param([Parameter(Mandatory)] $Result)
+            if ([Text.Encoding]::UTF8.GetByteCount($Result.Stdout) -gt 8192 `
+                -or $Result.Stdout.Contains("`r") -or $Result.Stdout.Contains("`n")) {
+              throw "The update verifier returned a noncanonical or oversized response."
+            }
+            try {
+              return $Result.Stdout | ConvertFrom-Json -ErrorAction Stop
+            } catch {
+              throw "The update verifier returned invalid JSON: $($Result.Stdout)"
+            }
+          }
+
+          $app = Join-Path $env:STAGE_DIR "bin\LocalFlow.exe"
+          $installer = Join-Path $env:PACKAGE_DIR "$env:INSTALLER_BASENAME.exe"
+          $installerItem = Get-Item -LiteralPath $installer
+          $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          $accepted = Invoke-UpdateVerifier `
+            -Application $app -Installer $installer -Size $installerItem.Length `
+            -Sha256 $installerHash -Version $env:APP_VERSION `
+            -Ed25519Signature $env:INSTALLER_ED25519_SIGNATURE
+          $acceptedPayload = ConvertFrom-VerifierResult $accepted
+          $acceptedFields = @($acceptedPayload.PSObject.Properties.Name | Sort-Object)
+          if ($accepted.ExitCode -ne 0 -or $acceptedFields.Count -ne 2 `
+              -or ($acceptedFields -join ',') -cne 'ok,schemaVersion' `
+              -or $acceptedPayload.schemaVersion -ne 1 -or $acceptedPayload.ok -ne $true) {
+            throw "The signed release installer failed the LocalFlow update verifier: $($accepted.Stdout) $($accepted.Stderr)"
+          }
+
+          $tampered = Join-Path $env:RUNNER_TEMP "LocalFlow-update-verifier-tampered.exe"
+          Copy-Item -LiteralPath $installer -Destination $tampered -Force
+          $stream = [IO.File]::Open(
+            $tampered, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite,
+            [IO.FileShare]::Read)
+          try {
+            $tamperOffset = [Math]::Min([long]4096, $stream.Length - 1)
+            $stream.Position = $tamperOffset
+            $original = $stream.ReadByte()
+            if ($original -lt 0) { throw "The installer was unexpectedly empty." }
+            $stream.Position = $tamperOffset
+            $stream.WriteByte($original -bxor 1)
+            $stream.Flush($true)
+          } finally {
+            $stream.Dispose()
+          }
+          $tamperedItem = Get-Item -LiteralPath $tampered
+          $tamperedHash = (Get-FileHash -LiteralPath $tampered -Algorithm SHA256).Hash.ToLowerInvariant()
+          $rejected = Invoke-UpdateVerifier `
+            -Application $app -Installer $tampered -Size $tamperedItem.Length `
+            -Sha256 $tamperedHash -Version $env:APP_VERSION `
+            -Ed25519Signature $env:INSTALLER_ED25519_SIGNATURE
+          $rejectedPayload = ConvertFrom-VerifierResult $rejected
+          $rejectedFields = @($rejectedPayload.PSObject.Properties.Name | Sort-Object)
+          if ($rejected.ExitCode -eq 0 -or $rejectedFields.Count -ne 3 `
+              -or ($rejectedFields -join ',') -cne 'error,ok,schemaVersion' `
+              -or $rejectedPayload.schemaVersion -ne 1 -or $rejectedPayload.ok -ne $false `
+              -or [string]::IsNullOrWhiteSpace($rejectedPayload.error)) {
+            throw "A same-size tampered installer was not rejected coherently: $($rejected.Stdout)"
+          }
+          Remove-Item -LiteralPath $tampered -Force
+
+      - name: Smoke-test install and uninstall
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:PACKAGE_DIR "$env:INSTALLER_BASENAME.exe"
+          $smokeRoot = Join-Path $env:RUNNER_TEMP "LocalFlow-install-smoke"
+          if (Test-Path -LiteralPath $smokeRoot) {
+            Remove-Item -LiteralPath $smokeRoot -Recurse -Force
+          }
+          $installLog = Join-Path $env:RUNNER_TEMP "LocalFlow-install-smoke.log"
+          $install = Start-Process -FilePath $installer -Wait -PassThru -ArgumentList @(
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/TASKS=startup",
+            "/DIR=$smokeRoot", "/LOG=$installLog"
+          )
+          if ($install.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $installLog -PathType Leaf) {
+              Get-Content -LiteralPath $installLog -Tail 200
+            }
+            throw "Installer smoke test failed with exit code $($install.ExitCode)."
+          }
+          $installedApp = Join-Path $smokeRoot "bin\LocalFlow.exe"
+          $installedWorker = Join-Path $smokeRoot "bin\polish\localflow-polish-worker.exe"
+          $uninstaller = Join-Path $smokeRoot "unins000.exe"
+          if (-not (Test-Path -LiteralPath $installedApp -PathType Leaf) `
+              -or -not (Test-Path -LiteralPath $installedWorker -PathType Leaf) `
+              -or -not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
+            throw "Installer did not create the expected app and uninstaller."
+          }
+
+          & "CrossPlatform/packaging/windows/Test-StagedRuntime.ps1" `
+            -StageRoot $smokeRoot `
+            -NemoRoot $env:NEMO_SPEECH_ROOT `
+            -LlamaRoot $env:LLAMA_ROOT
+          foreach ($notice in @(
+            "share\licenses\Qt\SOURCE.md",
+            "share\licenses\Qt\qtbase\LGPL-3.0-only.txt",
+            "share\licenses\ed25519\LICENSE.txt",
+            "share\licenses\ed25519\SOURCE.md",
+            "share\licenses\nemo-speech\THIRD_PARTY_NOTICES.md",
+            "share\licenses\llama.cpp\LICENSE-LLVM-OpenMP"
+          )) {
+            $noticePath = Join-Path $smokeRoot $notice
+            if (-not (Test-Path -LiteralPath $noticePath -PathType Leaf) `
+                -or (Get-Item -LiteralPath $noticePath).Length -eq 0) {
+              throw "Installed redistribution notice is missing: $notice"
+            }
+          }
+          $runtimeProbe = & $installedApp --probe-runtime | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $runtimeProbe.ready) {
+            throw "Installed NeMo runtime probe failed."
+          }
+          $polishProbe = & $installedWorker --probe-runtime | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $polishProbe.ready) {
+            throw "Installed llama runtime probe failed."
+          }
+          $uiStdout = Join-Path $env:RUNNER_TEMP "LocalFlow-installed-ui.stdout.log"
+          $uiStderr = Join-Path $env:RUNNER_TEMP "LocalFlow-installed-ui.stderr.log"
+          $uiSmoke = Start-Process -FilePath $installedApp -ArgumentList "--smoke-ui" `
+            -WorkingDirectory (Split-Path -Parent $installedApp) -Wait -PassThru `
+            -RedirectStandardOutput $uiStdout -RedirectStandardError $uiStderr
+          if ($uiSmoke.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $uiStdout -PathType Leaf) {
+              Get-Content -LiteralPath $uiStdout
+            }
+            if (Test-Path -LiteralPath $uiStderr -PathType Leaf) {
+              Get-Content -LiteralPath $uiStderr
+            }
+            throw "Installed QML smoke test failed with exit code $($uiSmoke.ExitCode)."
+          }
+
+          $startup = (Get-ItemProperty `
+            -LiteralPath "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" `
+            -Name "LocalFlow" -ErrorAction Stop).LocalFlow
+          $expectedStartup = "`"$installedApp`" --background"
+          if ($startup -cne $expectedStartup) {
+            throw "Installer startup registration is wrong: $startup"
+          }
+          $legacyStartup = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\LocalFlow.lnk"
+          if (Test-Path -LiteralPath $legacyStartup) {
+            throw "Installer created a duplicate legacy startup shortcut."
+          }
+
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_CERT_SHA256)) {
+            foreach ($binary in @($installer, $installedApp, $installedWorker)) {
+              $signature = Get-AuthenticodeSignature -LiteralPath $binary
+              $signer = if ($signature.SignerCertificate) {
+                $signature.SignerCertificate.GetCertHashString(
+                  [System.Security.Cryptography.HashAlgorithmName]::SHA256)
+              } else { "" }
+              if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid `
+                  -or $signer -cne $env:WINDOWS_CODESIGN_CERT_SHA256 `
+                  -or -not $signature.TimeStamperCertificate) {
+                throw "Installed signature or RFC 3161 timestamp is invalid: $binary"
+              }
+            }
+          }
+
+          $userDataRoot = Join-Path $env:LOCALAPPDATA "LocalFlow\LocalFlow"
+          New-Item -ItemType Directory -Force -Path $userDataRoot | Out-Null
+          $userDataSentinel = Join-Path $userDataRoot "release-smoke-userdata.txt"
+          [IO.File]::WriteAllText($userDataSentinel, "keep", [Text.Encoding]::UTF8)
+          $settingsKey = "HKCU:\Software\LocalFlow\LocalFlow"
+          New-Item -Path $settingsKey -Force | Out-Null
+          New-ItemProperty -Path $settingsKey -Name "release-smoke-userdata" `
+            -Value "keep" -PropertyType String -Force | Out-Null
+
+          $uninstall = Start-Process -FilePath $uninstaller -Wait -PassThru -ArgumentList @(
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"
+          )
+          if ($uninstall.ExitCode -ne 0) { throw "Uninstaller smoke test failed with exit code $($uninstall.ExitCode)." }
+          if (Test-Path -LiteralPath $smokeRoot) {
+            throw "Uninstaller left the application directory behind."
+          }
+          if (Get-ItemProperty -LiteralPath "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" `
+              -Name "LocalFlow" -ErrorAction SilentlyContinue) {
+            throw "Uninstaller left the startup registration behind."
+          }
+          if (-not (Test-Path -LiteralPath $userDataSentinel -PathType Leaf) `
+              -or (Get-ItemPropertyValue -LiteralPath $settingsKey `
+                -Name "release-smoke-userdata") -cne "keep") {
+            throw "Uninstaller removed LocalFlow user data."
+          }
+          Remove-ItemProperty -LiteralPath $settingsKey -Name "release-smoke-userdata"
+          Remove-Item -LiteralPath $userDataSentinel -Force
+
+      - name: Create update handoff
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:PACKAGE_DIR "$env:INSTALLER_BASENAME.exe"
+          $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $([IO.Path]::GetFileName($installer))" `
+            | Set-Content -LiteralPath "$installer.sha256" -Encoding ascii -NoNewline
+
+          if ($env:IS_RELEASE -eq "true") {
+            $downloadUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:RELEASE_TAG/$([IO.Path]::GetFileName($installer))"
+          } else {
+            $downloadUrl = "https://example.invalid/localflow-ci/$([IO.Path]::GetFileName($installer))"
+          }
+          $releaseSignature = if ($env:INSTALLER_ED25519_SIGNATURE) {
+            $env:INSTALLER_ED25519_SIGNATURE
+          } else {
+            ""
+          }
+          & "CrossPlatform/packaging/windows/New-UpdateManifest.ps1" `
+            -Version $env:APP_VERSION `
+            -InstallerPath $installer `
+            -DownloadUrl $downloadUrl `
+            -Channel $env:UPDATE_CHANNEL `
+            -OutputPath (Join-Path $env:PACKAGE_DIR "windows-update.json") `
+            -ReleaseSignature $releaseSignature `
+            -RequireReleaseSignature:($env:IS_RELEASE -eq "true") `
+            -RequireAuthenticode:(-not [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_CERT_SHA256))
+
+      - name: Upload immutable build artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: LocalFlow-${{ env.APP_VERSION }}-windows-x64
+          path: |
+            ${{ env.PACKAGE_DIR }}/*.exe
+            ${{ env.PACKAGE_DIR }}/*.sha256
+            ${{ env.PACKAGE_DIR }}/windows-update.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

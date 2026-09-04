@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=LocalFlow
+Comment=Start private, local dictation in the background
+Exec=@LOCALFLOW_EXECUTABLE@ --background
+TryExec=@LOCALFLOW_TRY_EXECUTABLE@
+Icon=com.localflow.LocalFlow
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+X-KDE-autostart-after=panel
+OnlyShowIn=GNOME;KDE;XFCE;MATE;Cinnamon;LXQt;Unity;

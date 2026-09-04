@@ -1,0 +1,88 @@
+name: macOS
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - "CrossPlatform/**"
+      - "Package.swift"
+      - "Package.resolved"
+      - "Sources/**"
+      - "Tests/**"
+      - "Fixtures/**"
+      - "Scripts/**"
+      - "docs/FEATURE_PARITY.md"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - "CrossPlatform/**"
+      - "Package.swift"
+      - "Package.resolved"
+      - "Sources/**"
+      - "Tests/**"
+      - "Fixtures/**"
+      - "Scripts/**"
+      - "docs/FEATURE_PARITY.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: macOS 15 / Apple Silicon contract
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Select the shipping Swift toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          developer_dir="/Applications/Xcode_26.3.app/Contents/Developer"
+          test -d "$developer_dir" || {
+            echo "The pinned Xcode 26.3 toolchain is unavailable on this runner." >&2
+            exit 1
+          }
+          sudo xcode-select --switch "$developer_dir"
+
+      - name: Record toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "arm64" || {
+            echo "The shipping macOS contract must run on Apple Silicon." >&2
+            exit 1
+          }
+          swift --version
+
+      - name: Resolve pinned dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift package resolve
+          git diff --exit-code -- Package.resolved
+
+      - name: Build the shipping app target
+        run: swift build --configuration release --product LocalFlowApp --disable-automatic-resolution
+
+      - name: Run macOS behavior contracts
+        run: swift test --configuration release --parallel --disable-automatic-resolution
+
+      - name: Validate release scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n Scripts/*.sh
+          swiftc -typecheck Scripts/verify-sparkle-signature.swift
+          git diff --exit-code

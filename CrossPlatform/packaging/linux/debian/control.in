@@ -1,0 +1,13 @@
+Package: localflow
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: LocalFlow <releases@localflow.app>
+Homepage: https://github.com/yonif8/LocalFlow
+Depends: libc6 (>= 2.35), libatomic1, libgcc-s1, libgomp1, libstdc++6, libx11-6, libxtst6, libatspi2.0-0
+Recommends: xdg-desktop-portal, pipewire-bin | pulseaudio-utils, wireplumber, wl-clipboard | xclip
+Description: Private, fully local push-to-talk dictation
+ LocalFlow transcribes, polishes, and inserts speech without uploading audio
+ or text. This package includes the desktop application and its Qt runtime;
+ desktop portals and audio services are supplied by the operating system.

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.localflow.LocalFlow</id>
+  <name>LocalFlow</name>
+  <summary>Private, fully local push-to-talk dictation</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <developer id="com.localflow">
+    <name>LocalFlow</name>
+  </developer>
+  <description>
+    <p>
+      LocalFlow turns speech into polished text directly on your computer.
+      Hold the push-to-talk shortcut, speak naturally, and release to insert
+      the result in the focused application.
+    </p>
+    <p>
+      Speech recognition, screen terminology, and text polishing run locally.
+      Audio and dictated text are not sent to a cloud service.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.localflow.LocalFlow.desktop</launchable>
+  <url type="homepage">https://github.com/yonif8/LocalFlow</url>
+  <url type="bugtracker">https://github.com/yonif8/LocalFlow/issues</url>
+  <provides>
+    <binary>localflow</binary>
+  </provides>
+  <recommends>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </recommends>
+  <content_rating type="oars-1.1" />
+</component>
