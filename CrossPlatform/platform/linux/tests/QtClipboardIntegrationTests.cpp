@@ -195,6 +195,44 @@ void testEmptyClipboardRoundTrip(Clipboard& backend, QClipboard& clipboard) {
     EXPECT_TRUE(current == nullptr || current->formats().empty());
 }
 
+void testBlockedGuiDispatchIsAbandoned(QClipboard& clipboard) {
+    clipboard.setText(QStringLiteral("clipboard sentinel"));
+    auto backend = makeSystemClipboard(clipboardReport());
+    std::promise<void> workerEntered;
+    auto entered = workerEntered.get_future();
+    auto result = std::async(std::launch::async, [
+        backend = backend.get(),
+        workerEntered = std::move(workerEntered)
+    ]() mutable {
+        workerEntered.set_value();
+        return backend->setText("must never appear");
+    });
+    entered.wait();
+
+    // Deliberately do not process GUI events. This reproduces application
+    // teardown, where a worker used to wait forever on a blocking metacall
+    // while the GUI thread waited for that worker.
+    const auto readiness = result.wait_for(std::chrono::seconds(3));
+    EXPECT_EQ(readiness, std::future_status::ready);
+    if (readiness != std::future_status::ready) {
+        // Release an unfixed implementation so this regression test reports a
+        // failure instead of hanging in std::future's destructor.
+        while (result.wait_for(std::chrono::milliseconds(1)) !=
+               std::future_status::ready) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        }
+    }
+    const auto status = result.get();
+    EXPECT_TRUE(!status.ok());
+    EXPECT_EQ(status.code, ErrorCode::service_unavailable);
+
+    // The abandoned metacall may still be in Qt's queue. Destroying the
+    // backend first catches dangling captures; processing it must be a no-op.
+    backend.reset();
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 100);
+    EXPECT_EQ(clipboard.text(), QStringLiteral("clipboard sentinel"));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -208,6 +246,7 @@ int main(int argc, char** argv) {
     testRichRoundTrip(*backend, *clipboard);
     testUserCopyWinsRace(*backend, *clipboard);
     testEmptyClipboardRoundTrip(*backend, *clipboard);
+    testBlockedGuiDispatchIsAbandoned(*clipboard);
 
     if (failures == 0) {
         std::cout << "All Qt clipboard integration tests passed.\n";

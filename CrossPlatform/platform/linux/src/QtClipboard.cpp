@@ -24,8 +24,11 @@
 #include <QUuid>
 #include <QVariant>
 
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -36,6 +39,7 @@ namespace {
 constexpr auto kTransactionMime =
     "application/x-localflow-clipboard-transaction";
 constexpr auto kUtf8TextMime = "text/plain;charset=utf-8";
+constexpr auto kGuiDispatchStartTimeout = std::chrono::seconds(1);
 
 Status guiUnavailableStatus() {
     return Status::failure(
@@ -57,12 +61,62 @@ ResultType onGuiThread(ResultType dispatchFailure, Work work) {
         return work();
     }
 
-    auto result = dispatchFailure;
+    enum class DispatchPhase { queued, running, finished, abandoned };
+    struct DispatchState {
+        explicit DispatchState(ResultType fallback)
+            : result(std::move(fallback)) {}
+
+        std::mutex mutex;
+        std::condition_variable changed;
+        DispatchPhase phase{DispatchPhase::queued};
+        ResultType result;
+    };
+    auto dispatch = std::make_shared<DispatchState>(std::move(dispatchFailure));
     const bool invoked = QMetaObject::invokeMethod(
         application,
-        [&result, work = std::move(work)]() mutable { result = work(); },
-        Qt::BlockingQueuedConnection);
-    return invoked ? result : dispatchFailure;
+        [dispatch, work = std::move(work)]() mutable {
+            {
+                std::lock_guard lock(dispatch->mutex);
+                if (dispatch->phase != DispatchPhase::queued) return;
+                dispatch->phase = DispatchPhase::running;
+            }
+
+            try {
+                auto result = work();
+                std::lock_guard lock(dispatch->mutex);
+                dispatch->result = std::move(result);
+            } catch (...) {
+                // Qt event callbacks must not leak exceptions through the
+                // event loop. The caller receives its dispatch failure.
+            }
+
+            {
+                std::lock_guard lock(dispatch->mutex);
+                dispatch->phase = DispatchPhase::finished;
+            }
+            dispatch->changed.notify_one();
+        },
+        Qt::QueuedConnection);
+    if (!invoked) return std::move(dispatch->result);
+
+    std::unique_lock lock(dispatch->mutex);
+    const auto startedBy = std::chrono::steady_clock::now() +
+                           kGuiDispatchStartTimeout;
+    // The GUI thread may already be tearing down and waiting for this worker.
+    // Bound only the time a callback may remain queued: after work starts, the
+    // caller must keep its captured references alive until that work finishes.
+    if (!dispatch->changed.wait_until(lock, startedBy, [&dispatch] {
+            return dispatch->phase != DispatchPhase::queued;
+        })) {
+        dispatch->phase = DispatchPhase::abandoned;
+        return std::move(dispatch->result);
+    }
+    if (dispatch->phase == DispatchPhase::running) {
+        dispatch->changed.wait(lock, [&dispatch] {
+            return dispatch->phase == DispatchPhase::finished;
+        });
+    }
+    return std::move(dispatch->result);
 }
 
 std::vector<std::uint8_t> bytes(const QByteArray& value) {
