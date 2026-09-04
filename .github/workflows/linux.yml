@@ -150,7 +150,14 @@ jobs:
             libtesseract-dev \
             libx11-dev \
             libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
             libxcb-keysyms1 \
+            libxcb-randr0 \
+            libxcb-render-util0 \
+            libxcb-shape0 \
+            libxcb-util1 \
+            libxcb-xfixes0 \
             libxcb-xinerama0 \
             libxkbcommon-dev \
             libxkbcommon-x11-0 \
@@ -179,6 +186,17 @@ jobs:
             --modules qtmultimedia qtwaylandcompositor
           qt_prefix="${QT_ROOT}/${QT_VERSION}/gcc_64"
           test -x "${qt_prefix}/bin/qmake"
+          qxcb_plugin="${qt_prefix}/plugins/platforms/libqxcb.so"
+          test -f "$qxcb_plugin"
+          missing_qxcb_dependencies="$(
+            env LD_LIBRARY_PATH="${qt_prefix}/lib" ldd "$qxcb_plugin" \
+              | awk '/not found/ { print }'
+          )"
+          if [[ -n "$missing_qxcb_dependencies" ]]; then
+            printf 'Qt xcb dependencies are missing:\n%s\n' \
+              "$missing_qxcb_dependencies" >&2
+            exit 1
+          fi
           echo "${RUNNER_TEMP}/aqt-venv/bin" >>"$GITHUB_PATH"
           echo "${qt_prefix}/bin" >>"$GITHUB_PATH"
           echo "CMAKE_PREFIX_PATH=${qt_prefix}" >>"$GITHUB_ENV"

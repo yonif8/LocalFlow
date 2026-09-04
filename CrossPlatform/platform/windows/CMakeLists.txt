@@ -35,7 +35,10 @@ if(WIN32)
         src/WindowsMediaOcr.cpp
     )
     add_library(LocalFlow::Windows ALIAS localflow_windows)
-    target_compile_features(localflow_windows PUBLIC cxx_std_17)
+    # C++/WinRT uses the standard coroutine header with current MSVC releases.
+    # Keep the public adapter contract at C++17 while compiling its private
+    # implementation as C++20.
+    target_compile_features(localflow_windows PUBLIC cxx_std_17 PRIVATE cxx_std_20)
     target_include_directories(localflow_windows
         PUBLIC
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
