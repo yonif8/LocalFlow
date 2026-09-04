@@ -45,8 +45,8 @@ enum ScreenContextCollector {
             if boolAttribute(element, kAXHiddenAttribute as String) == true { continue }
 
             for attribute in [kAXTitleAttribute, kAXDescriptionAttribute,
-                              kAXHelpAttribute, kAXValueAttribute] {
-                guard let value = stringAttribute(element, attribute as String),
+                              kAXHelpAttribute, kAXValueAttribute, kAXURLAttribute] {
+                guard let value = textAttribute(element, attribute as String),
                       !value.isEmpty, value.count <= 500 else { continue }
                 strings.append(value)
                 totalCharacters += value.count
@@ -71,6 +71,13 @@ enum ScreenContextCollector {
 
     private static func stringAttribute(_ element: AXUIElement, _ name: String) -> String? {
         attribute(element, name) as? String
+    }
+
+    private static func textAttribute(_ element: AXUIElement, _ name: String) -> String? {
+        guard let value = attribute(element, name) else { return nil }
+        if let string = value as? String { return string }
+        if let url = value as? URL { return url.isFileURL ? url.path : url.absoluteString }
+        return nil
     }
 
     private static func boolAttribute(_ element: AXUIElement, _ name: String) -> Bool? {

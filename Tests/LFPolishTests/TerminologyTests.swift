@@ -17,6 +17,14 @@ struct ScreenTermExtractorTests {
         #expect(terms.contains("v2"))
     }
 
+    @Test func extractsUsefulSuffixesFromAbsolutePaths() {
+        let terms = ScreenTermExtractor.extract(from: [
+            "/Users/yoni/Projects/LocalFlow/Sources/LFPolish/Terminology.swift"
+        ])
+        #expect(terms.contains("LFPolish/Terminology.swift"))
+        #expect(terms.contains("Terminology.swift"))
+    }
+
     @Test func excludesLikelySecretsAndAddresses() {
         let terms = ScreenTermExtractor.extract(from: [
             "person@example.com",
@@ -74,5 +82,16 @@ struct TerminologyCorrectorTests {
             "please send the report tomorrow",
             screenTerms: ["Repository", "Tomorrowland"], learnedTerms: [])
         #expect(result.text == "please send the report tomorrow")
+    }
+
+
+    @Test func recoversSpokenFilePathWhenDirectoryIsMangledByASR() {
+        let result = TerminologyCorrector.correct(
+            "L'Philippines slash terminology dot swift.",
+            screenTerms: ["LFPolish/Terminology.swift", "Terminology.swift"],
+            learnedTerms: [])
+        #expect(result.text == "LFPolish/Terminology.swift.")
+        #expect(result.matches.count == 1)
+        #expect(result.matches.first?.canonical == "LFPolish/Terminology.swift")
     }
 }

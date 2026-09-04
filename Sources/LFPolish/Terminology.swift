@@ -82,6 +82,21 @@ public enum ScreenTermExtractor {
                 else if titleCased(token), !commonCapitalized.contains(token.lowercased()) {
                     offer(token, score: 2)
                 }
+                if token.contains("/") {
+                    let components = token.split(separator: "/").map(String.init)
+                    for component in components where distinctive(component) {
+                        offer(component, score: 4)
+                    }
+                    // Absolute paths are too noisy and often exceed the safety
+                    // cap. The final two or three components are what people
+                    // naturally dictate and uniquely identify the visible file.
+                    if components.count >= 2 {
+                        offer(components.suffix(2).joined(separator: "/"), score: 7)
+                    }
+                    if components.count >= 3 {
+                        offer(components.suffix(3).joined(separator: "/"), score: 6)
+                    }
+                }
             }
 
             // Preserve proper-name phrases such as "Jane Smith" and product
@@ -180,9 +195,12 @@ public enum TerminologyCorrector {
         for candidate in candidates {
             let canonicalKey = ScreenTermExtractor.normalized(candidate.canonical)
             guard canonicalKey.count >= 2, !protected.contains(canonicalKey) else { continue }
-            let canonicalWordCount = max(1, candidate.canonical.split(whereSeparator: \.isWhitespace).count)
+            let comparisonAliases = candidate.aliases.flatMap { [$0, spokenForm($0)] }
+            let canonicalWordCount = comparisonAliases.map {
+                $0.split(whereSeparator: \.isWhitespace).count
+            }.max() ?? 1
             let minWords = max(1, canonicalWordCount - 1)
-            let maxWords = min(4, canonicalWordCount + 2)
+            let maxWords = min(8, canonicalWordCount + 2)
             for start in words.indices {
                 for count in minWords...maxWords where start + count <= words.count {
                     let first = words[start].range
@@ -195,15 +213,28 @@ public enum TerminologyCorrector {
                     guard !heardKey.isEmpty,
                           !protected.contains(heardKey),
                           heard != candidate.canonical else { continue }
+                    let heardWords = heard.lowercased().split(whereSeparator: \.isWhitespace)
+                    if !candidate.canonical.contains("/"),
+                       (heardWords.contains("slash") || heardWords.contains("backslash")
+                        || (start > words.startIndex && ["slash", "backslash"].contains(
+                            ns.substring(with: words[start - 1].range).lowercased()))) {
+                        // This is a filename component inside a spoken path;
+                        // wait for the full path candidate instead of consuming
+                        // the high-confidence suffix on its own.
+                        continue
+                    }
 
                     var confidence = 0.0
-                    for alias in candidate.aliases {
+                    for alias in comparisonAliases {
                         let aliasKey = ScreenTermExtractor.normalized(alias)
                         if heardKey == aliasKey { confidence = 1; break }
                         guard min(heardKey.count, aliasKey.count) >= 6 else { continue }
                         confidence = max(confidence, similarity(heardKey, aliasKey))
                     }
-                    let threshold = candidate.source == .screen ? 0.88 : 0.84
+                    let structured = isStructuredSpokenMatch(
+                        canonical: candidate.canonical, heard: heard)
+                    let threshold = structured ? 0.72
+                        : (candidate.source == .screen ? 0.88 : 0.84)
                     if confidence >= threshold {
                         proposals.append(.init(
                             range: range, canonical: candidate.canonical, heard: heard,
@@ -251,5 +282,30 @@ public enum TerminologyCorrector {
             previous = current
         }
         return 1 - Double(previous[b.count]) / Double(max(a.count, b.count))
+    }
+
+    private static func spokenForm(_ canonical: String) -> String {
+        canonical
+            .replacingOccurrences(of: "/", with: " slash ")
+            .replacingOccurrences(of: "\\", with: " backslash ")
+            .replacingOccurrences(of: ".", with: " dot ")
+            .replacingOccurrences(of: "_", with: " underscore ")
+    }
+
+    private static func isStructuredSpokenMatch(canonical: String, heard: String) -> Bool {
+        guard canonical.contains(where: { "/\\._".contains($0) }) else { return false }
+        let lowerHeard = heard.lowercased()
+        guard ["slash", "backslash", "dot", "underscore"].contains(where: lowerHeard.contains)
+        else { return false }
+        // Require the final path component to be clearly present. This allows
+        // a mangled parent directory while preventing loose path-shaped text
+        // from matching an unrelated visible file.
+        let finalComponent = canonical.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last
+            .map(String.init) ?? canonical
+        let finalSpokenKey = ScreenTermExtractor.normalized(spokenForm(finalComponent))
+        return lowerHeard.split(whereSeparator: \.isWhitespace).indices.contains { start in
+            let suffix = lowerHeard.split(whereSeparator: \.isWhitespace)[start...].joined()
+            return ScreenTermExtractor.normalized(suffix).contains(finalSpokenKey)
+        }
     }
 }
