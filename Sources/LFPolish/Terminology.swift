@@ -52,7 +52,10 @@ public enum ScreenTermExtractor {
         "chat", "copy", "delete", "done", "edit", "file", "find", "general", "help",
         "home", "learn", "menu", "new", "next", "open", "preferences",
         "remove", "save", "search", "settings", "share", "tools", "view",
-        "window", "yes", "no", "today", "tomorrow"
+        "window", "yes", "no", "today", "tomorrow", "the", "check"
+    ]
+    private static let nameConnectors: Set<String> = [
+        "al", "and", "da", "de", "del", "den", "der", "di", "el", "of", "the", "van", "von"
     ]
 
     public static func extract(from visibleStrings: [String], limit: Int = 120) -> [String] {
@@ -99,14 +102,28 @@ public enum ScreenTermExtractor {
                 }
             }
 
-            // Preserve proper-name phrases such as "Jane Smith" and product
-            // names such as "Visual Studio Code" as single correction units.
+            // Preserve proper-name phrases such as "Jane Smith", names with
+            // connectors such as "Bab el-Mandeb", and product names such as
+            // "Visual Studio Code" as single correction units.
             var index = 0
             while index < tokens.count {
-                guard titleCased(tokens[index]) else { index += 1; continue }
+                guard titleCased(tokens[index]) || distinctive(tokens[index]) else {
+                    index += 1
+                    continue
+                }
                 var end = index
-                while end + 1 < tokens.count, end - index < 3,
-                      titleCased(tokens[end + 1]) { end += 1 }
+                while end + 1 < tokens.count, end - index < 3 {
+                    let next = tokens[end + 1]
+                    if titleCased(next) || distinctive(next) {
+                        end += 1
+                    } else if nameConnectors.contains(next.lowercased()),
+                              end + 2 < tokens.count,
+                              titleCased(tokens[end + 2]) || distinctive(tokens[end + 2]) {
+                        end += 2
+                    } else {
+                        break
+                    }
+                }
                 if end > index {
                     for lower in index..<end
                     where !commonCapitalized.contains(tokens[lower].lowercased()) {
@@ -122,6 +139,18 @@ public enum ScreenTermExtractor {
         return best.values.sorted {
             $0.score == $1.score ? $0.term.count > $1.term.count : $0.score > $1.score
         }.prefix(max(0, limit)).map(\.term)
+    }
+
+    /// Strong enough to remember globally after it disappears from the
+    /// screen. Ordinary title-cased UI/sentence words are intentionally not.
+    public static func isPersistentCandidate(_ term: String) -> Bool {
+        let tokens = term.split(whereSeparator: \.isWhitespace).map(String.init)
+        if tokens.count >= 2 {
+            return tokens.filter { titleCased($0) || distinctive($0) }.count >= 2
+                || term.contains(where: { "._+#/\\-".contains($0) })
+        }
+        guard let token = tokens.first else { return false }
+        return distinctive(token)
     }
 
     public static func normalized(_ value: String) -> String {
@@ -177,12 +206,31 @@ public enum TerminologyCorrector {
         let protected = Set(protectedTerms.map(ScreenTermExtractor.normalized))
 
         struct Candidate { let canonical: String; let aliases: [String]; let source: TerminologyMatch.Source }
-        var candidates = learnedTerms.map {
-            Candidate(canonical: $0.canonical, aliases: [$0.canonical] + $0.aliases, source: .learned)
-        }
-        candidates += screenTerms.map {
+        let screenCandidates = screenTerms.map {
             Candidate(canonical: $0, aliases: [$0], source: .screen)
         }
+        // A visible spelling is fresher evidence than memory. Suppress a
+        // similar-but-different learned spelling so an earlier OCR mistake
+        // cannot override what is currently on screen.
+        let screenKeys = screenTerms.map(ScreenTermExtractor.normalized)
+        let learnedCandidates = learnedTerms.filter { learned in
+            let key = ScreenTermExtractor.normalized(learned.canonical)
+            return !screenKeys.contains { visible in
+                key != visible && min(key.count, visible.count) >= 5
+                    && similarity(key, visible) >= 0.78
+            }
+        }.map {
+            Candidate(canonical: $0.canonical, aliases: [$0.canonical] + $0.aliases, source: .learned)
+        }
+        let candidates = screenCandidates + learnedCandidates
+        let componentsCoveredByFullPath = Set(candidates.flatMap { candidate -> [String] in
+            guard candidate.canonical.contains("/") || candidate.canonical.contains("\\") else {
+                return []
+            }
+            return candidate.canonical
+                .split(whereSeparator: { $0 == "/" || $0 == "\\" })
+                .map { ScreenTermExtractor.normalized(String($0)) }
+        })
 
         struct Replacement {
             let range: NSRange
@@ -214,7 +262,7 @@ public enum TerminologyCorrector {
                           !protected.contains(heardKey),
                           heard != candidate.canonical else { continue }
                     let heardWords = heard.lowercased().split(whereSeparator: \.isWhitespace)
-                    if !candidate.canonical.contains("/"),
+                    if componentsCoveredByFullPath.contains(canonicalKey),
                        (heardWords.contains("slash") || heardWords.contains("backslash")
                         || (start > words.startIndex && ["slash", "backslash"].contains(
                             ns.substring(with: words[start - 1].range).lowercased()))) {
@@ -247,7 +295,7 @@ public enum TerminologyCorrector {
         proposals.sort {
             if $0.confidence != $1.confidence { return $0.confidence > $1.confidence }
             if $0.range.length != $1.range.length { return $0.range.length > $1.range.length }
-            return $0.source == .learned && $1.source == .screen
+            return $0.source == .screen && $1.source == .learned
         }
         var accepted: [Replacement] = []
         for proposal in proposals where !accepted.contains(where: { NSIntersectionRange($0.range, proposal.range).length > 0 }) {
@@ -259,12 +307,37 @@ public enum TerminologyCorrector {
         for replacement in accepted.reversed() {
             output.replaceCharacters(in: replacement.range, with: replacement.canonical)
         }
+        let normalizedOutput = normalizeStructuredSeparators(
+            output as String, anchors: accepted.map(\.canonical))
         return .init(
-            text: output as String,
+            text: normalizedOutput,
             matches: accepted.map {
                 .init(heard: $0.heard, canonical: $0.canonical,
                       confidence: $0.confidence, source: $0.source)
             })
+    }
+
+    private static func normalizeStructuredSeparators(
+        _ text: String, anchors: [String]
+    ) -> String {
+        let hasTechnicalAnchor = anchors.contains {
+            $0.contains(where: { "._+#/\\-".contains($0) })
+                || $0.dropFirst().contains(where: \.isUppercase)
+        }
+        guard hasTechnicalAnchor else { return text }
+        var result = text
+        let substitutions = [
+            (#"\s+backslash\s+"#, "\\"),
+            (#"\s+slash\s+"#, "/"),
+            (#"\s+dot\s+"#, "."),
+            (#"\s+underscore\s+"#, "_"),
+        ]
+        for (pattern, replacement) in substitutions {
+            result = result.replacingOccurrences(
+                of: pattern, with: replacement,
+                options: [.regularExpression, .caseInsensitive])
+        }
+        return result
     }
 
     private static func similarity(_ lhs: String, _ rhs: String) -> Double {

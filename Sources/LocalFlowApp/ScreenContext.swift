@@ -124,7 +124,10 @@ enum LearnedTerminologyStore {
     }
 
     static func learn(_ matches: [TerminologyMatch], sourceBundleID: String?) {
-        let screenMatches = matches.filter { $0.source == .screen && $0.confidence >= 0.88 }
+        let screenMatches = matches.filter {
+            $0.source == .screen && $0.confidence >= 0.88
+                && ScreenTermExtractor.isPersistentCandidate($0.canonical)
+        }
         guard !screenMatches.isEmpty else { return }
         var terms = load()
         let now = Date()

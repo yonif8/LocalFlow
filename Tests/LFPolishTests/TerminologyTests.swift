@@ -29,6 +29,19 @@ struct ScreenTermExtractorTests {
         #expect(terms.contains("Terminology.swift"))
     }
 
+    @Test func extractsNamesWithLowercaseConnectors() {
+        let terms = ScreenTermExtractor.extract(from: ["Bab el-Mandeb Ship Count"])
+        #expect(terms.contains("Bab el-Mandeb"))
+    }
+
+    @Test func onlyStrongTechnicalTermsArePersistent() {
+        #expect(!ScreenTermExtractor.isPersistentCandidate("The"))
+        #expect(!ScreenTermExtractor.isPersistentCandidate("Check"))
+        #expect(ScreenTermExtractor.isPersistentCandidate("PostgreSQL"))
+        #expect(ScreenTermExtractor.isPersistentCandidate("Terminology.swift"))
+        #expect(ScreenTermExtractor.isPersistentCandidate("Jane Smith"))
+    }
+
     @Test func excludesLikelySecretsAndAddresses() {
         let terms = ScreenTermExtractor.extract(from: [
             "person@example.com",
@@ -97,5 +110,30 @@ struct TerminologyCorrectorTests {
         #expect(result.text == "LFPolish/Terminology.swift.")
         #expect(result.matches.count == 1)
         #expect(result.matches.first?.canonical == "LFPolish/Terminology.swift")
+    }
+
+
+    @Test func restoresSeparatorsWhenPathComponentsMatchIndividually() {
+        let result = TerminologyCorrector.correct(
+            "sources slash local flow app slash bug report view dot swift.",
+            screenTerms: ["LocalFlowApp", "BugReportView.swift"],
+            learnedTerms: [])
+        #expect(result.text == "sources/LocalFlowApp/BugReportView.swift.")
+    }
+
+    @Test func correctsShortNameInsideAnchoredProperPhrase() {
+        let result = TerminologyCorrector.correct(
+            "Bob Elman Deb ship count",
+            screenTerms: ["Bab el-Mandeb"], learnedTerms: [])
+        #expect(result.text == "Bab el-Mandeb ship count")
+    }
+
+    @Test func visibleTermWinsOverConflictingMemory() {
+        let result = TerminologyCorrector.correct(
+            "deep seek harness",
+            screenTerms: ["DeepSeek Harness"],
+            learnedTerms: [.init(canonical: "DeepSea", aliases: ["deep sea"])])
+        #expect(result.text == "DeepSeek Harness")
+        #expect(result.matches.first?.source == .screen)
     }
 }

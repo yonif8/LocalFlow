@@ -328,6 +328,7 @@ final class DictationCoordinator {
             // Parakeet output is verbatim WITH native punctuation; it serves
             // as both the polish input and the fail-open fallback.
             let raw = try await transcriber.transcribe(utterance)
+            Self.logger.info("ASR result: \"\(raw, privacy: .public)\"")
             // OCR started when recording began. Take whatever context is ready
             // after ASR, but never wait for it on key release.
             let screenContext = self.screenContextSessionID == contextSessionID
@@ -351,7 +352,12 @@ final class DictationCoordinator {
                 LearnedTerminologyStore.learn(
                     correction.matches, sourceBundleID: screenContext?.bundleID)
                 if !correction.matches.isEmpty {
-                    Self.logger.info("terminology corrections applied: \(correction.matches.count, privacy: .public)")
+                    let screenCount = correction.matches.filter { $0.source == .screen }.count
+                    let learnedCount = correction.matches.count - screenCount
+                    Self.logger.info("""
+                        terminology result: \"\(polishInput, privacy: .public)\" \
+                        (screen=\(screenCount, privacy: .public), learned=\(learnedCount, privacy: .public))
+                        """)
                 }
             }
             let formatted = polishInput
@@ -370,12 +376,29 @@ final class DictationCoordinator {
                 targetAppBundleID: screenContext?.bundleID
                     ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
             )
-            let text: String
+            let polishedText: String
             if let localPolisher = polisher as? LocalPolisher {
-                text = await localPolisher.polishTranscript(
+                polishedText = await localPolisher.polishTranscript(
                     raw: polishInput, formatted: formatted, context: context)
             } else {
-                text = await polisher.polish(formatted, context: context)
+                polishedText = await polisher.polish(formatted, context: context)
+            }
+            // The model may normalize casing inside a name or identifier.
+            // Reassert only high-confidence known spellings after polishing;
+            // this pass does not learn anything new.
+            let text: String
+            if AppSettings.screenTerminologyEnabled {
+                let finalCorrection = TerminologyCorrector.correct(
+                    polishedText,
+                    screenTerms: screenContext?.terms ?? [],
+                    learnedTerms: LearnedTerminologyStore.load(),
+                    protectedTerms: AppSettings.loadDictionary().rules.map(\.written))
+                text = finalCorrection.text
+                if text != polishedText {
+                    Self.logger.info("post-polish terminology restored: \"\(text, privacy: .public)\"")
+                }
+            } else {
+                text = polishedText
             }
             let polishDuration = clock.now - stageStart
 
