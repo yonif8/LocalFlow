@@ -311,6 +311,13 @@ verifyInstallerProductVersion(const std::wstring &nativePath,
     if (productVersionCharacters[characterCount - 1] == L'\0') {
       --characterCount;
     }
+    // Inno Setup pads VersionInfoProductTextVersion with ASCII spaces in the
+    // fixed-size PE version resource. Remove only that documented resource
+    // padding; every other character still has to form the exact SemVer.
+    while (characterCount > 0 &&
+           productVersionCharacters[characterCount - 1] == L' ') {
+      --characterCount;
+    }
     const QString productVersion =
         QString::fromWCharArray(productVersionCharacters, characterCount);
     if (characterCount == 0 || productVersion.contains(QChar(u'\0')) ||

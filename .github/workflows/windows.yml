@@ -476,7 +476,7 @@ jobs:
           $installer = Join-Path $env:PACKAGE_DIR "$env:INSTALLER_BASENAME.exe"
           & "CrossPlatform/packaging/windows/Sign-Artifacts.ps1" `
             -Path $installer -RequireSigning:$requireSigning
-          $productVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($installer).ProductVersion
+          $productVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($installer).ProductVersion.TrimEnd()
           if ([string]::IsNullOrEmpty($productVersion) `
               -or $productVersion -cne $env:APP_VERSION) {
             throw "Installer ProductVersion '$productVersion' does not exactly match $($env:APP_VERSION)."
