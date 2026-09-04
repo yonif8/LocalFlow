@@ -1,4 +1,5 @@
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Concurrent Gui Qml Quick QuickControls2 Widgets Network)
+qt_standard_project_setup(REQUIRES 6.8)
 set(CMAKE_AUTOMOC ON)
 
 qt_add_executable(localflow_desktop
@@ -98,14 +99,21 @@ set_target_properties(localflow_polish_worker PROPERTIES OUTPUT_NAME "localflow-
 target_compile_features(localflow_polish_worker PRIVATE cxx_std_17)
 target_link_libraries(localflow_polish_worker PRIVATE Qt6::Core LocalFlow::Polish)
 
+set(localflow_qml_files
+    qml/Main.qml
+    qml/HudWindow.qml
+    qml/OnboardingWindow.qml
+    qml/SettingsWindow.qml
+)
+set_source_files_properties(qml/Main.qml PROPERTIES QT_RESOURCE_ALIAS Main.qml)
+set_source_files_properties(qml/HudWindow.qml PROPERTIES QT_RESOURCE_ALIAS HudWindow.qml)
+set_source_files_properties(qml/OnboardingWindow.qml PROPERTIES QT_RESOURCE_ALIAS OnboardingWindow.qml)
+set_source_files_properties(qml/SettingsWindow.qml PROPERTIES QT_RESOURCE_ALIAS SettingsWindow.qml)
+
 qt_add_qml_module(localflow_desktop
     URI LocalFlow
     VERSION 1.0
-    QML_FILES
-        qml/Main.qml
-        qml/HudWindow.qml
-        qml/OnboardingWindow.qml
-        qml/SettingsWindow.qml
+    QML_FILES ${localflow_qml_files}
 )
 
 target_compile_features(localflow_desktop PRIVATE cxx_std_17)
