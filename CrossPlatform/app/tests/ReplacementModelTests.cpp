@@ -63,6 +63,11 @@ int main(int argc, char** argv) {
                "rejects an overlong spoken form");
         expect(model.lastError().contains(QStringLiteral("200")),
                "explains the spoken form limit");
+        expect(!model.addRule(QStringLiteral("valid spoken form"),
+                              QString(501, QLatin1Char('b'))),
+               "rejects an overlong written form");
+        expect(model.lastError().contains(QStringLiteral("500")),
+               "explains the written form limit");
         expect(model.updateRule(
                    0, QStringLiteral("postgres sequel"),
                    QStringLiteral("  PostgreSQL  ")),

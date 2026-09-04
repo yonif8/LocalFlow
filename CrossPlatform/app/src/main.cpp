@@ -7,6 +7,7 @@
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QIcon>
 #include <QLockFile>
 #include <QMessageBox>
 #include <QQmlApplicationEngine>
@@ -60,9 +61,14 @@ int main(int argc, char* argv[]) {
     QApplication::setApplicationName(QStringLiteral("LocalFlow"));
     QApplication::setApplicationVersion(QStringLiteral(LOCALFLOW_VERSION));
     QApplication::setQuitOnLastWindowClosed(false);
+#ifdef Q_OS_LINUX
+    QApplication::setDesktopFileName(QStringLiteral("com.localflow.LocalFlow"));
+#endif
     QQuickStyle::setStyle(QStringLiteral("Basic"));
 
     QApplication application(argc, argv);
+    application.setWindowIcon(
+        QIcon(QStringLiteral(":/LocalFlow/assets/LocalFlow.png")));
     const QString serverName = instanceName();
     const QString lockDirectory =
         QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
