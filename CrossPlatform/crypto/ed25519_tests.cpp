@@ -57,6 +57,7 @@ int main() {
     std::fputs("Ed25519 tamper rejection failed.\n", stderr);
     return 1;
   }
-  std::fill(privateKey.begin(), privateKey.end(), 0);
+  std::fill(privateKey.begin(), privateKey.end(),
+            static_cast<unsigned char>(0));
   return 0;
 }

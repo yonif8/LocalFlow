@@ -5,7 +5,9 @@
 #include "localflow/windows/WinError.hpp"
 
 #include <Windows.h>
+#include <Unknwn.h>
 #include <robuffer.h>
+#include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Globalization.h>
 #include <winrt/Windows.Graphics.Imaging.h>

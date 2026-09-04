@@ -2,6 +2,8 @@
 
 #ifdef _WIN32
 
+#include <Windows.h>
+#include <ole2.h>
 #include <UIAutomation.h>
 #include <wrl/client.h>
 
