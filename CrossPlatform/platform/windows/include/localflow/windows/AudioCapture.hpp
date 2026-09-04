@@ -35,6 +35,10 @@ struct AudioChunk {
 struct AudioCaptureOptions {
     /// Null selects the current default communications capture endpoint.
     std::optional<std::wstring> endpoint_id;
+    /// Keep the capture client running briefly after PTT release so frames
+    /// already queued by the microphone driver are not truncated. Values are
+    /// clamped to 250 ms; zero requests an immediate non-blocking drain.
+    std::chrono::milliseconds stop_drain_timeout{100};
 };
 
 [[nodiscard]] std::vector<AudioDeviceInfo> enumerate_capture_devices(

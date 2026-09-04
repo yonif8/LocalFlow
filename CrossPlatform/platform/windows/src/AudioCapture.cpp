@@ -2,6 +2,7 @@
 
 #ifdef _WIN32
 
+#include "localflow/windows/AudioSafetyState.hpp"
 #include "localflow/windows/WinError.hpp"
 
 #include <Audioclient.h>
@@ -19,6 +20,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <new>
 #include <utility>
 
 namespace localflow::windows {
@@ -415,23 +417,13 @@ void WasapiMicrophoneCapture::capture_main(std::promise<std::error_code> ready) 
     ready_sent = true;
 
     const HANDLE events[] = {stop_event_, audio_event};
-    bool keep_running = true;
     std::error_code runtime_error;
-    while (keep_running) {
-        const DWORD wait = WaitForMultipleObjects(2, events, FALSE, INFINITE);
-        if (wait == WAIT_OBJECT_0) {
-            break;
-        }
-        if (wait != WAIT_OBJECT_0 + 1) {
-            runtime_error = last_win32_error();
-            break;
-        }
-
+    auto consume_available_packets = [&]() noexcept {
         UINT32 packet_frames = 0;
         result = capture->GetNextPacketSize(&packet_frames);
         if (FAILED(result)) {
             runtime_error = hresult_error(result);
-            break;
+            return false;
         }
         while (packet_frames > 0) {
             BYTE* data = nullptr;
@@ -440,12 +432,26 @@ void WasapiMicrophoneCapture::capture_main(std::promise<std::error_code> ready) 
             result = capture->GetBuffer(&data, &frames, &flags, nullptr, nullptr);
             if (FAILED(result)) {
                 runtime_error = hresult_error(result);
-                keep_running = false;
-                break;
+                return false;
             }
-            AudioChunk chunk = convert_packet(
-                data, frames, flags, *mix_format.value, encoding);
-            capture->ReleaseBuffer(frames);
+            AudioChunk chunk;
+            try {
+                chunk = convert_packet(
+                    data, frames, flags, *mix_format.value, encoding);
+            } catch (const std::bad_alloc&) {
+                (void)capture->ReleaseBuffer(frames);
+                runtime_error = win32_error(ERROR_NOT_ENOUGH_MEMORY);
+                return false;
+            } catch (...) {
+                (void)capture->ReleaseBuffer(frames);
+                runtime_error = win32_error(ERROR_UNHANDLED_EXCEPTION);
+                return false;
+            }
+            result = capture->ReleaseBuffer(frames);
+            if (FAILED(result)) {
+                runtime_error = hresult_error(result);
+                return false;
+            }
             try {
                 if (on_chunk_) {
                     on_chunk_(std::move(chunk));
@@ -456,13 +462,59 @@ void WasapiMicrophoneCapture::capture_main(std::promise<std::error_code> ready) 
             result = capture->GetNextPacketSize(&packet_frames);
             if (FAILED(result)) {
                 runtime_error = hresult_error(result);
-                keep_running = false;
-                break;
+                return false;
             }
         }
+        return true;
+    };
+
+    bool stop_requested = false;
+    std::chrono::steady_clock::time_point drain_deadline{};
+    const auto drain_timeout = clamp_audio_tail_drain(options_.stop_drain_timeout);
+    while (!runtime_error) {
+        DWORD wait = WAIT_FAILED;
+        if (!stop_requested) {
+            wait = WaitForMultipleObjects(2, events, FALSE, INFINITE);
+        } else {
+            const std::uint32_t remaining = audio_tail_wait_milliseconds(
+                std::chrono::steady_clock::now(), drain_deadline);
+            if (remaining == 0) {
+                break;
+            }
+            const DWORD drain_wait = WaitForSingleObject(audio_event, remaining);
+            if (drain_wait == WAIT_TIMEOUT) {
+                break;
+            }
+            wait = drain_wait == WAIT_OBJECT_0 ? WAIT_OBJECT_0 + 1 : WAIT_FAILED;
+        }
+
+        if (wait == WAIT_OBJECT_0) {
+            stop_requested = true;
+            drain_deadline = std::chrono::steady_clock::now() + drain_timeout;
+            if (!consume_available_packets()) {
+                break;
+            }
+            continue;
+        }
+        if (wait == WAIT_OBJECT_0 + 1) {
+            if (!consume_available_packets()) {
+                break;
+            }
+            continue;
+        }
+        runtime_error = last_win32_error();
     }
 
-    (void)client->Stop();
+    // A final non-blocking read catches a packet that became visible between
+    // the last event and this stop boundary. stop() remains bounded because
+    // this never waits. Do not query the capture client after Stop().
+    if (!runtime_error) {
+        (void)consume_available_packets();
+    }
+    result = client->Stop();
+    if (FAILED(result) && !runtime_error) {
+        runtime_error = hresult_error(result);
+    }
     if (mmcss != nullptr) {
         AvRevertMmThreadCharacteristics(mmcss);
     }

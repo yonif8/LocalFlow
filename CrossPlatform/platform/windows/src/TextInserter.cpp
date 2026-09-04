@@ -24,6 +24,52 @@ std::error_code incomplete_send_input() noexcept {
     return win32_error(last_error == ERROR_SUCCESS ? ERROR_ACCESS_DENIED : last_error);
 }
 
+std::error_code validation_error(
+    const FocusedTextTargetValidation& validation) noexcept {
+    if (validation.error) {
+        return validation.error;
+    }
+    if (validation.status == FocusedTextTargetStatus::protected_content) {
+        return win32_error(ERROR_ACCESS_DENIED);
+    }
+    if (validation.status == FocusedTextTargetStatus::automation_unavailable
+        || validation.status == FocusedTextTargetStatus::not_editable
+        || validation.status == FocusedTextTargetStatus::no_focused_control) {
+        return win32_error(ERROR_NOT_SUPPORTED);
+    }
+    return win32_error(ERROR_CANCELLED);
+}
+
+std::error_code validate_insertion_target(
+    const std::optional<ForegroundWindowIdentity>& expected_window,
+    const FocusedTextTargetIdentity* expected_field,
+    TextInsertionOutcome* outcome) noexcept {
+    if (expected_field != nullptr) {
+        const FocusedTextTargetValidation validation =
+            validate_focused_text_target(*expected_field);
+        const std::error_code error = validation.safe_for_insertion()
+            ? std::error_code{}
+            : validation_error(validation);
+        if (outcome != nullptr) {
+            outcome->target_status = validation.status;
+            outcome->target_error = error;
+        }
+        return error;
+    }
+    if (expected_window.has_value() && !is_still_foreground(*expected_window)) {
+        if (outcome != nullptr) {
+            outcome->target_status = FocusedTextTargetStatus::target_changed;
+            outcome->target_error = win32_error(ERROR_CANCELLED);
+        }
+        return win32_error(ERROR_CANCELLED);
+    }
+    if (outcome != nullptr) {
+        outcome->target_status = FocusedTextTargetStatus::ready;
+        outcome->target_error.clear();
+    }
+    return {};
+}
+
 }  // namespace
 
 ForegroundTextInserter::ForegroundTextInserter(TextInsertionOptions options)
@@ -33,16 +79,25 @@ std::error_code ForegroundTextInserter::insert(
     const std::wstring_view text,
     const std::optional<ForegroundWindowIdentity>& expected_target,
     TextInsertionOutcome* outcome) const {
+    return insert_impl(text, expected_target, nullptr, outcome);
+}
+
+std::error_code ForegroundTextInserter::insert_impl(
+    const std::wstring_view text,
+    const std::optional<ForegroundWindowIdentity>& expected_window,
+    const FocusedTextTargetIdentity* expected_field,
+    TextInsertionOutcome* outcome) const {
     if (text.empty()) {
         return win32_error(ERROR_INVALID_PARAMETER);
     }
-    if (expected_target.has_value() && !is_still_foreground(*expected_target)) {
-        return win32_error(ERROR_CANCELLED);
+    if (const auto error = validate_insertion_target(
+            expected_window, expected_field, outcome)) {
+        return error;
     }
 
     std::error_code paste_error;
     if (options_.try_clipboard_paste) {
-        paste_error = paste(text, expected_target, outcome);
+        paste_error = paste(text, expected_window, expected_field, outcome);
         if (!paste_error) {
             return {};
         }
@@ -50,10 +105,8 @@ std::error_code ForegroundTextInserter::insert(
     if (!options_.allow_unicode_fallback) {
         return paste_error ? paste_error : win32_error(ERROR_NOT_SUPPORTED);
     }
-    if (expected_target.has_value() && !is_still_foreground(*expected_target)) {
-        return win32_error(ERROR_CANCELLED);
-    }
-    auto error = type_unicode(text);
+    auto error = type_unicode(
+        text, expected_window, expected_field, outcome);
     if (!error && outcome != nullptr) {
         outcome->strategy = InsertionStrategy::unicode_input;
         outcome->clipboard_restore = ClipboardRestoreResult::already_restored;
@@ -88,9 +141,43 @@ std::error_code ForegroundTextInserter::insert_utf8(
     return insert(wide, expected_target, outcome);
 }
 
+std::error_code ForegroundTextInserter::insert_into_focused_target(
+    const std::wstring_view text,
+    const FocusedTextTargetIdentity& expected_target,
+    TextInsertionOutcome* outcome) const {
+    return insert_impl(text, expected_target.window, &expected_target, outcome);
+}
+
+std::error_code ForegroundTextInserter::insert_utf8_into_focused_target(
+    const std::string_view text,
+    const FocusedTextTargetIdentity& expected_target,
+    TextInsertionOutcome* outcome) const {
+    if (text.empty() || text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        return win32_error(ERROR_INVALID_PARAMETER);
+    }
+    const int required = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    if (required <= 0) {
+        return last_win32_error();
+    }
+    std::wstring wide(static_cast<std::size_t>(required), L'\0');
+    if (MultiByteToWideChar(
+            CP_UTF8,
+            MB_ERR_INVALID_CHARS,
+            text.data(),
+            static_cast<int>(text.size()),
+            wide.data(),
+            required)
+        != required) {
+        return last_win32_error();
+    }
+    return insert_into_focused_target(wide, expected_target, outcome);
+}
+
 std::error_code ForegroundTextInserter::paste(
     const std::wstring_view text,
-    const std::optional<ForegroundWindowIdentity>& expected_target,
+    const std::optional<ForegroundWindowIdentity>& expected_window,
+    const FocusedTextTargetIdentity* expected_field,
     TextInsertionOutcome* outcome) const {
     std::error_code operation_error;
     std::error_code restore_error;
@@ -106,10 +193,11 @@ std::error_code ForegroundTextInserter::paste(
                 operation_error = error;
                 return;
             }
-            if (expected_target.has_value() && !is_still_foreground(*expected_target)) {
+            if (const auto target_error = validate_insertion_target(
+                    expected_window, expected_field, outcome)) {
                 std::error_code ignored;
                 (void)clipboard->restore_if_unchanged(ignored);
-                operation_error = win32_error(ERROR_CANCELLED);
+                operation_error = target_error;
                 return;
             }
             operation_error = send_ctrl_v();
@@ -173,7 +261,11 @@ std::error_code ForegroundTextInserter::send_ctrl_v() {
                                                             : incomplete_send_input();
 }
 
-std::error_code ForegroundTextInserter::type_unicode(const std::wstring_view text) {
+std::error_code ForegroundTextInserter::type_unicode(
+    const std::wstring_view text,
+    const std::optional<ForegroundWindowIdentity>& expected_window,
+    const FocusedTextTargetIdentity* expected_field,
+    TextInsertionOutcome* outcome) {
     // Keep each SendInput call bounded; enormous input arrays have shown poor
     // behavior in RDP and older Win32 controls.
     constexpr std::size_t kCodeUnitsPerBatch = 64;
@@ -182,6 +274,10 @@ std::error_code ForegroundTextInserter::type_unicode(const std::wstring_view tex
 
     std::size_t offset = 0;
     while (offset < text.size()) {
+        if (const auto target_error = validate_insertion_target(
+                expected_window, expected_field, outcome)) {
+            return target_error;
+        }
         const std::size_t length = std::min(kCodeUnitsPerBatch, text.size() - offset);
         events.clear();
         for (std::size_t index = 0; index < length; ++index) {

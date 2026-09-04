@@ -2,6 +2,7 @@
 
 #ifdef _WIN32
 
+#include "localflow/windows/AudioSafetyState.hpp"
 #include "localflow/windows/WinError.hpp"
 
 #include <Mmdeviceapi.h>
@@ -97,14 +98,24 @@ std::error_code SystemAudioDucker::duck(const float scale) {
     if (FAILED(result)) {
         return hresult_error(result);
     }
+    const float requested_ducked = std::clamp(original * scale, 0.0F, 1.0F);
     result = volume->SetMasterVolumeLevelScalar(
-        std::clamp(original * scale, 0.0F, 1.0F), &kLocalFlowVolumeContext);
+        requested_ducked, &kLocalFlowVolumeContext);
     if (FAILED(result)) {
         return hresult_error(result);
+    }
+    float applied_ducked = requested_ducked;
+    // Endpoint curves can quantize scalar values. Record the round-tripped
+    // value so the later compare-before-set does not mistake that for a user
+    // adjustment.
+    float observed_ducked = requested_ducked;
+    if (SUCCEEDED(volume->GetMasterVolumeLevelScalar(&observed_ducked))) {
+        applied_ducked = observed_ducked;
     }
 
     endpoint_id_ = std::move(id);
     original_volume_ = original;
+    applied_ducked_volume_ = applied_ducked;
     active_ = true;
     return {};
 }
@@ -134,13 +145,26 @@ std::error_code SystemAudioDucker::restore() noexcept {
     if (FAILED(result)) {
         return hresult_error(result);
     }
-    result = volume->SetMasterVolumeLevelScalar(original_volume_, &kLocalFlowVolumeContext);
+    float current_volume = 0.0F;
+    result = volume->GetMasterVolumeLevelScalar(&current_volume);
     if (FAILED(result)) {
         return hresult_error(result);
     }
+    if (decide_volume_restore(active_, current_volume, applied_ducked_volume_)
+        == VolumeRestoreDecision::restore_original) {
+        result = volume->SetMasterVolumeLevelScalar(
+            original_volume_, &kLocalFlowVolumeContext);
+        if (FAILED(result)) {
+            return hresult_error(result);
+        }
+    }
 
+    // Mute is intentionally never read-modify-written. A mute/unmute choice
+    // made before or during dictation remains exactly as the user left it.
     active_ = false;
     endpoint_id_.clear();
+    original_volume_ = 1.0F;
+    applied_ducked_volume_ = 1.0F;
     return {};
 }
 

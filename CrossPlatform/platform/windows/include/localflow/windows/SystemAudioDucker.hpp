@@ -27,6 +27,7 @@ private:
     mutable std::mutex mutex_;
     std::wstring endpoint_id_;
     float original_volume_{1.0F};
+    float applied_ducked_volume_{1.0F};
     bool active_{false};
 };
 

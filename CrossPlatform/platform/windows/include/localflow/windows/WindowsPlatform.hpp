@@ -5,7 +5,10 @@
 // Win32 subsystem.
 
 #include "localflow/windows/AudioCapture.hpp"
+#include "localflow/windows/AudioSafetyState.hpp"
 #include "localflow/windows/ClipboardTransaction.hpp"
+#include "localflow/windows/FocusedTextTarget.hpp"
+#include "localflow/windows/FocusedTextTargetState.hpp"
 #include "localflow/windows/ForegroundWindow.hpp"
 #include "localflow/windows/InputMonitor.hpp"
 #include "localflow/windows/OcrTextNormalization.hpp"

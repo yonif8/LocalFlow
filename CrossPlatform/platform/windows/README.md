@@ -13,8 +13,12 @@ shared pipeline rather than duplicate dictation behavior.
 - A dedicated callback dispatcher so slow microphone/model work cannot cause
   Windows to remove the low-level hook.
 - WASAPI shared-mode capture, device enumeration, native PCM-to-float
-  conversion, and mono downmix.
-- Default-output audio ducking that restores the exact endpoint and volume.
+  conversion, mono downmix, and a bounded post-release tail drain.
+- Default-output audio ducking that conditionally restores LocalFlow's exact
+  endpoint/volume without overwriting a user's in-flight adjustment or mute.
+- Exact editable-field identity through UI Automation (with a guarded native
+  Edit/RichEdit fallback), protected-field refusal, and fail-closed focus
+  revalidation immediately before clipboard or `KEYEVENTF_UNICODE` insertion.
 - Full-format clipboard preservation through OLE, sequence-number guarded
   restoration, Ctrl+V insertion, and `KEYEVENTF_UNICODE` fallback.
 - A capture backend interface plus a dependency-free foreground-window GDI
@@ -50,19 +54,26 @@ On non-Windows hosts, this subproject intentionally builds only
 
 ## Product wiring
 
-The app coordinator should keep one `ForegroundWindowIdentity` from the PTT
+The app coordinator should keep one `FocusedTextTargetCapture` from the PTT
 press and follow this sequence:
 
-1. On `pressed`, duck output audio and start WASAPI capture. In parallel,
-   submit `IScreenCapture::capture()` to a background worker and pass its BGRA
-   frame to `WindowsMediaOcr::recognize_async()`.
+1. On `pressed`, call `capture_focused_text_target()`. Start a dictation only
+   when `safe_for_insertion()` is true. A `protected_content` result is a hard
+   refusal; do not record or retain speech for a password field. Duck output
+   audio and start WASAPI capture. In parallel, submit
+   `IScreenCapture::capture()` to a background worker and pass its BGRA frame
+   to `WindowsMediaOcr::recognize_async()`.
 2. On `released`, stop capture, restore audio immediately, run shared ASR,
-   terminology, and polish, then call `ForegroundTextInserter::insert_utf8`.
+   terminology, and polish, then call
+   `ForegroundTextInserter::insert_utf8_into_focused_target()` with the
+   captured identity.
 3. On `cancelled`, stop capture and restore audio without transcribing or
    inserting.
-4. Pass the captured target into the inserter. If the user changed focus while
-   processing, insertion fails with `ERROR_CANCELLED` instead of pasting into
-   the wrong conversation.
+4. Inspect `TextInsertionOutcome::target_status`. If focus moved to another
+   field—even inside the same top-level window—or the field became protected
+   or read-only, insertion fails before synthetic input. Preserve the final
+   transcript for an explicit copy/retry action. Never retry dictation through
+   the legacy window-only `insert_utf8()` overload.
 5. Queue `AudioChunk` data quickly in its callback. Resample the mono native-rate
    stream to 16 kHz in the shared core so all platforms share one algorithm.
 
