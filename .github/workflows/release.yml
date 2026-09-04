@@ -365,7 +365,7 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Verify complete signed build output
+      - name: Verify complete release output
         shell: bash
         run: |
           set -euo pipefail
@@ -404,9 +404,12 @@ jobs:
           )
           python3 - "$VERSION" "$RELEASE_TAG" <<'PY'
           import hashlib
+          import base64
           import json
           import pathlib
+          import subprocess
           import sys
+          import tempfile
 
           version, tag = sys.argv[1:]
           installer = pathlib.Path(f"artifacts/LocalFlow-{version}-windows-x64-setup.exe")
@@ -421,9 +424,52 @@ jobs:
           assert manifest["channel"] == "stable"
           assert manifest["installer"]["url"] == expected_url
           assert manifest["installer"]["sha256"].lower() == actual_hash
-          assert manifest["installer"]["authenticode"]["required"] is True
-          assert manifest["installer"]["authenticode"]["validAtPublication"] is True
-          assert manifest["installer"]["authenticode"]["signerCertificateSha256"]
+          release_signature = manifest["installer"]["ed25519"]
+          assert release_signature["algorithm"] == "ed25519"
+          assert release_signature["validAtPublication"] is True
+          signature_text = release_signature["signature"]
+          signature = base64.b64decode(signature_text, validate=True)
+          assert len(signature) == 64
+          assert base64.b64encode(signature).decode("ascii") == signature_text
+          public_key_text = pathlib.Path(
+              "Resources/sparkle-public-ed-key.txt"
+          ).read_text(encoding="ascii").strip()
+          public_key = base64.b64decode(public_key_text, validate=True)
+          assert len(public_key) == 32
+          assert base64.b64encode(public_key).decode("ascii") == public_key_text
+          # RFC 8410 SubjectPublicKeyInfo prefix for a raw Ed25519 public key.
+          public_key_der = bytes.fromhex("302a300506032b6570032100") + public_key
+          encoded_public_key_der = base64.b64encode(public_key_der).decode("ascii")
+          public_key_pem = (
+              "-----BEGIN PUBLIC KEY-----\n"
+              + "\n".join(
+                  encoded_public_key_der[offset:offset + 64]
+                  for offset in range(0, len(encoded_public_key_der), 64)
+              )
+              + "\n-----END PUBLIC KEY-----\n"
+          )
+          with tempfile.TemporaryDirectory() as temporary_directory:
+              verification_root = pathlib.Path(temporary_directory)
+              public_key_path = verification_root / "release-public.pem"
+              signature_path = verification_root / "installer.sig"
+              public_key_path.write_text(public_key_pem, encoding="ascii")
+              signature_path.write_bytes(signature)
+              subprocess.run(
+                  [
+                      "openssl", "pkeyutl", "-verify", "-pubin", "-rawin",
+                      "-inkey", str(public_key_path), "-sigfile",
+                      str(signature_path), "-in", str(installer),
+                  ],
+                  check=True,
+                  stdout=subprocess.DEVNULL,
+              )
+          authenticode = manifest["installer"]["authenticode"]
+          if authenticode["required"]:
+              assert authenticode["validAtPublication"] is True
+              assert authenticode["signerCertificateSha256"]
+          else:
+              assert authenticode["validAtPublication"] is False
+              assert authenticode["signerCertificateSha256"] is None
           PY
 
       - name: Reconcile the draft without replacing mismatched assets

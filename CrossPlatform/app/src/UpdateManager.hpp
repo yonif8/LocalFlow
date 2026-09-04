@@ -31,6 +31,8 @@ struct WindowsUpdateManifest {
   QUrl installerUrl;
   qint64 sizeBytes = 0;
   QByteArray sha256;
+  QByteArray ed25519Signature;
+  bool authenticodeRequired = false;
   QString signerCertificateSha256;
   int minimumWindowsBuild = 0;
 };
@@ -56,13 +58,15 @@ inline constexpr auto kWindowsVerificationHelperMode =
 inline constexpr qsizetype kMaximumWindowsVerificationResponseBytes = 8 * 1024;
 
 // The helper is deliberately hosted by the already-running, signed application
-// binary. Its caller supplies only artifact facts; the trusted signer remains
-// compiled into the helper and cannot be selected through the command line.
-[[nodiscard]] int runWindowsVerificationHelper(
-    const QStringList &arguments, QByteArray *response);
-[[nodiscard]] bool acceptWindowsVerificationHelperResult(
-    int exitCode, bool normalExit, const QByteArray &response,
-    QString *error = nullptr);
+// binary. Its caller supplies only artifact facts and the detached signature;
+// the trusted Ed25519 public key remains compiled into the helper and cannot be
+// selected through the command line.
+[[nodiscard]] int runWindowsVerificationHelper(const QStringList &arguments,
+                                               QByteArray *response);
+[[nodiscard]] bool
+acceptWindowsVerificationHelperResult(int exitCode, bool normalExit,
+                                      const QByteArray &response,
+                                      QString *error = nullptr);
 
 } // namespace detail
 #endif

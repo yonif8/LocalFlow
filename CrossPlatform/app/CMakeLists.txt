@@ -43,7 +43,12 @@ if(BUILD_TESTING)
         Qt6::Core Qt6::Concurrent Qt6::Gui Qt6::Network)
     target_compile_definitions(localflow_update_manager_tests PRIVATE
         LOCALFLOW_VERSION="1.2.3"
-        LOCALFLOW_WINDOWS_SIGNER_SHA256="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        LOCALFLOW_WINDOWS_SIGNER_SHA256=""
+        LOCALFLOW_UPDATE_PUBLIC_ED_KEY="11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=")
+    if(WIN32)
+        target_link_libraries(localflow_update_manager_tests PRIVATE
+            LocalFlow::UpdateEd25519)
+    endif()
     add_test(NAME localflow_update_manager_tests COMMAND localflow_update_manager_tests)
 
     add_executable(localflow_screen_term_capture_tests
@@ -113,7 +118,8 @@ target_link_libraries(localflow_desktop PRIVATE
 if(WIN32)
     target_sources(localflow_desktop PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/../packaging/windows/LocalFlow.rc")
-    target_link_libraries(localflow_desktop PRIVATE crypt32 version wintrust)
+    target_link_libraries(localflow_desktop PRIVATE
+        crypt32 version wintrust LocalFlow::UpdateEd25519)
     if(TARGET localflow_update_manager_tests)
         target_link_libraries(localflow_update_manager_tests PRIVATE
             crypt32 version wintrust)
@@ -139,15 +145,23 @@ endif()
 target_compile_definitions(localflow_desktop PRIVATE
     LOCALFLOW_HAVE_TESSERACT=${LOCALFLOW_HAVE_TESSERACT})
 if(WIN32)
-    string(LENGTH "${LOCALFLOW_WINDOWS_SIGNER_SHA256}" LOCALFLOW_WINDOWS_SIGNER_LENGTH)
+    string(LENGTH "${LOCALFLOW_UPDATE_PUBLIC_ED_KEY}" LOCALFLOW_UPDATE_PUBLIC_ED_KEY_LENGTH)
     if(LOCALFLOW_REQUIRE_SIGNED_UPDATES AND
+       (NOT LOCALFLOW_UPDATE_PUBLIC_ED_KEY_LENGTH EQUAL 44 OR
+        NOT LOCALFLOW_UPDATE_PUBLIC_ED_KEY MATCHES "^[A-Za-z0-9+/]+=$"))
+        message(FATAL_ERROR
+            "Production Windows builds require a canonical base64 Ed25519 release-verification key.")
+    endif()
+    string(LENGTH "${LOCALFLOW_WINDOWS_SIGNER_SHA256}" LOCALFLOW_WINDOWS_SIGNER_LENGTH)
+    if(LOCALFLOW_REQUIRE_AUTHENTICODE_UPDATES AND
        (NOT LOCALFLOW_WINDOWS_SIGNER_LENGTH EQUAL 64 OR
         NOT LOCALFLOW_WINDOWS_SIGNER_SHA256 MATCHES "^[0-9A-Fa-f]+$"))
         message(FATAL_ERROR
-            "Production Windows builds require LOCALFLOW_WINDOWS_SIGNER_SHA256 as 64 hexadecimal characters.")
+            "Authenticated Windows builds require LOCALFLOW_WINDOWS_SIGNER_SHA256 as 64 hexadecimal characters.")
     endif()
     target_compile_definitions(localflow_desktop PRIVATE
-        LOCALFLOW_WINDOWS_SIGNER_SHA256="${LOCALFLOW_WINDOWS_SIGNER_SHA256}")
+        LOCALFLOW_WINDOWS_SIGNER_SHA256="${LOCALFLOW_WINDOWS_SIGNER_SHA256}"
+        LOCALFLOW_UPDATE_PUBLIC_ED_KEY="${LOCALFLOW_UPDATE_PUBLIC_ED_KEY}")
 endif()
 
 set_target_properties(localflow_desktop PROPERTIES

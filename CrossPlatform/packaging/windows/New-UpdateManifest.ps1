@@ -15,7 +15,11 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $OutputPath,
 
-    [switch] $RequireSigned
+    [string] $ReleaseSignature = "",
+
+    [switch] $RequireReleaseSignature,
+
+    [switch] $RequireAuthenticode
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,14 +40,30 @@ if (-not [Uri]::TryCreate($DownloadUrl, [UriKind]::Absolute, [ref] $downloadUri)
 $installer = Get-Item -LiteralPath $InstallerPath
 $signature = Get-AuthenticodeSignature -LiteralPath $installer.FullName
 $isSigned = $signature.Status -eq [System.Management.Automation.SignatureStatus]::Valid
-if ($RequireSigned -and -not $isSigned) {
-    throw "Production update manifests require a valid Authenticode-signed installer."
+if ($RequireAuthenticode -and -not $isSigned) {
+    throw "This update manifest requires a valid Authenticode-signed installer."
 }
 $signerFingerprint = if ($isSigned) {
     $signature.SignerCertificate.GetCertHashString(
         [System.Security.Cryptography.HashAlgorithmName]::SHA256).ToUpperInvariant()
 } else {
     $null
+}
+
+$releaseSignatureValue = $ReleaseSignature.Trim()
+if ($releaseSignatureValue) {
+    $signatureBytes = $null
+    try {
+        $signatureBytes = [Convert]::FromBase64String($releaseSignatureValue)
+    } catch {
+        throw "The LocalFlow release signature is invalid base64."
+    }
+    if ($signatureBytes.Length -ne 64 -or [Convert]::ToBase64String($signatureBytes) -cne $releaseSignatureValue) {
+        throw "The LocalFlow release signature is not a canonical Ed25519 signature."
+    }
+}
+if ($RequireReleaseSignature -and -not $releaseSignatureValue) {
+    throw "Production update manifests require a LocalFlow Ed25519 release signature."
 }
 
 $manifest = [ordered]@{
@@ -62,8 +82,13 @@ $manifest = [ordered]@{
         url = $downloadUri.AbsoluteUri
         sizeBytes = $installer.Length
         sha256 = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        ed25519 = [ordered]@{
+            algorithm = "ed25519"
+            validAtPublication = [bool]$releaseSignatureValue
+            signature = if ($releaseSignatureValue) { $releaseSignatureValue } else { $null }
+        }
         authenticode = [ordered]@{
-            required = $RequireSigned.IsPresent
+            required = $RequireAuthenticode.IsPresent
             validAtPublication = $isSigned
             signerCertificateSha256 = $signerFingerprint
         }

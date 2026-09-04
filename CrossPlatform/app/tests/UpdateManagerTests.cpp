@@ -1,13 +1,18 @@
 #include "../src/UpdateManager.hpp"
 
-#include <QDebug>
 #include <QCryptographicHash>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QTemporaryDir>
 
+#include <array>
 #include <cstdlib>
+
+#ifdef Q_OS_WIN
+#include "ed25519.h"
+#endif
 
 namespace {
 
@@ -37,10 +42,15 @@ QByteArray validManifest() {
     "url": "https://github.com/yonif8/LocalFlow/releases/download/v2.4.1/LocalFlow-2.4.1-windows-x64.exe",
     "sizeBytes": 12345678,
     "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    "authenticode": {
-      "required": true,
+    "ed25519": {
+      "algorithm": "ed25519",
       "validAtPublication": true,
-      "signerCertificateSha256": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      "signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+    },
+    "authenticode": {
+      "required": false,
+      "validAtPublication": false,
+      "signerCertificateSha256": null
     },
     "silentArguments": "/CURRENTUSER /VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
   }
@@ -122,9 +132,17 @@ void testManifestContract() {
          "requires the release tag to match the manifest version");
 
   QByteArray unsignedManifest = validManifest();
-  unsignedManifest.replace("\"required\": true", "\"required\": false");
+  unsignedManifest.replace("\"validAtPublication\": true",
+                           "\"validAtPublication\": false");
   expect(!localflow::updates::parseWindowsUpdateManifest(unsignedManifest),
-         "rejects a manifest that does not require Authenticode");
+         "rejects a manifest without a LocalFlow release signature");
+
+  QByteArray malformedSignature = validManifest();
+  malformedSignature.replace("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+                             "not-base64");
+  expect(!localflow::updates::parseWindowsUpdateManifest(malformedSignature),
+         "rejects a malformed LocalFlow release signature");
 
   QByteArray extraField = validManifest();
   extraField.replace("\"schemaVersion\": 1,",
@@ -148,8 +166,7 @@ void testWindowsVerificationHelperProtocol() {
   using localflow::updates::detail::runWindowsVerificationHelper;
 
   QString error;
-  const QByteArray success =
-      R"json({"ok":true,"schemaVersion":1})json";
+  const QByteArray success = R"json({"ok":true,"schemaVersion":1})json";
   expect(acceptWindowsVerificationHelperResult(0, true, success, &error),
          "accepts an exact successful verifier response");
   expect(error.isEmpty(), "successful verifier response has no error");
@@ -167,18 +184,16 @@ void testWindowsVerificationHelperProtocol() {
   expect(!acceptWindowsVerificationHelperResult(0, false, success, &error),
          "rejects a crashed verifier even if it wrote success JSON");
   expect(!acceptWindowsVerificationHelperResult(
-             0, true,
-             R"json({"extra":1,"ok":true,"schemaVersion":1})json", &error),
+             0, true, R"json({"extra":1,"ok":true,"schemaVersion":1})json",
+             &error),
          "rejects extra verifier response fields");
   expect(!acceptWindowsVerificationHelperResult(
              0, true, QByteArrayLiteral("{not-json}"), &error),
          "rejects malformed verifier JSON");
   expect(!acceptWindowsVerificationHelperResult(
-             0, true,
-             R"json({"ok":"true","schemaVersion":1})json", &error),
+             0, true, R"json({"ok":"true","schemaVersion":1})json", &error),
          "rejects a verifier response with the wrong field types");
-  expect(!acceptWindowsVerificationHelperResult(
-             7, true, rejected, &error),
+  expect(!acceptWindowsVerificationHelperResult(7, true, rejected, &error),
          "rejects an unrecognized verifier exit code");
   expect(!acceptWindowsVerificationHelperResult(
              0, true, QByteArrayLiteral(" {\"ok\":true,\"schemaVersion\":1}"),
@@ -186,25 +201,24 @@ void testWindowsVerificationHelperProtocol() {
          "rejects noncanonical surrounding whitespace");
   expect(!acceptWindowsVerificationHelperResult(
              0, true,
-             QByteArray(
-                 localflow::updates::detail::
-                         kMaximumWindowsVerificationResponseBytes +
-                     1,
-                 'x'),
+             QByteArray(localflow::updates::detail::
+                                kMaximumWindowsVerificationResponseBytes +
+                            1,
+                        'x'),
              &error),
          "rejects an oversized verifier response");
 
   QByteArray response;
   const int invalidRequest = runWindowsVerificationHelper({}, &response);
   expect(invalidRequest != 0, "rejects a verifier request with missing fields");
-  expect(!acceptWindowsVerificationHelperResult(
-             invalidRequest, true, response, &error),
+  expect(!acceptWindowsVerificationHelperResult(invalidRequest, true, response,
+                                                &error),
          "returns a coherent bounded response for an invalid request");
 
   QTemporaryDir root;
   expect(root.isValid(), "creates Windows verifier test directory");
-  const QString unsignedPath = root.filePath(
-      QStringLiteral("unsigned update fixture.exe"));
+  const QString unsignedPath =
+      root.filePath(QStringLiteral("unsigned update fixture.exe"));
   QFile unsignedInstaller(unsignedPath);
   expect(unsignedInstaller.open(QIODevice::WriteOnly),
          "creates unsigned Windows installer fixture");
@@ -215,19 +229,55 @@ void testWindowsVerificationHelperProtocol() {
   const QString unsignedHash = QString::fromLatin1(
       QCryptographicHash::hash(unsignedBytes, QCryptographicHash::Sha256)
           .toHex());
+  const QString invalidReleaseSignature =
+      QStringLiteral("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAA==");
   const int unsignedStatus = runWindowsVerificationHelper(
       {unsignedPath, QString::number(unsignedBytes.size()), unsignedHash,
-       QStringLiteral("1.2.3")},
+       QStringLiteral("1.2.3"), invalidReleaseSignature},
       &response);
-  expect(unsignedStatus != 0, "rejects an unsigned installer fixture");
-  expect(!acceptWindowsVerificationHelperResult(
-             unsignedStatus, true, response, &error),
-         "reports an unsigned installer as a coherent verification failure");
-  expect(!error.isEmpty(), "explains unsigned installer rejection");
+  expect(unsignedStatus != 0,
+         "rejects an installer without a valid release signature");
+  expect(!acceptWindowsVerificationHelperResult(unsignedStatus, true, response,
+                                                &error),
+         "reports an invalid release signature as a coherent verification "
+         "failure");
+  expect(error.contains(QStringLiteral("release signature")),
+         "explains release signature rejection");
+
+  const QByteArray testSeed = QByteArray::fromHex(
+      "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60");
+  std::array<unsigned char, 32> testPublicKey{};
+  std::array<unsigned char, 64> testPrivateKey{};
+  std::array<unsigned char, 64> testSignature{};
+  ed25519_create_keypair(
+      testPublicKey.data(), testPrivateKey.data(),
+      reinterpret_cast<const unsigned char *>(testSeed.constData()));
+  ed25519_sign(
+      testSignature.data(),
+      reinterpret_cast<const unsigned char *>(unsignedBytes.constData()),
+      static_cast<size_t>(unsignedBytes.size()), testPublicKey.data(),
+      testPrivateKey.data());
+  const QString validReleaseSignature = QString::fromLatin1(
+      QByteArray(reinterpret_cast<const char *>(testSignature.data()),
+                 static_cast<qsizetype>(testSignature.size()))
+          .toBase64());
+  const int freeInstallerStatus = runWindowsVerificationHelper(
+      {unsignedPath, QString::number(unsignedBytes.size()), unsignedHash,
+       QStringLiteral("1.2.3"), validReleaseSignature},
+      &response);
+  expect(freeInstallerStatus != 0,
+         "continues validating a release-signed free installer");
+  expect(!acceptWindowsVerificationHelperResult(freeInstallerStatus, true,
+                                                response, &error),
+         "reports a missing installer version identity coherently");
+  expect(error.contains(QStringLiteral("version identity")),
+         "passes a valid release signature without requiring Authenticode");
 
   const int uppercaseHashStatus = runWindowsVerificationHelper(
       {unsignedPath, QString::number(unsignedBytes.size()),
-       unsignedHash.toUpper(), QStringLiteral("1.2.3")},
+       unsignedHash.toUpper(), QStringLiteral("1.2.3"),
+       invalidReleaseSignature},
       &response);
   expect(uppercaseHashStatus != 0,
          "rejects a noncanonical uppercase helper hash");
@@ -235,7 +285,7 @@ void testWindowsVerificationHelperProtocol() {
 #endif
 
 #ifdef Q_OS_LINUX
-QByteArray readFile(const QString& path) {
+QByteArray readFile(const QString &path) {
   QFile input(path);
   if (!input.open(QIODevice::ReadOnly)) {
     return {};
@@ -252,12 +302,13 @@ void testLinuxStagedCommit() {
   expect(live.write("current") == 7, "writes live AppImage fixture");
   live.close();
   const QFileDevice::Permissions permissions =
-      QFileDevice::ReadOwner | QFileDevice::WriteOwner |
-      QFileDevice::ExeOwner | QFileDevice::ReadGroup;
+      QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner |
+      QFileDevice::ReadGroup;
   expect(QFile::setPermissions(livePath, permissions),
          "sets live AppImage fixture permissions");
 
-  const QString stagingDirectory = root.filePath(QStringLiteral("private-stage"));
+  const QString stagingDirectory =
+      root.filePath(QStringLiteral("private-stage"));
   expect(QDir().mkpath(stagingDirectory), "creates private staging directory");
   const QString stagedPath =
       QDir(stagingDirectory).filePath(QStringLiteral("LocalFlow.AppImage"));

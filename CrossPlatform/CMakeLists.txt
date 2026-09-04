@@ -15,8 +15,17 @@ option(LOCALFLOW_BUILD_APP "Build the Windows/Linux desktop application" ON)
 option(LOCALFLOW_STRICT_WARNINGS "Treat LocalFlow compiler warnings as errors" OFF)
 option(LOCALFLOW_REQUIRE_INFERENCE "Fail configure unless both pinned inference runtimes are available" OFF)
 option(LOCALFLOW_REQUIRE_OCR "Fail configure unless the Linux local OCR runtime is available" OFF)
-option(LOCALFLOW_REQUIRE_SIGNED_UPDATES "Fail configure unless the Windows update signer is pinned" OFF)
+option(LOCALFLOW_REQUIRE_SIGNED_UPDATES "Fail configure unless the Windows release-verification key is pinned" OFF)
+option(LOCALFLOW_REQUIRE_AUTHENTICODE_UPDATES "Require Windows updates to also carry a trusted Authenticode signature" OFF)
 set(LOCALFLOW_WINDOWS_SIGNER_SHA256 "" CACHE STRING "Trusted Windows update signer certificate SHA-256")
+set(LOCALFLOW_UPDATE_PUBLIC_ED_KEY "" CACHE STRING "Base64 Ed25519 public key for Windows release verification")
+
+if(LOCALFLOW_UPDATE_PUBLIC_ED_KEY STREQUAL "")
+    file(STRINGS
+        "${CMAKE_CURRENT_SOURCE_DIR}/../Resources/sparkle-public-ed-key.txt"
+        LOCALFLOW_UPDATE_PUBLIC_ED_KEY
+        LIMIT_COUNT 1)
+endif()
 
 add_subdirectory(core)
 add_subdirectory(inference)
@@ -25,6 +34,7 @@ add_library(localflow_platform INTERFACE)
 add_library(LocalFlow::Platform ALIAS localflow_platform)
 
 if(WIN32)
+    add_subdirectory(crypto)
     add_subdirectory(platform/windows)
     target_link_libraries(localflow_platform INTERFACE LocalFlow::Windows)
 elseif(UNIX AND NOT APPLE)
@@ -44,6 +54,8 @@ endif()
 
 if(LOCALFLOW_STRICT_WARNINGS)
     foreach(target localflow_core localflow_asr localflow_polish localflow_desktop localflow_polish_worker
+                   localflow_update_signer
+                   localflow_update_ed25519_tests
                    localflow_polish_contract_tests localflow_asr_contract_tests
                    localflow_learned_term_model_tests localflow_update_manager_tests
                    localflow_screen_term_capture_tests localflow_replacement_model_tests

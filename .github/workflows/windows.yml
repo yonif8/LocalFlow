@@ -37,6 +37,8 @@ on:
         default: ""
         type: string
     secrets:
+      LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY:
+        required: false
       WINDOWS_CODESIGN_PFX_BASE64:
         required: false
       WINDOWS_CODESIGN_PFX_PASSWORD:
@@ -152,10 +154,31 @@ jobs:
               throw "WINDOWS_CODESIGN_CERT_SHA256 must normalize to exactly 64 hexadecimal characters."
             }
           }
-          if ($env:IS_RELEASE -eq "true" -and -not $normalizedFingerprint) {
-            throw "Production Windows builds require WINDOWS_CODESIGN_CERT_SHA256."
-          }
           "WINDOWS_CODESIGN_CERT_SHA256=$normalizedFingerprint" >> $env:GITHUB_ENV
+
+      - name: Validate private release key availability
+        if: env.IS_RELEASE == 'true'
+        shell: pwsh
+        env:
+          LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY: ${{ secrets.LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY }}
+        run: |
+          $encodedSeed = $env:LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY
+          if ([string]::IsNullOrWhiteSpace($encodedSeed)) {
+            throw "Production Windows builds require LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY."
+          }
+          if ($encodedSeed -cne $encodedSeed.Trim()) {
+            throw "LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY must not contain surrounding whitespace."
+          }
+          try {
+            $seed = [Convert]::FromBase64String($encodedSeed)
+          } catch {
+            throw "LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY is invalid base64."
+          }
+          if ($seed.Length -ne 32 `
+              -or [Convert]::ToBase64String($seed) -cne $encodedSeed) {
+            throw "LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY must be one canonical 32-byte seed."
+          }
+          [Array]::Clear($seed, 0, $seed.Length)
 
       - name: Install pinned Qt
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
@@ -183,6 +206,7 @@ jobs:
         shell: pwsh
         run: |
           $requireSignedUpdates = if ($env:IS_RELEASE -eq "true") { "ON" } else { "OFF" }
+          $requireAuthenticode = if ($env:WINDOWS_CODESIGN_CERT_SHA256) { "ON" } else { "OFF" }
           cmake -S CrossPlatform -B $env:BUILD_DIR `
             -G "Visual Studio 17 2022" -A x64 `
             -DBUILD_TESTING=ON `
@@ -190,6 +214,7 @@ jobs:
             -DLOCALFLOW_STRICT_WARNINGS=ON `
             -DLOCALFLOW_REQUIRE_INFERENCE=ON `
             "-DLOCALFLOW_REQUIRE_SIGNED_UPDATES=$requireSignedUpdates" `
+            "-DLOCALFLOW_REQUIRE_AUTHENTICODE_UPDATES=$requireAuthenticode" `
             "-DLOCALFLOW_WINDOWS_SIGNER_SHA256=$env:WINDOWS_CODESIGN_CERT_SHA256" `
             -DLOCALFLOW_ENABLE_NEMO_SPEECH=ON `
             -DLOCALFLOW_ENABLE_LLAMA=ON `
@@ -326,6 +351,19 @@ jobs:
           Copy-Item -Path (Join-Path $qtLicenses "*") `
             -Destination $qtLicenseDestination -Recurse -Force
 
+          $ed25519Licenses = Join-Path $env:GITHUB_WORKSPACE "CrossPlatform\packaging\licenses\ed25519"
+          $ed25519LicenseDestination = Join-Path $env:STAGE_DIR "share\licenses\ed25519"
+          foreach ($name in @("LICENSE.txt", "SOURCE.md")) {
+            $source = Join-Path $ed25519Licenses $name
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf) `
+                -or (Get-Item -LiteralPath $source).Length -eq 0) {
+              throw "The portable Ed25519 notice bundle is missing $name."
+            }
+          }
+          New-Item -ItemType Directory -Force -Path $ed25519LicenseDestination | Out-Null
+          Copy-Item -Path (Join-Path $ed25519Licenses "*") `
+            -Destination $ed25519LicenseDestination -Force
+
           # Stage the locked inference files after Qt deployment so no deploy
           # helper can silently replace their runtime DLLs.
           python "CrossPlatform/dependencies/stage-runtime.py" `
@@ -345,6 +383,8 @@ jobs:
             "share\licenses\Qt\qtdeclarative\LGPL-3.0-only.txt",
             "share\licenses\Qt\qtshadertools\LGPL-3.0-only.txt",
             "share\licenses\Qt\qtwayland\LGPL-3.0-only.txt",
+            "share\licenses\ed25519\LICENSE.txt",
+            "share\licenses\ed25519\SOURCE.md",
             "share\licenses\nemo-speech\LICENSE",
             "share\licenses\nemo-speech\NOTICE",
             "share\licenses\nemo-speech\THIRD_PARTY_NOTICES.md",
@@ -394,7 +434,7 @@ jobs:
           WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
           WINDOWS_CODESIGN_TIMESTAMP_URL: ${{ secrets.WINDOWS_CODESIGN_TIMESTAMP_URL }}
         run: |
-          $requireSigning = $env:IS_RELEASE -eq "true"
+          $requireSigning = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_CERT_SHA256)
           $binaries = @(
             (Join-Path $env:STAGE_DIR "bin\LocalFlow.exe")
             (Join-Path $env:STAGE_DIR "bin\polish\localflow-polish-worker.exe")
@@ -432,7 +472,7 @@ jobs:
           WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
           WINDOWS_CODESIGN_TIMESTAMP_URL: ${{ secrets.WINDOWS_CODESIGN_TIMESTAMP_URL }}
         run: |
-          $requireSigning = $env:IS_RELEASE -eq "true"
+          $requireSigning = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_CERT_SHA256)
           $installer = Join-Path $env:PACKAGE_DIR "$env:INSTALLER_BASENAME.exe"
           & "CrossPlatform/packaging/windows/Sign-Artifacts.ps1" `
             -Path $installer -RequireSigning:$requireSigning
@@ -441,6 +481,33 @@ jobs:
               -or $productVersion -cne $env:APP_VERSION) {
             throw "Installer ProductVersion '$productVersion' does not exactly match $($env:APP_VERSION)."
           }
+
+      - name: Sign installer with the LocalFlow release key
+        if: env.IS_RELEASE == 'true'
+        shell: pwsh
+        env:
+          LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY: ${{ secrets.LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY }}
+        run: |
+          $installer = Join-Path $env:PACKAGE_DIR "$env:INSTALLER_BASENAME.exe"
+          $signer = Join-Path $env:BUILD_DIR "bin\Release\localflow_update_signer.exe"
+          if (-not (Test-Path -LiteralPath $signer -PathType Leaf)) {
+            throw "The LocalFlow update signer was not built."
+          }
+          $signatureOutput = @(& $signer $installer)
+          if ($LASTEXITCODE -ne 0 -or $signatureOutput.Count -ne 1) {
+            throw "The LocalFlow update signer failed."
+          }
+          $signature = $signatureOutput[0].Trim()
+          try {
+            $signatureBytes = [Convert]::FromBase64String($signature)
+          } catch {
+            throw "The LocalFlow update signer returned invalid base64."
+          }
+          if ($signatureBytes.Length -ne 64 `
+              -or [Convert]::ToBase64String($signatureBytes) -cne $signature) {
+            throw "The LocalFlow update signer returned a noncanonical signature."
+          }
+          "INSTALLER_ED25519_SIGNATURE=$signature" >> $env:GITHUB_ENV
 
       - name: Exercise isolated update verifier
         if: env.IS_RELEASE == 'true'
@@ -452,7 +519,8 @@ jobs:
               [Parameter(Mandatory)][string] $Installer,
               [Parameter(Mandatory)][long] $Size,
               [Parameter(Mandatory)][string] $Sha256,
-              [Parameter(Mandatory)][string] $Version
+              [Parameter(Mandatory)][string] $Version,
+              [Parameter(Mandatory)][string] $Ed25519Signature
             )
             $startInfo = [Diagnostics.ProcessStartInfo]::new()
             $startInfo.FileName = $Application
@@ -463,7 +531,7 @@ jobs:
             foreach ($argument in @(
               "--localflow-private-verify-windows-update-v1",
               $Installer, $Size.ToString([Globalization.CultureInfo]::InvariantCulture),
-              $Sha256, $Version
+              $Sha256, $Version, $Ed25519Signature
             )) {
               $startInfo.ArgumentList.Add($argument)
             }
@@ -504,7 +572,8 @@ jobs:
           $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
           $accepted = Invoke-UpdateVerifier `
             -Application $app -Installer $installer -Size $installerItem.Length `
-            -Sha256 $installerHash -Version $env:APP_VERSION
+            -Sha256 $installerHash -Version $env:APP_VERSION `
+            -Ed25519Signature $env:INSTALLER_ED25519_SIGNATURE
           $acceptedPayload = ConvertFrom-VerifierResult $accepted
           $acceptedFields = @($acceptedPayload.PSObject.Properties.Name | Sort-Object)
           if ($accepted.ExitCode -ne 0 -or $acceptedFields.Count -ne 2 `
@@ -533,7 +602,8 @@ jobs:
           $tamperedHash = (Get-FileHash -LiteralPath $tampered -Algorithm SHA256).Hash.ToLowerInvariant()
           $rejected = Invoke-UpdateVerifier `
             -Application $app -Installer $tampered -Size $tamperedItem.Length `
-            -Sha256 $tamperedHash -Version $env:APP_VERSION
+            -Sha256 $tamperedHash -Version $env:APP_VERSION `
+            -Ed25519Signature $env:INSTALLER_ED25519_SIGNATURE
           $rejectedPayload = ConvertFrom-VerifierResult $rejected
           $rejectedFields = @($rejectedPayload.PSObject.Properties.Name | Sort-Object)
           if ($rejected.ExitCode -eq 0 -or $rejectedFields.Count -ne 3 `
@@ -573,6 +643,8 @@ jobs:
           foreach ($notice in @(
             "share\licenses\Qt\SOURCE.md",
             "share\licenses\Qt\qtbase\LGPL-3.0-only.txt",
+            "share\licenses\ed25519\LICENSE.txt",
+            "share\licenses\ed25519\SOURCE.md",
             "share\licenses\nemo-speech\THIRD_PARTY_NOTICES.md",
             "share\licenses\llama.cpp\LICENSE-LLVM-OpenMP"
           )) {
@@ -607,7 +679,7 @@ jobs:
             throw "Installer created a duplicate legacy startup shortcut."
           }
 
-          if ($env:IS_RELEASE -eq "true") {
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_CERT_SHA256)) {
             foreach ($binary in @($installer, $installedApp, $installedWorker)) {
               $signature = Get-AuthenticodeSignature -LiteralPath $binary
               $signer = if ($signature.SignerCertificate) {
@@ -663,13 +735,20 @@ jobs:
           } else {
             $downloadUrl = "https://example.invalid/localflow-ci/$([IO.Path]::GetFileName($installer))"
           }
+          $releaseSignature = if ($env:INSTALLER_ED25519_SIGNATURE) {
+            $env:INSTALLER_ED25519_SIGNATURE
+          } else {
+            ""
+          }
           & "CrossPlatform/packaging/windows/New-UpdateManifest.ps1" `
             -Version $env:APP_VERSION `
             -InstallerPath $installer `
             -DownloadUrl $downloadUrl `
             -Channel $env:UPDATE_CHANNEL `
             -OutputPath (Join-Path $env:PACKAGE_DIR "windows-update.json") `
-            -RequireSigned:($env:IS_RELEASE -eq "true")
+            -ReleaseSignature $releaseSignature `
+            -RequireReleaseSignature:($env:IS_RELEASE -eq "true") `
+            -RequireAuthenticode:(-not [string]::IsNullOrWhiteSpace($env:WINDOWS_CODESIGN_CERT_SHA256))
 
       - name: Upload immutable build artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

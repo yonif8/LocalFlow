@@ -46,6 +46,8 @@
 #include <wintrust.h>
 #include <winver.h>
 
+#include "ed25519.h"
+
 #ifdef _MSC_VER
 #pragma comment(lib, "crypt32.lib")
 #pragma comment(lib, "version.lib")
@@ -59,6 +61,10 @@
 
 #ifndef LOCALFLOW_WINDOWS_SIGNER_SHA256
 #define LOCALFLOW_WINDOWS_SIGNER_SHA256 ""
+#endif
+
+#ifndef LOCALFLOW_UPDATE_PUBLIC_ED_KEY
+#define LOCALFLOW_UPDATE_PUBLIC_ED_KEY ""
 #endif
 
 namespace {
@@ -183,8 +189,7 @@ void cleanupAbandonedWindowsUpdateDirectories() {
   QDir temporaryRoot(QDir::tempPath());
   const QFileInfoList candidates = temporaryRoot.entryInfoList(
       {QStringLiteral("LocalFlow-update-*")},
-      QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks,
-      QDir::Time);
+      QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks, QDir::Time);
   for (const QFileInfo &candidate : candidates) {
     if (candidate.isSymLink() || candidate.lastModified().toUTC() > cutoff) {
       continue;
@@ -252,16 +257,14 @@ verifyInstallerProductVersion(const std::wstring &nativePath,
       GetFileVersionInfoSizeW(nativePath.c_str(), &ignoredHandle);
   if (versionInfoSize == 0 || versionInfoSize > kMaximumVersionInfoBytes) {
     return {false,
-            QStringLiteral(
-                "The signed installer has no readable version identity.")};
+            QStringLiteral("The installer has no readable version identity.")};
   }
 
   std::vector<BYTE> versionInfo(versionInfoSize);
   if (GetFileVersionInfoW(nativePath.c_str(), 0, versionInfoSize,
                           versionInfo.data()) == FALSE) {
-    return {false,
-            QStringLiteral(
-                "The signed installer's version identity could not be read.")};
+    return {false, QStringLiteral(
+                       "The installer's version identity could not be read.")};
   }
 
   void *rawTranslations = nullptr;
@@ -273,15 +276,13 @@ verifyInstallerProductVersion(const std::wstring &nativePath,
       rawTranslations == nullptr || translationBytes < kTranslationSize ||
       translationBytes % kTranslationSize != 0) {
     return {false,
-            QStringLiteral(
-                "The signed installer has no valid version translation.")};
+            QStringLiteral("The installer has no valid version translation.")};
   }
 
   const UINT translationCount = translationBytes / kTranslationSize;
   if (translationCount > kMaximumTranslations) {
     return {false,
-            QStringLiteral(
-                "The signed installer has an invalid version identity.")};
+            QStringLiteral("The installer has an invalid version identity.")};
   }
 
   const auto *translations =
@@ -300,9 +301,8 @@ verifyInstallerProductVersion(const std::wstring &nativePath,
                        &rawProductVersion, &productVersionLength) == FALSE ||
         rawProductVersion == nullptr || productVersionLength == 0 ||
         productVersionLength > 129U) {
-      return {false,
-              QStringLiteral(
-                  "The signed installer has no valid ProductVersion text.")};
+      return {false, QStringLiteral(
+                         "The installer has no valid ProductVersion text.")};
     }
 
     const auto *productVersionCharacters =
@@ -315,14 +315,12 @@ verifyInstallerProductVersion(const std::wstring &nativePath,
         QString::fromWCharArray(productVersionCharacters, characterCount);
     if (characterCount == 0 || productVersion.contains(QChar(u'\0')) ||
         !localflow::updates::parseSemanticVersion(productVersion)) {
-      return {false,
-              QStringLiteral(
-                  "The signed installer has an invalid ProductVersion text.")};
+      return {false, QStringLiteral(
+                         "The installer has an invalid ProductVersion text.")};
     }
     if (productVersion != expectedVersion) {
-      return {false,
-              QStringLiteral("The signed installer's ProductVersion does not "
-                             "match the update manifest.")};
+      return {false, QStringLiteral("The installer's ProductVersion does not "
+                                    "match the update manifest.")};
     }
   }
 
@@ -330,16 +328,29 @@ verifyInstallerProductVersion(const std::wstring &nativePath,
 }
 
 NativeVerificationResult
-verifyAuthenticodeAndSigner(const QString &path, const qint64 expectedSize,
+verifyInstallerAuthenticity(const QString &path, const qint64 expectedSize,
                             const QByteArray &expectedSha256,
+                            const QByteArray &expectedEd25519Signature,
                             const QString &expectedFingerprint,
                             const QString &expectedVersion) {
   const QString normalizedExpected =
       localflow::updates::normalizeSha256Fingerprint(expectedFingerprint);
-  if (normalizedExpected.size() != 64) {
+  if (!normalizedExpected.isEmpty() && normalizedExpected.size() != 64) {
     return {false,
             QStringLiteral(
-                "This build has no valid trusted update signer configured.")};
+                "This build has an invalid Authenticode signer configured.")};
+  }
+  const QByteArray encodedPublicKey =
+      QByteArrayLiteral(LOCALFLOW_UPDATE_PUBLIC_ED_KEY);
+  const auto publicKey = QByteArray::fromBase64Encoding(
+      encodedPublicKey, QByteArray::AbortOnBase64DecodingErrors);
+  if (!publicKey || publicKey.decoded.size() != 32 ||
+      publicKey.decoded.toBase64() != encodedPublicKey ||
+      expectedEd25519Signature.size() != 64) {
+    return {
+        false,
+        QStringLiteral(
+            "This build has no valid release-verification key configured.")};
   }
 
   QFile installer(path);
@@ -367,9 +378,28 @@ verifyAuthenticodeAndSigner(const QString &path, const qint64 expectedSize,
             QStringLiteral(
                 "The downloaded update failed its final SHA-256 check.")};
   }
+  uchar *mappedInstaller = installer.map(0, expectedSize);
+  if (mappedInstaller == nullptr) {
+    return {false, QStringLiteral("The downloaded update could not be mapped "
+                                  "for signature verification.")};
+  }
+  const bool releaseSignatureValid =
+      ed25519_verify(reinterpret_cast<const unsigned char *>(
+                         expectedEd25519Signature.constData()),
+                     mappedInstaller, static_cast<size_t>(expectedSize),
+                     reinterpret_cast<const unsigned char *>(
+                         publicKey.decoded.constData())) == 1;
+  installer.unmap(mappedInstaller);
+  if (!releaseSignatureValid) {
+    return {false, QStringLiteral("The downloaded update does not have a valid "
+                                  "LocalFlow release signature.")};
+  }
   installer.close();
 
   const std::wstring nativePath = QDir::toNativeSeparators(path).toStdWString();
+  if (normalizedExpected.isEmpty()) {
+    return verifyInstallerProductVersion(nativePath, expectedVersion);
+  }
   WINTRUST_FILE_INFO fileInfo{};
   fileInfo.cbStruct = static_cast<DWORD>(sizeof(fileInfo));
   fileInfo.pcwszFilePath = nativePath.c_str();
@@ -716,11 +746,12 @@ parseWindowsUpdateManifest(const QByteArray &json, QString *error) {
   if (!hasExactKeys(installer,
                     {QStringLiteral("fileName"), QStringLiteral("url"),
                      QStringLiteral("sizeBytes"), QStringLiteral("sha256"),
-                     QStringLiteral("authenticode"),
+                     QStringLiteral("ed25519"), QStringLiteral("authenticode"),
                      QStringLiteral("silentArguments")}) ||
       !installer.value(QStringLiteral("fileName")).isString() ||
       !installer.value(QStringLiteral("url")).isString() ||
       !installer.value(QStringLiteral("sha256")).isString() ||
+      !installer.value(QStringLiteral("ed25519")).isObject() ||
       !installer.value(QStringLiteral("authenticode")).isObject() ||
       !installer.value(QStringLiteral("silentArguments")).isString() ||
       installer.value(QStringLiteral("silentArguments")).toString().size() >
@@ -751,27 +782,69 @@ parseWindowsUpdateManifest(const QByteArray &json, QString *error) {
   }
   manifest.sha256 = hash.toLatin1().toLower();
 
+  const QJsonObject ed25519 =
+      installer.value(QStringLiteral("ed25519")).toObject();
+  if (!hasExactKeys(ed25519, {QStringLiteral("algorithm"),
+                              QStringLiteral("validAtPublication"),
+                              QStringLiteral("signature")}) ||
+      ed25519.value(QStringLiteral("algorithm")).toString() !=
+          QStringLiteral("ed25519") ||
+      ed25519.value(QStringLiteral("validAtPublication")) != QJsonValue(true) ||
+      !ed25519.value(QStringLiteral("signature")).isString()) {
+    assignError(error, QStringLiteral("Update release signature is invalid."));
+    return std::nullopt;
+  }
+  const QByteArray encodedSignature =
+      ed25519.value(QStringLiteral("signature")).toString().toLatin1();
+  const auto decodedSignature = QByteArray::fromBase64Encoding(
+      encodedSignature, QByteArray::AbortOnBase64DecodingErrors);
+  if (!decodedSignature || decodedSignature.decoded.size() != 64 ||
+      decodedSignature.decoded.toBase64() != encodedSignature) {
+    assignError(error, QStringLiteral("Update release signature is invalid."));
+    return std::nullopt;
+  }
+  manifest.ed25519Signature = decodedSignature.decoded;
+
   const QJsonObject authenticode =
       installer.value(QStringLiteral("authenticode")).toObject();
   if (!hasExactKeys(authenticode,
                     {QStringLiteral("required"),
                      QStringLiteral("validAtPublication"),
                      QStringLiteral("signerCertificateSha256")}) ||
-      authenticode.value(QStringLiteral("required")) != QJsonValue(true) ||
-      authenticode.value(QStringLiteral("validAtPublication")) !=
-          QJsonValue(true) ||
-      !authenticode.value(QStringLiteral("signerCertificateSha256"))
-           .isString()) {
-    assignError(
-        error,
-        QStringLiteral("Update manifest does not require a valid signature."));
+      !authenticode.value(QStringLiteral("required")).isBool() ||
+      !authenticode.value(QStringLiteral("validAtPublication")).isBool()) {
+    assignError(error,
+                QStringLiteral("Update Authenticode metadata is invalid."));
     return std::nullopt;
   }
-  manifest.signerCertificateSha256 = normalizeSha256Fingerprint(
-      authenticode.value(QStringLiteral("signerCertificateSha256")).toString());
-  if (manifest.signerCertificateSha256.isEmpty()) {
+  manifest.authenticodeRequired =
+      authenticode.value(QStringLiteral("required")).toBool();
+  const bool validAuthenticode =
+      authenticode.value(QStringLiteral("validAtPublication")).toBool();
+  const QJsonValue signerValue =
+      authenticode.value(QStringLiteral("signerCertificateSha256"));
+  if (validAuthenticode) {
+    if (!signerValue.isString()) {
+      assignError(error,
+                  QStringLiteral("Update Authenticode signer is invalid."));
+      return std::nullopt;
+    }
+    manifest.signerCertificateSha256 =
+        normalizeSha256Fingerprint(signerValue.toString());
+    if (manifest.signerCertificateSha256.isEmpty()) {
+      assignError(error,
+                  QStringLiteral("Update Authenticode signer is invalid."));
+      return std::nullopt;
+    }
+  } else if (!signerValue.isNull()) {
     assignError(error,
-                QStringLiteral("Update manifest signer identity is invalid."));
+                QStringLiteral("Update Authenticode signer is invalid."));
+    return std::nullopt;
+  }
+  if (manifest.authenticodeRequired && !validAuthenticode) {
+    assignError(
+        error,
+        QStringLiteral("Update requires a missing Authenticode signature."));
     return std::nullopt;
   }
   return manifest;
@@ -826,15 +899,14 @@ parseVerificationResponse(const QByteArray &response) {
   }
   const bool ok = okValue.toBool();
   if (ok) {
-    if (!hasExactKeys(object,
-                      {QStringLiteral("schemaVersion"), QStringLiteral("ok")})) {
+    if (!hasExactKeys(
+            object, {QStringLiteral("schemaVersion"), QStringLiteral("ok")})) {
       return std::nullopt;
     }
     return ParsedVerificationResponse{true, {}};
   }
-  if (!hasExactKeys(object,
-                    {QStringLiteral("schemaVersion"), QStringLiteral("ok"),
-                     QStringLiteral("error")}) ||
+  if (!hasExactKeys(object, {QStringLiteral("schemaVersion"),
+                             QStringLiteral("ok"), QStringLiteral("error")}) ||
       !object.value(QStringLiteral("error")).isString()) {
     return std::nullopt;
   }
@@ -863,7 +935,7 @@ int runWindowsVerificationHelper(const QStringList &arguments,
     return kInvalidVerificationRequestExitCode;
   }
   response->clear();
-  if (arguments.size() != 4) {
+  if (arguments.size() != 5) {
     return rejectRequest(
         QStringLiteral("The private update verification request is invalid."));
   }
@@ -872,14 +944,14 @@ int runWindowsVerificationHelper(const QStringList &arguments,
   const QString sizeText = arguments[1];
   const QString hashText = arguments[2];
   const QString versionText = arguments[3];
+  const QByteArray encodedEd25519Signature = arguments[4].toLatin1();
   const QFileInfo installerInfo(installerPath);
   if (installerPath.isEmpty() || installerPath.size() > 32'767 ||
       installerPath.contains(QChar(u'\0')) || !installerInfo.isAbsolute()) {
     return rejectRequest(
         QStringLiteral("The private update verification path is invalid."));
   }
-  if (sizeText.isEmpty() || sizeText.size() > 19 ||
-      !isAsciiNumeric(sizeText) ||
+  if (sizeText.isEmpty() || sizeText.size() > 19 || !isAsciiNumeric(sizeText) ||
       (sizeText.size() > 1 && sizeText.front() == QLatin1Char('0'))) {
     return rejectRequest(
         QStringLiteral("The private update verification size is invalid."));
@@ -901,6 +973,13 @@ int runWindowsVerificationHelper(const QStringList &arguments,
     return rejectRequest(
         QStringLiteral("The private update verification version is invalid."));
   }
+  const auto ed25519Signature = QByteArray::fromBase64Encoding(
+      encodedEd25519Signature, QByteArray::AbortOnBase64DecodingErrors);
+  if (!ed25519Signature || ed25519Signature.decoded.size() != 64 ||
+      ed25519Signature.decoded.toBase64() != encodedEd25519Signature) {
+    return rejectRequest(
+        QStringLiteral("The private update release signature is invalid."));
+  }
   if (!installerInfo.exists() || !installerInfo.isFile() ||
       installerInfo.isSymLink()) {
     *response = encodeVerificationResponse(
@@ -909,8 +988,9 @@ int runWindowsVerificationHelper(const QStringList &arguments,
     return kVerificationRejectedExitCode;
   }
 
-  const NativeVerificationResult native = verifyAuthenticodeAndSigner(
+  const NativeVerificationResult native = verifyInstallerAuthenticity(
       installerInfo.absoluteFilePath(), expectedSize, hashText.toLatin1(),
+      ed25519Signature.decoded,
       QString::fromLatin1(LOCALFLOW_WINDOWS_SIGNER_SHA256), versionText);
   *response = encodeVerificationResponse(native.ok, native.error);
   return native.ok ? 0 : kVerificationRejectedExitCode;
@@ -930,15 +1010,15 @@ bool acceptWindowsVerificationHelperResult(const int exitCode,
     return false;
   }
   const auto parsed = parseVerificationResponse(response);
-  const bool coherentExit = parsed &&
+  const bool coherentExit =
+      parsed &&
       ((parsed->ok && exitCode == 0) ||
-       (!parsed->ok &&
-        (exitCode == kVerificationRejectedExitCode ||
-         exitCode == kInvalidVerificationRequestExitCode)));
+       (!parsed->ok && (exitCode == kVerificationRejectedExitCode ||
+                        exitCode == kInvalidVerificationRequestExitCode)));
   if (!coherentExit) {
-    assignError(
-        error,
-        QStringLiteral("The Windows update verifier returned an invalid result."));
+    assignError(error,
+                QStringLiteral(
+                    "The Windows update verifier returned an invalid result."));
     return false;
   }
   if (!parsed->ok) {
@@ -960,9 +1040,8 @@ bool copyLinuxAppImageForStaging(const QString &sourcePath,
                                  QString *error) {
   if (sourcePath.isEmpty() || stagedPath.isEmpty() ||
       QFileInfo::exists(stagedPath)) {
-    assignError(
-        error,
-        QStringLiteral("The private update staging path is invalid."));
+    assignError(error,
+                QStringLiteral("The private update staging path is invalid."));
     return false;
   }
 
@@ -979,10 +1058,9 @@ bool copyLinuxAppImageForStaging(const QString &sourcePath,
   }
   if (!QFile::setPermissions(stagedPath, permissions)) {
     QFile::remove(stagedPath);
-    assignError(
-        error,
-        QStringLiteral(
-            "The staged AppImage permissions could not be preserved."));
+    assignError(error,
+                QStringLiteral(
+                    "The staged AppImage permissions could not be preserved."));
     return false;
   }
   return true;
@@ -1016,7 +1094,8 @@ bool commitLinuxStagedAppImage(const QString &stagedPath,
   const QByteArray stagedNative = QFile::encodeName(stagedPath);
   const QByteArray destinationNative = QFile::encodeName(destinationPath);
   errno = 0;
-  if (std::rename(stagedNative.constData(), destinationNative.constData()) != 0) {
+  if (std::rename(stagedNative.constData(), destinationNative.constData()) !=
+      0) {
     const int renameError = errno;
     assignError(
         error,
@@ -1073,10 +1152,12 @@ struct UpdateManager::Implementation {
       (void)process->waitForFinished(1000);
       process->deleteLater();
       fail(state == UpdateManager::State::Updating
-               ? QStringLiteral(
-                     "The AppImage updater did not finish within ten minutes. The existing app was left in place; try again or update from Releases.")
+               ? QStringLiteral("The AppImage updater did not finish within "
+                                "ten minutes. The existing app was left in "
+                                "place; try again or update from Releases.")
                : QStringLiteral(
-                     "The AppImage update check did not respond within one minute. Try again or update from Releases."));
+                     "The AppImage update check did not respond within one "
+                     "minute. Try again or update from Releases."));
     });
 #endif
   }
@@ -1193,9 +1274,9 @@ struct UpdateManager::Implementation {
     // application shutdown. The OS reclaims the detached handles on exit; if
     // the event loop remains alive, the QProcess deletes itself when done.
     process->setParent(nullptr);
-    QObject::connect(
-        process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
-        process, [process] { process->deleteLater(); });
+    QObject::connect(process,
+                     qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+                     process, [process] { process->deleteLater(); });
     return false;
   }
 
@@ -1234,14 +1315,6 @@ struct UpdateManager::Implementation {
 
   void checkForWindowsUpdate() {
 #ifdef Q_OS_WIN
-    const QString expectedSigner =
-        localflow::updates::normalizeSha256Fingerprint(
-            QString::fromLatin1(LOCALFLOW_WINDOWS_SIGNER_SHA256));
-    if (expectedSigner.isEmpty()) {
-      fail(QStringLiteral(
-          "This build is not configured with a trusted update signer."));
-      return;
-    }
     QString currentVersionError;
     currentVersion = localflow::updates::parseSemanticVersion(
         currentVersionText, &currentVersionError);
@@ -1308,7 +1381,9 @@ struct UpdateManager::Implementation {
       const QString compiledSigner =
           localflow::updates::normalizeSha256Fingerprint(
               QString::fromLatin1(LOCALFLOW_WINDOWS_SIGNER_SHA256));
-      if (manifest->signerCertificateSha256 != compiledSigner) {
+      if (!compiledSigner.isEmpty() &&
+          (!manifest->authenticodeRequired ||
+           manifest->signerCertificateSha256 != compiledSigner)) {
         fail(QStringLiteral("The release metadata does not match this build's "
                             "trusted signer."));
         return;
@@ -1483,10 +1558,10 @@ struct UpdateManager::Implementation {
         QDir(current.absolutePath())
             .filePath(QStringLiteral(".localflow-update-XXXXXX")));
     if (!linuxStagingDirectory->isValid() ||
-        !QFile::setPermissions(
-            linuxStagingDirectory->path(),
-            QFileDevice::ReadOwner | QFileDevice::WriteOwner |
-                QFileDevice::ExeOwner)) {
+        !QFile::setPermissions(linuxStagingDirectory->path(),
+                               QFileDevice::ReadOwner |
+                                   QFileDevice::WriteOwner |
+                                   QFileDevice::ExeOwner)) {
       cleanupLinuxStaging();
       assignError(
           error,
@@ -1495,7 +1570,8 @@ struct UpdateManager::Implementation {
       return false;
     }
 
-    linuxStagedAppImagePath = linuxStagingDirectory->filePath(current.fileName());
+    linuxStagedAppImagePath =
+        linuxStagingDirectory->filePath(current.fileName());
     if (!localflow::updates::detail::copyLinuxAppImageForStaging(
             linuxAppImagePath, linuxStagedAppImagePath,
             linuxOriginalAppImagePermissions, error)) {
@@ -1707,7 +1783,7 @@ struct UpdateManager::Implementation {
         UpdateManager::State::Verifying,
         QStringLiteral("Verifying the update…"),
         QStringLiteral(
-            "Windows is checking the digital signature and trusted signer."));
+            "Checking the LocalFlow release signature and file identity."));
     windowsVerificationOutput.clear();
     windowsVerificationOutputOverflow = false;
     auto *process = new QProcess(owner);
@@ -1717,17 +1793,17 @@ struct UpdateManager::Implementation {
         {QString::fromLatin1(
              localflow::updates::detail::kWindowsVerificationHelperMode),
          downloadedInstallerPath, QString::number(manifest->sizeBytes),
-         QString::fromLatin1(manifest->sha256), manifest->version});
+         QString::fromLatin1(manifest->sha256), manifest->version,
+         QString::fromLatin1(manifest->ed25519Signature.toBase64())});
     process->setProcessChannelMode(QProcess::SeparateChannels);
     process->setStandardErrorFile(QProcess::nullDevice());
     process->setCreateProcessArgumentsModifier(
         [](QProcess::CreateProcessArguments *arguments) {
           arguments->flags |= CREATE_NO_WINDOW;
         });
-    QObject::connect(process, &QProcess::readyReadStandardOutput, owner,
-                     [this, process] {
-                       appendWindowsVerificationOutput(process);
-                     });
+    QObject::connect(
+        process, &QProcess::readyReadStandardOutput, owner,
+        [this, process] { appendWindowsVerificationOutput(process); });
     QObject::connect(
         process, &QProcess::errorOccurred, owner,
         [this, process](const QProcess::ProcessError processError) {
@@ -1760,15 +1836,15 @@ struct UpdateManager::Implementation {
           const bool overflow = windowsVerificationOutputOverflow;
           windowsVerificationOutputOverflow = false;
           QString verificationError;
-          if (overflow ||
-              !localflow::updates::detail::
-                  acceptWindowsVerificationHelperResult(
-                      exitCode, exitStatus == QProcess::NormalExit, response,
-                      &verificationError)) {
-            fail(overflow
-                     ? QStringLiteral(
-                           "The Windows update verifier returned too much data.")
-                     : verificationError);
+          if (overflow || !localflow::updates::detail::
+                              acceptWindowsVerificationHelperResult(
+                                  exitCode, exitStatus == QProcess::NormalExit,
+                                  response, &verificationError)) {
+            fail(
+                overflow
+                    ? QStringLiteral(
+                          "The Windows update verifier returned too much data.")
+                    : verificationError);
             return;
           }
           progress = 1.0;
@@ -1776,7 +1852,8 @@ struct UpdateManager::Implementation {
                    QStringLiteral("LocalFlow %1 is ready to install.")
                        .arg(availableVersion),
                    QStringLiteral(
-                       "Choose Install Update to open the signed installer."));
+                       "Choose Install Update to open the verified installer. "
+                       "Windows may show an Unknown publisher warning."));
         });
     process->start(QIODevice::ReadOnly);
     if (windowsVerificationProcess == process) {
@@ -1825,8 +1902,8 @@ struct UpdateManager::Implementation {
       }
       QString stagingError;
       if (!prepareLinuxStaging(&stagingError)) {
-        fail(stagingError + QStringLiteral(
-                                " The existing AppImage was left unchanged."));
+        fail(stagingError +
+             QStringLiteral(" The existing AppImage was left unchanged."));
         return;
       }
       auto *updater = new QProcess(owner);

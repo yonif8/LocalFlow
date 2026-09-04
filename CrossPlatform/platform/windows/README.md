@@ -109,11 +109,12 @@ Call it on the pipeline worker, not the UI thread.
 ## Remaining Windows release work
 
 The shared Qt shell, Parakeet/S1 runtimes, persistence, Inno Setup packaging,
-and signed update client now live in the app and release layers. Their presence
-does not make this adapter a public download. Windows remains an engineering
-beta until the exact-field APIs are exercised through the complete app, Windows
-Graphics Capture covers GPU-rendered surfaces, the real application matrix
-passes on clean Windows 11 systems, and the installer/update path is signed with
-the pinned Authenticode identity. Track those gates in
-the [feature parity contract](../../../docs/FEATURE_PARITY.md); do not
-distribute CI smoke artifacts.
+and authenticated update client now live in the app and release layers. Their
+presence does not make this adapter a public download. Windows remains an
+engineering beta until the exact-field APIs are exercised through the complete
+app, Windows Graphics Capture covers GPU-rendered surfaces, the real application
+matrix passes on clean Windows 11 systems, and the installer/update path passes
+the pinned LocalFlow Ed25519 release-signature gates. Authenticode is an optional
+additional identity layer for a future paid-certificate distribution. Track
+those gates in the [feature parity contract](../../../docs/FEATURE_PARITY.md);
+do not distribute CI smoke artifacts.

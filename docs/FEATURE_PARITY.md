@@ -70,13 +70,15 @@ tested fallback that gets the user's transcript back safely.
   and no captured audio, screen pixels, recognized text, or learned terms leave
   the device.
 - A clean supported machine can install, onboard, and uninstall while
-  preserving user data. A signed predecessor-to-candidate update is proven; a
-  platform's first public release uses an equivalent signed update rehearsal.
+  preserving user data. An authenticated predecessor-to-candidate update is
+  proven; a platform's first public release uses an equivalent authenticated
+  update rehearsal.
   Secure/elevated targets and unavailable desktop capabilities fail safely with
   an in-app explanation.
 - The public release contains the same stable version for all three operating
-  systems. macOS update metadata, Windows Authenticode/update metadata, and
-  Linux artifacts/checksums are signed and verified before publication.
+  systems. macOS update metadata, the Windows LocalFlow Ed25519 update
+  signature, and Linux artifacts/checksums are signed and verified before
+  publication. Authenticode is optional for the free Windows distribution.
 
 Do not change a Windows or Linux cell to **Released** merely because its source,
 CI build, or installer exists. Record the certification evidence in the release

@@ -1,3 +1,6 @@
+<!-- sparkle-sign-warning:
+IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires updating signatures in appcasts that reference this file! This will involve re-running generate_appcast or sign_update.
+-->
 # Windows packaging and updates
 
 The Windows workflow builds `CrossPlatform/CMakeLists.txt` with Visual Studio
@@ -20,19 +23,30 @@ and are uploaded only as short-lived GitHub Actions artifacts.
 
 The supported production path is `.github/workflows/release.yml` at an exact
 stable `vX.Y.Z` tag. It invokes the Windows lane against that same tagged commit
-with release mode enabled. Production builds fail closed if the ref or version
-does not match, any signing input is absent, the PFX has the wrong fingerprint
-or EKU, the certificate is expired, timestamping fails, or Authenticode
-verification does not return `Valid`.
+with release mode enabled. Every production installer is signed with LocalFlow's
+Ed25519 release key. That detached signature protects the in-app update path
+without requiring a paid Windows certificate.
+
+The free direct-download installer is intentionally not Authenticode-signed.
+Windows therefore identifies it as **Unknown publisher** and may require the
+user to choose **More info → Run anyway**. This affects Windows' reputation UI,
+not LocalFlow's own tamper protection. Authenticode remains an optional additive
+layer if certificate credentials are configured later.
 
 All third-party and GitHub actions in the workflow are pinned to immutable
 commit SHAs. Qt itself is pinned to 6.8.3. `windows-2022` supplies Visual Studio,
 the Windows SDK/signing tools, and Inno Setup; the workflow discovers their
 installed paths and fails rather than downloading an unverified compiler.
 
-## Required GitHub Actions secrets
+## Required GitHub Actions secret
 
-Configure these four GitHub Actions repository secrets:
+- `LOCALFLOW_UPDATE_ED25519_PRIVATE_KEY`: the canonical base64 32-byte seed for
+  the public key in `Resources/sparkle-public-ed-key.txt`. This is the same
+  stable release identity already used by the macOS updater. It is read only by
+  the exact-tag Windows release job and must never be printed or committed.
+
+The following four secrets are optional. Configure all four only if LocalFlow
+later adds paid Authenticode signing:
 
 - `WINDOWS_CODESIGN_PFX_BASE64`: base64 of the complete PKCS#12/PFX containing
   the Windows code-signing leaf certificate, private key, and intermediate
@@ -71,7 +85,7 @@ windows-update.json
 ```
 
 LocalFlow intentionally does not publish a portable ZIP. A portable copy can
-remain stale after the signed installer updates the registered application,
+remain stale after the verified installer updates the registered application,
 which makes it too easy to launch an older binary accidentally. The per-user
 installer is the one supported Windows distribution and update identity.
 
@@ -84,27 +98,28 @@ missing.
 
 `LocalFlow.ico` is a mechanical 256-pixel Windows conversion of the
 canonical `Resources/AppIcon.icns`. `LocalFlow.rc` embeds it in the desktop
-executable and Inno Setup uses the same file for the signed installer, so the
+executable and Inno Setup uses the same file for the installer, so the
 app, shortcuts, Add/Remove Programs entry, and setup UI keep one brand asset.
 
 The top-level release workflow combines them with the signed macOS and Linux
 artifacts, rejects missing, extra, empty, renamed, or mismatched assets, and
 publishes one release only after the complete set verifies. It never replaces
 a different asset already attached to the draft. The manifest contains the
-tag's immutable installer URL, size, SHA-256, Authenticode status, and signer
-fingerprint. Once that three-platform release is public, the stable client feed
-is:
+tag's immutable installer URL, size, SHA-256, LocalFlow Ed25519 signature, and
+optional Authenticode status. Once that three-platform release is public, the
+stable client feed is:
 
 ```text
 https://github.com/yonif8/LocalFlow/releases/latest/download/windows-update.json
 ```
 
-The Windows updater must compare semantic versions, download over HTTPS, verify
-the exact size and SHA-256, then use `WinVerifyTrust` and require a signer
-thumbprint compiled into the app before launching the installer. The thumbprint
-inside the downloaded manifest is diagnostic metadata—not a trust root. During
-certificate rotation, ship an app version trusting both old and new certificates
-before signing later installers only with the new certificate.
+The Windows updater compares semantic versions, downloads over HTTPS, verifies
+the exact size and SHA-256, and then starts a private copy of the already-running
+LocalFlow executable to verify the detached Ed25519 signature and embedded
+ProductVersion before launching the installer. The release public key is
+compiled into the app and cannot be selected by the downloaded manifest. When
+an Authenticode thumbprint is compiled in, the same helper additionally requires
+`WinVerifyTrust` and that exact certificate.
 
 CI installs and uninstalls the generated installer on its Windows runner. A
 stable release additionally requires the clean-machine, real-app certification
@@ -124,6 +139,7 @@ ISCC.exe /DAppVersion=1.2.3 `
   CrossPlatform\packaging\windows\LocalFlow.iss
 ```
 
-`Sign-Artifacts.ps1` reads signing material only from the four environment
-variables named above. Pass `-RequireSigning` for any artifact intended for
-distribution.
+`Sign-Artifacts.ps1` reads optional Authenticode material only from the four
+`WINDOWS_CODESIGN_*` environment variables named above. The official free
+release leaves them unset. `localflow_update_signer` creates the required
+detached release signature without changing the installer bytes.
