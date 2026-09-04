@@ -4,6 +4,8 @@
 
 #include "localflow/windows/WinError.hpp"
 
+#include <appmodel.h>
+
 #include <algorithm>
 #include <cwctype>
 #include <vector>
