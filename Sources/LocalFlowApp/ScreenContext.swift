@@ -128,9 +128,24 @@ enum LearnedTerminologyStore {
             $0.source == .screen && $0.confidence >= 0.88
                 && ScreenTermExtractor.isPersistentCandidate($0.canonical)
         }
-        guard !screenMatches.isEmpty else { return }
+        let learnedMatches = matches.filter { $0.source == .learned }
+        guard !screenMatches.isEmpty || !learnedMatches.isEmpty else { return }
         var terms = load()
         let now = Date()
+
+        // A successful reuse keeps a learned term from aging out of the
+        // 500-entry recency cap. Its alias was already known, so don't add it
+        // again here.
+        for match in learnedMatches {
+            let key = ScreenTermExtractor.normalized(match.canonical)
+            if let index = terms.firstIndex(where: {
+                ScreenTermExtractor.normalized($0.canonical) == key
+            }) {
+                terms[index].useCount += 1
+                terms[index].lastUsedAt = now
+            }
+        }
+
         for match in screenMatches {
             let key = ScreenTermExtractor.normalized(match.canonical)
             if let index = terms.firstIndex(where: {
@@ -141,6 +156,9 @@ enum LearnedTerminologyStore {
                        $0.caseInsensitiveCompare(match.heard) == .orderedSame
                    }) {
                     terms[index].aliases.append(match.heard)
+                    if terms[index].aliases.count > 10 {
+                        terms[index].aliases.removeFirst(terms[index].aliases.count - 10)
+                    }
                 }
                 terms[index].useCount += 1
                 terms[index].lastUsedAt = now
@@ -159,11 +177,16 @@ enum LearnedTerminologyStore {
         do {
             let directory = AppSettings.learnedTerminologyURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            var boundedTerms = Array(terms.prefix(500))
+            for index in boundedTerms.indices where boundedTerms[index].aliases.count > 10 {
+                boundedTerms[index].aliases = Array(boundedTerms[index].aliases.suffix(10))
+            }
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             encoder.dateEncodingStrategy = .iso8601
             // Decode both ISO-8601 and legacy default isn't needed before first release.
-            try encoder.encode(terms).write(to: AppSettings.learnedTerminologyURL, options: .atomic)
+            try encoder.encode(boundedTerms).write(
+                to: AppSettings.learnedTerminologyURL, options: .atomic)
         } catch {
             logger.error("could not save learned terminology: \(String(describing: error), privacy: .public)")
         }
