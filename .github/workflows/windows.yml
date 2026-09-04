@@ -1,0 +1,254 @@
+name: Windows
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/windows.yml"
+      - "CrossPlatform/**"
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Require production signing and produce release handoff artifacts"
+        required: true
+        default: false
+        type: boolean
+      version:
+        description: "Release version (X.Y.Z); required when release is enabled"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  build-package:
+    name: Windows x64 Release
+    runs-on: windows-2022
+    timeout-minutes: 60
+
+    env:
+      QT_VERSION: "6.8.3"
+      BUILD_DIR: "${{ github.workspace }}\\build\\windows-x64"
+      STAGE_DIR: "${{ github.workspace }}\\build\\windows-stage"
+      PACKAGE_DIR: "${{ github.workspace }}\\build\\windows-package"
+      REQUESTED_VERSION: "${{ inputs.version }}"
+      REQUESTED_RELEASE: "${{ inputs.release }}"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Resolve build identity
+        shell: pwsh
+        run: |
+          $isTag = $env:GITHUB_REF_TYPE -eq "tag"
+          $isManualRelease = $env:GITHUB_EVENT_NAME -eq "workflow_dispatch" -and $env:REQUESTED_RELEASE -eq "true"
+          $isRelease = $isTag -or $isManualRelease
+
+          if ($isTag) {
+            if ($env:GITHUB_REF_NAME -notmatch '^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$') {
+              throw "Windows release tags must have the form vX.Y.Z or vX.Y.Z-prerelease."
+            }
+            $version = $Matches[1]
+            $releaseTag = $env:GITHUB_REF_NAME
+          } elseif ($isManualRelease) {
+            $version = $env:REQUESTED_VERSION.Trim()
+            if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+              throw "A manual production build requires version X.Y.Z or X.Y.Z-prerelease."
+            }
+            $releaseTag = "v$version"
+          } else {
+            $version = "0.0.0-ci.$($env:GITHUB_RUN_NUMBER).$($env:GITHUB_RUN_ATTEMPT)"
+            $releaseTag = ""
+          }
+          $updateChannel = if (-not $isRelease) { "ci" } elseif ($version.Contains("-")) { "beta" } else { "stable" }
+
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+          "RELEASE_TAG=$releaseTag" >> $env:GITHUB_ENV
+          "IS_RELEASE=$($isRelease.ToString().ToLowerInvariant())" >> $env:GITHUB_ENV
+          "UPDATE_CHANNEL=$updateChannel" >> $env:GITHUB_ENV
+          "INSTALLER_BASENAME=LocalFlow-$version-windows-x64-setup" >> $env:GITHUB_ENV
+          "PORTABLE_BASENAME=LocalFlow-$version-windows-x64-portable" >> $env:GITHUB_ENV
+
+      - name: Install pinned Qt
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: "6.8.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          cache: true
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S CrossPlatform -B $env:BUILD_DIR `
+            -G "Visual Studio 17 2022" -A x64 `
+            -DBUILD_TESTING=ON `
+            -DLOCALFLOW_BUILD_APP=ON `
+            -DLOCALFLOW_STRICT_WARNINGS=ON `
+            -DLOCALFLOW_VERSION_STRING="$env:APP_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw "CMake configure failed." }
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake --build $env:BUILD_DIR --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw "Windows build failed." }
+
+      - name: Test
+        shell: pwsh
+        run: |
+          ctest --test-dir $env:BUILD_DIR -C Release --output-on-failure --timeout 180
+          if ($LASTEXITCODE -ne 0) { throw "Windows tests failed." }
+
+      - name: Stage application and Qt runtime
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:STAGE_DIR | Out-Null
+          cmake --install $env:BUILD_DIR --config Release --prefix $env:STAGE_DIR
+          if ($LASTEXITCODE -ne 0) { throw "CMake install failed." }
+
+          $app = Join-Path $env:STAGE_DIR "bin\LocalFlow.exe"
+          if (-not (Test-Path -LiteralPath $app -PathType Leaf)) {
+            throw "Expected installed executable was not found: $app"
+          }
+          $deployQt = (Get-Command windeployqt.exe -ErrorAction Stop).Source
+          & $deployQt --release --compiler-runtime `
+            --qmldir (Resolve-Path "CrossPlatform/app/qml") `
+            --dir (Split-Path -Parent $app) $app
+          if ($LASTEXITCODE -ne 0) { throw "windeployqt failed." }
+          if (-not (Test-Path (Join-Path (Split-Path -Parent $app) "Qt6Core.dll"))) {
+            throw "Qt runtime deployment did not produce Qt6Core.dll."
+          }
+          $polishWorker = Join-Path $env:STAGE_DIR "bin\polish\localflow-polish-worker.exe"
+          if (-not (Test-Path -LiteralPath $polishWorker -PathType Leaf)) {
+            throw "Expected S1 polish worker was not found: $polishWorker"
+          }
+          & $deployQt --release --compiler-runtime `
+            --dir (Split-Path -Parent $polishWorker) $polishWorker
+          if ($LASTEXITCODE -ne 0) { throw "windeployqt failed for the S1 polish worker." }
+          if (-not (Test-Path (Join-Path (Split-Path -Parent $polishWorker) "Qt6Core.dll"))) {
+            throw "Qt runtime deployment for the S1 polish worker is incomplete."
+          }
+
+      - name: Sign application binaries
+        shell: pwsh
+        env:
+          WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 }}
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
+          WINDOWS_CODESIGN_CERT_SHA256: ${{ secrets.WINDOWS_CODESIGN_CERT_SHA256 }}
+          WINDOWS_CODESIGN_TIMESTAMP_URL: ${{ secrets.WINDOWS_CODESIGN_TIMESTAMP_URL }}
+        run: |
+          $requireSigning = $env:IS_RELEASE -eq "true"
+          $binaries = @(
+            (Join-Path $env:STAGE_DIR "bin\LocalFlow.exe")
+            (Join-Path $env:STAGE_DIR "bin\polish\localflow-polish-worker.exe")
+          )
+          & "CrossPlatform/packaging/windows/Sign-Artifacts.ps1" `
+            -Path $binaries `
+            -RequireSigning:$requireSigning
+
+      - name: Create per-user installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:PACKAGE_DIR | Out-Null
+          $isccCommand = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+          $iscc = if ($isccCommand) { $isccCommand.Source } else {
+            Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup *" -Filter ISCC.exe -Recurse `
+              | Sort-Object FullName -Descending `
+              | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $iscc -or -not (Test-Path -LiteralPath $iscc)) {
+            throw "Inno Setup compiler is not installed on this windows-2022 image."
+          }
+          & $iscc `
+            "/DAppVersion=$env:APP_VERSION" `
+            "/DSourceDir=$env:STAGE_DIR" `
+            "/DOutputDir=$env:PACKAGE_DIR" `
+            "/DOutputBaseFilename=$env:INSTALLER_BASENAME" `
+            "CrossPlatform/packaging/windows/LocalFlow.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed." }
+
+      - name: Sign and verify installer
+        shell: pwsh
+        env:
+          WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 }}
+          WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
+          WINDOWS_CODESIGN_CERT_SHA256: ${{ secrets.WINDOWS_CODESIGN_CERT_SHA256 }}
+          WINDOWS_CODESIGN_TIMESTAMP_URL: ${{ secrets.WINDOWS_CODESIGN_TIMESTAMP_URL }}
+        run: |
+          $requireSigning = $env:IS_RELEASE -eq "true"
+          $installer = Join-Path $env:PACKAGE_DIR "$env:INSTALLER_BASENAME.exe"
+          & "CrossPlatform/packaging/windows/Sign-Artifacts.ps1" `
+            -Path $installer -RequireSigning:$requireSigning
+
+      - name: Smoke-test install and uninstall
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:PACKAGE_DIR "$env:INSTALLER_BASENAME.exe"
+          $smokeRoot = Join-Path $env:RUNNER_TEMP "LocalFlow-install-smoke"
+          if (Test-Path -LiteralPath $smokeRoot) {
+            Remove-Item -LiteralPath $smokeRoot -Recurse -Force
+          }
+          & $installer /CURRENTUSER /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/DIR=$smokeRoot"
+          if ($LASTEXITCODE -ne 0) { throw "Installer smoke test failed with exit code $LASTEXITCODE." }
+          $installedApp = Join-Path $smokeRoot "bin\LocalFlow.exe"
+          $installedWorker = Join-Path $smokeRoot "bin\polish\localflow-polish-worker.exe"
+          $uninstaller = Join-Path $smokeRoot "unins000.exe"
+          if (-not (Test-Path -LiteralPath $installedApp -PathType Leaf) `
+              -or -not (Test-Path -LiteralPath $installedWorker -PathType Leaf) `
+              -or -not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
+            throw "Installer did not create the expected app and uninstaller."
+          }
+          & $uninstaller /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+          if ($LASTEXITCODE -ne 0) { throw "Uninstaller smoke test failed with exit code $LASTEXITCODE." }
+          if (Test-Path -LiteralPath $installedApp) {
+            throw "Uninstaller left the installed LocalFlow executable behind."
+          }
+
+      - name: Create portable bundle and update handoff
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:PACKAGE_DIR "$env:INSTALLER_BASENAME.exe"
+          $portable = Join-Path $env:PACKAGE_DIR "$env:PORTABLE_BASENAME.zip"
+          Compress-Archive -Path (Join-Path $env:STAGE_DIR "*") -DestinationPath $portable -CompressionLevel Optimal
+
+          $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $([IO.Path]::GetFileName($installer))" `
+            | Set-Content -LiteralPath "$installer.sha256" -Encoding ascii -NoNewline
+
+          if ($env:IS_RELEASE -eq "true") {
+            $downloadUrl = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:RELEASE_TAG/$([IO.Path]::GetFileName($installer))"
+          } else {
+            $downloadUrl = "https://example.invalid/localflow-ci/$([IO.Path]::GetFileName($installer))"
+          }
+          & "CrossPlatform/packaging/windows/New-UpdateManifest.ps1" `
+            -Version $env:APP_VERSION `
+            -InstallerPath $installer `
+            -DownloadUrl $downloadUrl `
+            -Channel $env:UPDATE_CHANNEL `
+            -OutputPath (Join-Path $env:PACKAGE_DIR "windows-update.json") `
+            -RequireSigned:($env:IS_RELEASE -eq "true")
+
+      - name: Upload immutable build artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: LocalFlow-${{ env.APP_VERSION }}-windows-x64
+          path: |
+            ${{ env.PACKAGE_DIR }}/*.exe
+            ${{ env.PACKAGE_DIR }}/*.sha256
+            ${{ env.PACKAGE_DIR }}/*.zip
+            ${{ env.PACKAGE_DIR }}/windows-update.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
