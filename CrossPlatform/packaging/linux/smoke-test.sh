@@ -117,12 +117,13 @@ desktop_probe="$("${desktop_root}/AppRun" --probe-runtime)"
 grep -Fq '"ready":true' <<<"$desktop_probe"
 xvfb-run --auto-servernum env \
     "${desktop_root}/AppRun" --smoke-ui
-if ldd "${extract_root}/squashfs-root/usr/libexec/localflow/localflow-polish-worker" | grep -F 'not found'; then
+worker_root="${extract_root}/squashfs-root/usr/libexec/localflow"
+worker_qt_root="${extract_root}/squashfs-root/usr/lib"
+if LD_LIBRARY_PATH="${worker_root}:${worker_qt_root}" \
+    ldd "${worker_root}/localflow-polish-worker" | grep -F 'not found'; then
     echo "The AppImage polish worker has unresolved shared libraries." >&2
     exit 1
 fi
-worker_root="${extract_root}/squashfs-root/usr/libexec/localflow"
-worker_qt_root="${extract_root}/squashfs-root/usr/lib"
 probe_output="$(LD_LIBRARY_PATH="${worker_root}:${worker_qt_root}" \
     "${worker_root}/localflow-polish-worker" --probe-runtime)"
 grep -Fq '"ready":true' <<<"$probe_output"
