@@ -3,7 +3,6 @@ name: Windows
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
     paths:
       - ".github/workflows/windows.yml"
@@ -19,6 +18,27 @@ on:
         description: "Release version (X.Y.Z); required when release is enabled"
         required: false
         type: string
+  workflow_call:
+    inputs:
+      release:
+        description: "Require production signing"
+        required: false
+        default: false
+        type: boolean
+      version:
+        description: "Release version (X.Y.Z or vX.Y.Z)"
+        required: false
+        default: ""
+        type: string
+    secrets:
+      WINDOWS_CODESIGN_PFX_BASE64:
+        required: false
+      WINDOWS_CODESIGN_PFX_PASSWORD:
+        required: false
+      WINDOWS_CODESIGN_CERT_SHA256:
+        required: false
+      WINDOWS_CODESIGN_TIMESTAMP_URL:
+        required: false
 
 permissions:
   contents: read
@@ -51,26 +71,56 @@ jobs:
         shell: pwsh
         run: |
           $isTag = $env:GITHUB_REF_TYPE -eq "tag"
-          $isManualRelease = $env:GITHUB_EVENT_NAME -eq "workflow_dispatch" -and $env:REQUESTED_RELEASE -eq "true"
-          $isRelease = $isTag -or $isManualRelease
+          $isRequestedRelease = $env:REQUESTED_RELEASE -eq "true"
+          $isRelease = $isTag -or $isRequestedRelease
 
-          if ($isTag) {
-            if ($env:GITHUB_REF_NAME -notmatch '^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$') {
-              throw "Windows release tags must have the form vX.Y.Z or vX.Y.Z-prerelease."
+          if ($isRelease) {
+            if ($isTag) {
+              if ($env:GITHUB_REF_NAME -notmatch '^v((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))$') {
+                throw "Production Windows release tags must have the stable form vX.Y.Z."
+              }
+              $version = $Matches[1]
+              $releaseTag = $env:GITHUB_REF_NAME
+            } else {
+              $version = $env:REQUESTED_VERSION.Trim() -replace '^v', ''
+              if ($version -notmatch '^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$') {
+                throw "A production Windows build requires a stable version in the form X.Y.Z."
+              }
+              $releaseTag = "v$version"
             }
-            $version = $Matches[1]
-            $releaseTag = $env:GITHUB_REF_NAME
-          } elseif ($isManualRelease) {
-            $version = $env:REQUESTED_VERSION.Trim()
-            if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
-              throw "A manual production build requires version X.Y.Z or X.Y.Z-prerelease."
+            foreach ($component in $version.Split('.')) {
+              [uint32] $parsedComponent = 0
+              if (-not [uint32]::TryParse($component, [ref] $parsedComponent)) {
+                throw "Each production Windows version component must fit in an unsigned 32-bit integer."
+              }
             }
-            $releaseTag = "v$version"
+
+            $requestedVersion = $env:REQUESTED_VERSION.Trim() -replace '^v', ''
+            if ($requestedVersion -and $requestedVersion -cne $version) {
+              throw "Requested version $requestedVersion does not match checked-out tag $releaseTag."
+            }
+            $expectedRef = "refs/tags/$releaseTag"
+            if ($env:GITHUB_REF -cne $expectedRef) {
+              throw "Production Windows builds must check out the exact $releaseTag tag, not $($env:GITHUB_REF)."
+            }
+            $checkedOutCommitOutput = @(& git rev-parse HEAD)
+            if ($LASTEXITCODE -ne 0 -or $checkedOutCommitOutput.Count -ne 1) {
+              throw "Could not resolve the checked-out commit."
+            }
+            $checkedOutCommit = $checkedOutCommitOutput[0].Trim()
+            $tagCommitOutput = @(& git rev-list -n 1 $releaseTag --)
+            if ($LASTEXITCODE -ne 0 -or $tagCommitOutput.Count -ne 1) {
+              throw "Could not resolve release tag $releaseTag."
+            }
+            $tagCommit = $tagCommitOutput[0].Trim()
+            if ($checkedOutCommit -cne $tagCommit) {
+              throw "Checked-out commit $checkedOutCommit is not the commit selected by $releaseTag."
+            }
           } else {
             $version = "0.0.0-ci.$($env:GITHUB_RUN_NUMBER).$($env:GITHUB_RUN_ATTEMPT)"
             $releaseTag = ""
           }
-          $updateChannel = if (-not $isRelease) { "ci" } elseif ($version.Contains("-")) { "beta" } else { "stable" }
+          $updateChannel = if ($isRelease) { "stable" } else { "ci" }
 
           "APP_VERSION=$version" >> $env:GITHUB_ENV
           "RELEASE_TAG=$releaseTag" >> $env:GITHUB_ENV
@@ -78,6 +128,27 @@ jobs:
           "UPDATE_CHANNEL=$updateChannel" >> $env:GITHUB_ENV
           "INSTALLER_BASENAME=LocalFlow-$version-windows-x64-setup" >> $env:GITHUB_ENV
           "PORTABLE_BASENAME=LocalFlow-$version-windows-x64-portable" >> $env:GITHUB_ENV
+
+      - name: Normalize trusted update signer
+        shell: pwsh
+        env:
+          RAW_WINDOWS_CODESIGN_CERT_SHA256: ${{ secrets.WINDOWS_CODESIGN_CERT_SHA256 }}
+        run: |
+          $rawFingerprint = $env:RAW_WINDOWS_CODESIGN_CERT_SHA256
+          $normalizedFingerprint = ""
+          if (-not [string]::IsNullOrWhiteSpace($rawFingerprint)) {
+            if ($rawFingerprint -notmatch '^[0-9A-Fa-f:\s-]+$') {
+              throw "WINDOWS_CODESIGN_CERT_SHA256 contains unsupported characters."
+            }
+            $normalizedFingerprint = ($rawFingerprint -replace '[:\s-]', '').ToUpperInvariant()
+            if ($normalizedFingerprint -notmatch '^[0-9A-F]{64}$') {
+              throw "WINDOWS_CODESIGN_CERT_SHA256 must normalize to exactly 64 hexadecimal characters."
+            }
+          }
+          if ($env:IS_RELEASE -eq "true" -and -not $normalizedFingerprint) {
+            throw "Production Windows builds require WINDOWS_CODESIGN_CERT_SHA256."
+          }
+          "WINDOWS_CODESIGN_CERT_SHA256=$normalizedFingerprint" >> $env:GITHUB_ENV
 
       - name: Install pinned Qt
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
@@ -88,14 +159,35 @@ jobs:
           arch: win64_msvc2022_64
           cache: true
 
+      - name: Bootstrap checksum-pinned inference runtimes
+        shell: pwsh
+        run: |
+          $runtimePrefix = Join-Path $env:RUNNER_TEMP "localflow-runtimes"
+          & "CrossPlatform/dependencies/bootstrap-windows.ps1" `
+            -Prefix $runtimePrefix -Architecture x86_64
+          if ($LASTEXITCODE -ne 0) { throw "Runtime bootstrap failed." }
+          if (-not $env:NEMO_SPEECH_ROOT -or -not $env:LLAMA_ROOT) {
+            throw "Runtime bootstrap did not export its verified roots."
+          }
+          "NEMO_SPEECH_ROOT=$env:NEMO_SPEECH_ROOT" >> $env:GITHUB_ENV
+          "LLAMA_ROOT=$env:LLAMA_ROOT" >> $env:GITHUB_ENV
+
       - name: Configure
         shell: pwsh
         run: |
+          $requireSignedUpdates = if ($env:IS_RELEASE -eq "true") { "ON" } else { "OFF" }
           cmake -S CrossPlatform -B $env:BUILD_DIR `
             -G "Visual Studio 17 2022" -A x64 `
             -DBUILD_TESTING=ON `
             -DLOCALFLOW_BUILD_APP=ON `
             -DLOCALFLOW_STRICT_WARNINGS=ON `
+            -DLOCALFLOW_REQUIRE_INFERENCE=ON `
+            "-DLOCALFLOW_REQUIRE_SIGNED_UPDATES=$requireSignedUpdates" `
+            "-DLOCALFLOW_WINDOWS_SIGNER_SHA256=$env:WINDOWS_CODESIGN_CERT_SHA256" `
+            -DLOCALFLOW_ENABLE_NEMO_SPEECH=ON `
+            -DLOCALFLOW_ENABLE_LLAMA=ON `
+            "-DNEMO_SPEECH_ROOT=$env:NEMO_SPEECH_ROOT" `
+            "-DLLAMA_ROOT=$env:LLAMA_ROOT" `
             -DLOCALFLOW_VERSION_STRING="$env:APP_VERSION"
           if ($LASTEXITCODE -ne 0) { throw "CMake configure failed." }
 
@@ -110,6 +202,9 @@ jobs:
         run: |
           ctest --test-dir $env:BUILD_DIR -C Release --output-on-failure --timeout 180
           if ($LASTEXITCODE -ne 0) { throw "Windows tests failed." }
+          $env:QT_FATAL_WARNINGS = "1"
+          & "$env:BUILD_DIR\bin\Release\LocalFlow.exe" --smoke-ui
+          if ($LASTEXITCODE -ne 0) { throw "Windows QML smoke test failed." }
 
       - name: Stage application and Qt runtime
         shell: pwsh
@@ -117,6 +212,14 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:STAGE_DIR | Out-Null
           cmake --install $env:BUILD_DIR --config Release --prefix $env:STAGE_DIR
           if ($LASTEXITCODE -ne 0) { throw "CMake install failed." }
+
+          python "CrossPlatform/dependencies/stage-runtime.py" `
+            --platform windows `
+            --arch x86_64 `
+            --stage $env:STAGE_DIR `
+            --nemo-root $env:NEMO_SPEECH_ROOT `
+            --llama-root $env:LLAMA_ROOT
+          if ($LASTEXITCODE -ne 0) { throw "Inference runtime staging failed." }
 
           $app = Join-Path $env:STAGE_DIR "bin\LocalFlow.exe"
           if (-not (Test-Path -LiteralPath $app -PathType Leaf)) {
@@ -141,12 +244,21 @@ jobs:
             throw "Qt runtime deployment for the S1 polish worker is incomplete."
           }
 
+          $desktopProbe = Start-Process -FilePath $app -ArgumentList "--probe-runtime" `
+            -WorkingDirectory (Split-Path -Parent $app) -Wait -PassThru
+          if ($desktopProbe.ExitCode -ne 0) {
+            throw "Packaged NeMo runtime probe failed with exit code $($desktopProbe.ExitCode)."
+          }
+          $polishProbe = & $polishWorker --probe-runtime | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $polishProbe.ready) {
+            throw "Packaged llama runtime probe failed."
+          }
+
       - name: Sign application binaries
         shell: pwsh
         env:
           WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 }}
           WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
-          WINDOWS_CODESIGN_CERT_SHA256: ${{ secrets.WINDOWS_CODESIGN_CERT_SHA256 }}
           WINDOWS_CODESIGN_TIMESTAMP_URL: ${{ secrets.WINDOWS_CODESIGN_TIMESTAMP_URL }}
         run: |
           $requireSigning = $env:IS_RELEASE -eq "true"
@@ -184,13 +296,17 @@ jobs:
         env:
           WINDOWS_CODESIGN_PFX_BASE64: ${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 }}
           WINDOWS_CODESIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PFX_PASSWORD }}
-          WINDOWS_CODESIGN_CERT_SHA256: ${{ secrets.WINDOWS_CODESIGN_CERT_SHA256 }}
           WINDOWS_CODESIGN_TIMESTAMP_URL: ${{ secrets.WINDOWS_CODESIGN_TIMESTAMP_URL }}
         run: |
           $requireSigning = $env:IS_RELEASE -eq "true"
           $installer = Join-Path $env:PACKAGE_DIR "$env:INSTALLER_BASENAME.exe"
           & "CrossPlatform/packaging/windows/Sign-Artifacts.ps1" `
             -Path $installer -RequireSigning:$requireSigning
+          $productVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($installer).ProductVersion
+          if ([string]::IsNullOrEmpty($productVersion) `
+              -or $productVersion -cne $env:APP_VERSION) {
+            throw "Installer ProductVersion '$productVersion' does not exactly match $($env:APP_VERSION)."
+          }
 
       - name: Smoke-test install and uninstall
         shell: pwsh

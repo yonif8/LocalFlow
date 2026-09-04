@@ -33,6 +33,13 @@ target_link_libraries(localflow_desktop PRIVATE
     Qt6::Widgets Qt6::Multimedia Qt6::Network
     LocalFlow::Core LocalFlow::ASR LocalFlow::Platform
 )
+if(WIN32)
+    target_link_libraries(localflow_desktop PRIVATE crypt32 version wintrust)
+    if(TARGET localflow_update_manager_tests)
+        target_link_libraries(localflow_update_manager_tests PRIVATE
+            crypt32 version wintrust)
+    endif()
+endif()
 
 set(LOCALFLOW_HAVE_TESSERACT 0)
 if(UNIX AND NOT APPLE)

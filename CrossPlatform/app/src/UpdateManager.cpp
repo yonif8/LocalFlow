@@ -35,6 +35,7 @@
 #include <limits>
 #include <string>
 #include <utility>
+#include <vector>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -42,9 +43,11 @@
 #include <softpub.h>
 #include <wincrypt.h>
 #include <wintrust.h>
+#include <winver.h>
 
 #ifdef _MSC_VER
 #pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "version.lib")
 #pragma comment(lib, "wintrust.lib")
 #endif
 #endif
@@ -207,9 +210,102 @@ struct NativeVerificationResult {
 };
 
 NativeVerificationResult
+verifyInstallerProductVersion(const std::wstring &nativePath,
+                              const QString &expectedVersion) {
+  constexpr DWORD kMaximumVersionInfoBytes = 16U * 1024U * 1024U;
+  constexpr UINT kMaximumTranslations = 64U;
+  struct LanguageAndCodePage {
+    WORD language = 0;
+    WORD codePage = 0;
+  };
+
+  DWORD ignoredHandle = 0;
+  const DWORD versionInfoSize =
+      GetFileVersionInfoSizeW(nativePath.c_str(), &ignoredHandle);
+  if (versionInfoSize == 0 || versionInfoSize > kMaximumVersionInfoBytes) {
+    return {false,
+            QStringLiteral(
+                "The signed installer has no readable version identity.")};
+  }
+
+  std::vector<BYTE> versionInfo(versionInfoSize);
+  if (GetFileVersionInfoW(nativePath.c_str(), 0, versionInfoSize,
+                          versionInfo.data()) == FALSE) {
+    return {false,
+            QStringLiteral(
+                "The signed installer's version identity could not be read.")};
+  }
+
+  void *rawTranslations = nullptr;
+  UINT translationBytes = 0;
+  constexpr UINT kTranslationSize =
+      static_cast<UINT>(sizeof(LanguageAndCodePage));
+  if (VerQueryValueW(versionInfo.data(), L"\\VarFileInfo\\Translation",
+                     &rawTranslations, &translationBytes) == FALSE ||
+      rawTranslations == nullptr || translationBytes < kTranslationSize ||
+      translationBytes % kTranslationSize != 0) {
+    return {false,
+            QStringLiteral(
+                "The signed installer has no valid version translation.")};
+  }
+
+  const UINT translationCount = translationBytes / kTranslationSize;
+  if (translationCount > kMaximumTranslations) {
+    return {false,
+            QStringLiteral(
+                "The signed installer has an invalid version identity.")};
+  }
+
+  const auto *translations =
+      static_cast<const LanguageAndCodePage *>(rawTranslations);
+  for (UINT index = 0; index < translationCount; ++index) {
+    const QString query =
+        QStringLiteral("\\StringFileInfo\\%1%2\\ProductVersion")
+            .arg(static_cast<qulonglong>(translations[index].language), 4, 16,
+                 QLatin1Char('0'))
+            .arg(static_cast<qulonglong>(translations[index].codePage), 4, 16,
+                 QLatin1Char('0'));
+    const std::wstring nativeQuery = query.toStdWString();
+    void *rawProductVersion = nullptr;
+    UINT productVersionLength = 0;
+    if (VerQueryValueW(versionInfo.data(), nativeQuery.c_str(),
+                       &rawProductVersion, &productVersionLength) == FALSE ||
+        rawProductVersion == nullptr || productVersionLength == 0 ||
+        productVersionLength > 129U) {
+      return {false,
+              QStringLiteral(
+                  "The signed installer has no valid ProductVersion text.")};
+    }
+
+    const auto *productVersionCharacters =
+        static_cast<const wchar_t *>(rawProductVersion);
+    qsizetype characterCount = static_cast<qsizetype>(productVersionLength);
+    if (productVersionCharacters[characterCount - 1] == L'\0') {
+      --characterCount;
+    }
+    const QString productVersion =
+        QString::fromWCharArray(productVersionCharacters, characterCount);
+    if (characterCount == 0 || productVersion.contains(QChar(u'\0')) ||
+        !localflow::updates::parseSemanticVersion(productVersion)) {
+      return {false,
+              QStringLiteral(
+                  "The signed installer has an invalid ProductVersion text.")};
+    }
+    if (productVersion != expectedVersion) {
+      return {false,
+              QStringLiteral("The signed installer's ProductVersion does not "
+                             "match the update manifest.")};
+    }
+  }
+
+  return {true, {}};
+}
+
+NativeVerificationResult
 verifyAuthenticodeAndSigner(const QString &path, const qint64 expectedSize,
                             const QByteArray &expectedSha256,
-                            const QString &expectedFingerprint) {
+                            const QString &expectedFingerprint,
+                            const QString &expectedVersion) {
   const QString normalizedExpected =
       localflow::updates::normalizeSha256Fingerprint(expectedFingerprint);
   if (normalizedExpected.size() != 64) {
@@ -327,7 +423,7 @@ verifyAuthenticodeAndSigner(const QString &path, const qint64 expectedSize,
     return {false, QStringLiteral(
                        "The update was signed by an untrusted certificate.")};
   }
-  return {true, {}};
+  return verifyInstallerProductVersion(nativePath, expectedVersion);
 }
 #endif
 
@@ -1053,6 +1149,7 @@ struct UpdateManager::Implementation {
     const QString installerPath = downloadedInstallerPath;
     const qint64 installerSize = manifest->sizeBytes;
     const QByteArray installerSha256 = manifest->sha256;
+    const QString installerVersion = manifest->version;
     const QString signerFingerprint =
         QString::fromLatin1(LOCALFLOW_WINDOWS_SIGNER_SHA256);
     verificationWatcher = new QFutureWatcher<VerificationResult>(owner);
@@ -1074,10 +1171,12 @@ struct UpdateManager::Implementation {
                    QStringLiteral(
                        "Choose Install Update to open the signed installer."));
         });
-    verificationWatcher->setFuture(QtConcurrent::run(
-        [installerPath, installerSize, installerSha256, signerFingerprint] {
+    verificationWatcher->setFuture(
+        QtConcurrent::run([installerPath, installerSize, installerSha256,
+                           installerVersion, signerFingerprint] {
           const NativeVerificationResult native = verifyAuthenticodeAndSigner(
-              installerPath, installerSize, installerSha256, signerFingerprint);
+              installerPath, installerSize, installerSha256, signerFingerprint,
+              installerVersion);
           return VerificationResult{native.ok, native.error};
         }));
 #endif
