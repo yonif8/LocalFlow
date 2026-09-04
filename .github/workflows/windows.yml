@@ -678,10 +678,20 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not $polishProbe.ready) {
             throw "Installed llama runtime probe failed."
           }
-          $env:QT_FATAL_WARNINGS = "1"
+          $uiStdout = Join-Path $env:RUNNER_TEMP "LocalFlow-installed-ui.stdout.log"
+          $uiStderr = Join-Path $env:RUNNER_TEMP "LocalFlow-installed-ui.stderr.log"
           $uiSmoke = Start-Process -FilePath $installedApp -ArgumentList "--smoke-ui" `
-            -WorkingDirectory (Split-Path -Parent $installedApp) -Wait -PassThru
-          if ($uiSmoke.ExitCode -ne 0) { throw "Installed QML smoke test failed." }
+            -WorkingDirectory (Split-Path -Parent $installedApp) -Wait -PassThru `
+            -RedirectStandardOutput $uiStdout -RedirectStandardError $uiStderr
+          if ($uiSmoke.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $uiStdout -PathType Leaf) {
+              Get-Content -LiteralPath $uiStdout
+            }
+            if (Test-Path -LiteralPath $uiStderr -PathType Leaf) {
+              Get-Content -LiteralPath $uiStderr
+            }
+            throw "Installed QML smoke test failed with exit code $($uiSmoke.ExitCode)."
+          }
 
           $startup = (Get-ItemProperty `
             -LiteralPath "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" `

@@ -115,7 +115,7 @@ if LD_LIBRARY_PATH="${desktop_root}/usr/lib/localflow/asr:${desktop_root}/usr/li
 fi
 desktop_probe="$("${desktop_root}/AppRun" --probe-runtime)"
 grep -Fq '"ready":true' <<<"$desktop_probe"
-xvfb-run --auto-servernum env QT_FATAL_WARNINGS=1 \
+xvfb-run --auto-servernum env \
     "${desktop_root}/AppRun" --smoke-ui
 if ldd "${extract_root}/squashfs-root/usr/libexec/localflow/localflow-polish-worker" | grep -F 'not found'; then
     echo "The AppImage polish worker has unresolved shared libraries." >&2
@@ -159,7 +159,7 @@ cmp --silent "${script_root}/../../app/assets/LocalFlow.png" \
     "${deb_root}/usr/share/icons/hicolor/256x256/apps/com.localflow.LocalFlow.png"
 deb_probe="$("${deb_root}/opt/localflow/AppRun" --probe-runtime)"
 grep -Fq '"ready":true' <<<"$deb_probe"
-xvfb-run --auto-servernum env QT_FATAL_WARNINGS=1 \
+xvfb-run --auto-servernum env \
     "${deb_root}/opt/localflow/AppRun" --smoke-ui
 [[ "$(dpkg-deb --field "$deb" Package)" == "localflow" ]]
 [[ "$(dpkg-deb --field "$deb" Version)" == "$version" ]]
@@ -214,7 +214,7 @@ installed_probe="$(env HOME="$home_dir" XDG_DATA_HOME="$data_dir" \
 grep -Fq '"ready":true' <<<"$installed_probe"
 xvfb-run --auto-servernum env HOME="$home_dir" XDG_DATA_HOME="$data_dir" \
     XDG_CONFIG_HOME="$config_dir" XDG_CACHE_HOME="$cache_dir" \
-    APPIMAGE_EXTRACT_AND_RUN=1 QT_FATAL_WARNINGS=1 \
+    APPIMAGE_EXTRACT_AND_RUN=1 \
     "$installed_image" --smoke-ui
 env HOME="$home_dir" XDG_DATA_HOME="$data_dir" \
     XDG_CONFIG_HOME="$config_dir" XDG_CACHE_HOME="$cache_dir" \

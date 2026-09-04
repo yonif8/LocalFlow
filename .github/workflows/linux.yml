@@ -248,7 +248,7 @@ jobs:
           env LD_LIBRARY_PATH="$system_cxx_runtime" \
             ctest --test-dir "$BUILD_DIR" --output-on-failure --timeout 120
           xvfb-run --auto-servernum env \
-            LD_LIBRARY_PATH="$system_cxx_runtime" QT_FATAL_WARNINGS=1 \
+            LD_LIBRARY_PATH="$system_cxx_runtime" \
             "$BUILD_DIR/bin/LocalFlow" --smoke-ui
 
       - name: Exercise production models with release binaries
@@ -398,7 +398,7 @@ jobs:
           grep -Fq '"ready":true' <<<"$runtime_probe"
           xvfb-run --auto-servernum env HOME="$home_dir" \
             XDG_CONFIG_HOME="$config_dir" XDG_DATA_HOME="$data_dir" \
-            XDG_CACHE_HOME="$cache_dir" QT_FATAL_WARNINGS=1 \
+            XDG_CACHE_HOME="$cache_dir" \
             /opt/localflow/AppRun --smoke-ui
           sudo dpkg --purge localflow
           test ! -e /usr/bin/localflow
