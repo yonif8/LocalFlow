@@ -19,7 +19,13 @@ macOS, Windows, and Linux.
 - A production Qt/QDBus Screenshot transport for Wayland OCR context. It reads
   the compositor-provided image URI into a bounded RGBA frame and leaves no
   persistent screen-sharing session behind.
-- AT-SPI2 focused-caret insertion, with bounded accessibility traversal.
+- A bounded AT-SPI2 focused-target snapshot containing application PID/id,
+  unique bus name, accessible object path/id, role, editable state, and an
+  explicit secure/non-secure/unknown classification. The exact object is
+  revalidated immediately before insertion.
+- AT-SPI2 focused-caret insertion through the same object that was just
+  validated. Password/protected fields and unknown security state are always
+  rejected; clipboard paste cannot bypass that decision.
 - A full-fidelity Qt clipboard transaction that preserves every advertised
   MIME payload, including text, HTML, URI lists, images, custom binary data,
   zero-length formats, and an originally empty clipboard. A private random
@@ -44,7 +50,7 @@ diagnostics report.
 | --- | --- | --- |
 | Hold keyboard shortcut | Native press/release | GlobalShortcuts portal |
 | Side mouse button | Native | Not in the standard portal; clearly rejected |
-| Active window metadata | EWMH | Best effort through AT-SPI |
+| Active window metadata | EWMH | Exact focused AT-SPI target, or safe failure |
 | Screen context | Active-window capture | Compositor-mediated Screenshot |
 | Direct insertion | AT-SPI2 | AT-SPI2 |
 | Paste fallback | Clipboard + XTest | Clipboard + approved RemoteDesktop portal |
@@ -53,6 +59,39 @@ diagnostics report.
 Wayland intentionally prevents an application from discovering and capturing
 arbitrary foreground windows or injecting global input without compositor
 consent. LocalFlow works with those constraints instead of bypassing them.
+
+## Wayland target safety
+
+At push-to-talk press, `FocusedTargetProvider::snapshotFocusedTarget()` walks a
+maximum of 4,096 accessibility nodes and 40 levels. Individual AT-SPI calls
+have a 400 ms timeout and the tree walk has a 500 ms wall-clock budget. A valid
+snapshot requires an application PID/id and the focused object's unique AT-SPI
+bus name and object path. Missing or ambiguous identity is a safe failure.
+
+Before insertion, `validateFocusedTarget()` requires the same application PID,
+application id, bus name, object path, and toolkit accessible id, as well as a
+currently focused, editable, explicitly non-secure object. Direct insertion
+retains that validated accessible and writes through it. Clipboard fallback
+rechecks immediately before Ctrl+V. A verified move to another normal text
+field refuses the paste and can leave the transcript on the clipboard for
+manual recovery. Unknown, inaccessible, non-editable, or protected targets
+restore the prior clipboard and fail without injecting input.
+
+The application shell should create one provider and share it with both
+boundaries, then pass the press-time `ApplicationInfo` back at insertion:
+
+```cpp
+auto targets = makeAtSpiFocusedTargetProvider(capabilities);
+screen = makeScreenContextBackend(SessionType::wayland, {}, targets);
+inserter = TextInsertionCoordinator(
+    std::move(accessibility), std::move(clipboard), std::move(paste), options, targets);
+
+auto expected = screen->activeApplication(); // at push-to-talk press
+inserter.insert(transcript, expected.value()); // after transcription
+```
+
+The shell must retain the complete `ApplicationInfo`; comparing only an app id
+or PID is not sufficient when focus moves between fields in the same app.
 
 ## Wayland portal behavior
 
@@ -118,8 +157,10 @@ production clipboard backend even when QtDBus is absent. A build without Qt
 remains useful for minimal CI and uses a clearly degraded command clipboard.
 
 Runtime packages normally include `xdg-desktop-portal`, the matching GNOME or
-KDE portal backend, and PipeWire. `wl-clipboard` on Wayland or `xclip`/`xsel`
-on X11 is needed only by a build without the Qt clipboard backend.
+KDE portal backend, `at-spi2-core`, and PipeWire. Clipboard paste is disabled
+when AT-SPI cannot verify the exact destination field. `wl-clipboard` on
+Wayland or `xclip`/`xsel` on X11 is needed only by a build without the Qt
+clipboard backend.
 
 ## Remaining platform limitations
 
@@ -134,7 +175,8 @@ on X11 is needed only by a build without the Qt clipboard backend.
 - Device selection currently exposes the stable system-default device. Native
   PipeWire device enumeration can replace it without changing the core API.
 - Wayland deliberately has no universal foreground-window identity API. AT-SPI
-  metadata is best effort, so focus-change verification is weaker than X11 in
-  applications that do not expose accessibility metadata.
+  identity is exact when an application participates in accessibility, but
+  applications that do not expose it are intentionally unavailable rather
+  than receiving a blind paste.
 - Certify current GNOME and KDE releases separately; other compositors may
   omit one or more portal interfaces and will be reported as unsupported.

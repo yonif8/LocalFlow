@@ -99,19 +99,47 @@ Status capabilityFailure(
         capability ? capability->remediation : std::string{});
 }
 
+struct TargetCheck {
+    Status status;
+    bool copyRecoverySafe{false};
+};
+
+bool verifiedNonSecureEditable(const ApplicationInfo& target) {
+    return target.processId > 0 && !target.applicationId.empty() &&
+           target.focusedTarget.has_value() &&
+           !target.focusedTarget->busName.empty() &&
+           !target.focusedTarget->objectPath.empty() &&
+           target.focusedTarget->focused && target.focusedTarget->editable &&
+           target.focusedTarget->security == FieldSecurity::non_secure;
+}
+
 }  // namespace
 
 TextInsertionCoordinator::TextInsertionCoordinator(
     std::unique_ptr<AccessibilityTextInserter> accessibility,
     std::unique_ptr<Clipboard> clipboard,
     std::unique_ptr<PasteInjector> paste,
-    InsertionOptions options)
+    InsertionOptions options,
+    std::shared_ptr<FocusedTargetProvider> focusedTargets)
     : accessibility_(std::move(accessibility)),
       clipboard_(std::move(clipboard)),
       paste_(std::move(paste)),
-      options_(options) {}
+      options_(options),
+      focusedTargets_(std::move(focusedTargets)) {}
 
 InsertionResult TextInsertionCoordinator::insert(const std::string& utf8Text) {
+    return insertImpl(utf8Text, nullptr);
+}
+
+InsertionResult TextInsertionCoordinator::insert(
+    const std::string& utf8Text,
+    const ApplicationInfo& expectedTarget) {
+    return insertImpl(utf8Text, &expectedTarget);
+}
+
+InsertionResult TextInsertionCoordinator::insertImpl(
+    const std::string& utf8Text,
+    const ApplicationInfo* expectedTarget) {
     InsertionResult result;
     if (utf8Text.empty()) {
         result.status = Status::failure(
@@ -120,12 +148,64 @@ InsertionResult TextInsertionCoordinator::insert(const std::string& utf8Text) {
         return result;
     }
 
+    const auto verifyTarget = [&]() -> TargetCheck {
+        if (!focusedTargets_) return {Status::success(), false};
+        if (!expectedTarget) {
+            return {
+                Status::failure(
+                    ErrorCode::not_configured,
+                    "No verified destination was captured when dictation began.",
+                    "Keep the destination field focused and try dictating again."),
+                false,
+            };
+        }
+        const auto current = focusedTargets_->snapshotFocusedTarget();
+        if (!current) return {current.status(), false};
+        const auto status = validateFocusedTarget(*expectedTarget, current.value());
+        const bool recoverySafe = status.code == ErrorCode::focus_changed &&
+                                  verifiedNonSecureEditable(*expectedTarget) &&
+                                  verifiedNonSecureEditable(current.value());
+        return {status, recoverySafe};
+    };
+
+    const auto failSafely = [&](TargetCheck check, bool transcriptAlreadyCopied) {
+        if (check.copyRecoverySafe && options_.copyOnFocusChange && clipboard_) {
+            Status copyStatus = Status::success();
+            if (!transcriptAlreadyCopied) copyStatus = clipboard_->setText(utf8Text);
+            result.attempts.push_back({"safe clipboard recovery", copyStatus});
+            if (copyStatus.ok()) {
+                check.status.message += " The transcript was copied to the clipboard; nothing was pasted.";
+                check.status.remediation =
+                    "Return to the intended field and paste manually when ready.";
+                result.backend = "clipboard recovery";
+            }
+        }
+        result.status = std::move(check.status);
+    };
+
+    auto targetCheck = verifyTarget();
+    result.attempts.push_back({"focused target verification", targetCheck.status});
+    if (!targetCheck.status.ok()) {
+        failSafely(std::move(targetCheck), false);
+        return result;
+    }
+
     if (accessibility_) {
-        auto status = accessibility_->insertAtCaret(utf8Text);
+        auto status = expectedTarget
+            ? accessibility_->insertAtCaret(utf8Text, *expectedTarget)
+            : accessibility_->insertAtCaret(utf8Text);
         result.attempts.push_back({"AT-SPI2 EditableText", status});
         if (status.ok()) {
             result.status = Status::success();
             result.backend = "AT-SPI2 EditableText";
+            return result;
+        }
+        if (status.code == ErrorCode::secure_field) {
+            result.status = std::move(status);
+            return result;
+        }
+        if (status.code == ErrorCode::focus_changed) {
+            failSafely({std::move(status), true}, false);
             return result;
         }
     }
@@ -134,6 +214,13 @@ InsertionResult TextInsertionCoordinator::insert(const std::string& utf8Text) {
         result.status = result.attempts.empty()
             ? Status::failure(ErrorCode::not_configured, "No text insertion backend is configured.")
             : result.attempts.back().status;
+        return result;
+    }
+    if (expectedTarget && !focusedTargets_) {
+        result.status = Status::failure(
+            ErrorCode::not_configured,
+            "Clipboard paste was refused because no focused-target provider can revalidate the destination.",
+            "Share the AT-SPI focused-target provider with the insertion coordinator.");
         return result;
     }
     if (!clipboard_ || !paste_) {
@@ -154,6 +241,29 @@ InsertionResult TextInsertionCoordinator::insert(const std::string& utf8Text) {
     result.attempts.push_back({"clipboard write", setStatus});
     if (!setStatus.ok()) {
         result.status = setStatus;
+        return result;
+    }
+
+    // This is deliberately the final operation before the global Ctrl+V.
+    // A changed, unknown, non-editable, or secure target never receives a
+    // blind paste. On unsafe failures the old clipboard is restored; on a
+    // verified non-secure focus change the transcript itself is the recovery.
+    targetCheck = verifyTarget();
+    result.attempts.push_back({"pre-paste target verification", targetCheck.status});
+    if (!targetCheck.status.ok()) {
+        if (targetCheck.copyRecoverySafe && options_.copyOnFocusChange) {
+            failSafely(std::move(targetCheck), true);
+        } else {
+            const auto restoreStatus = clipboard_->restore(snapshot.value());
+            result.attempts.push_back({"clipboard restore", restoreStatus});
+            result.status = std::move(targetCheck.status);
+            if (!restoreStatus.ok()) {
+                result.status.remediation +=
+                    (result.status.remediation.empty() ? "" : " ") +
+                    std::string("The previous clipboard could not be restored: ") +
+                    restoreStatus.message;
+            }
+        }
         return result;
     }
 

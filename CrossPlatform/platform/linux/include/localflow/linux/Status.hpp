@@ -16,6 +16,8 @@ enum class ErrorCode {
     permission_denied,
     not_configured,
     not_editable,
+    secure_field,
+    focus_changed,
     busy,
     cancelled,
     timed_out,

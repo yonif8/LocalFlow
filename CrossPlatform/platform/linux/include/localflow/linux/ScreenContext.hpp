@@ -5,17 +5,54 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace localflow::platform::linux {
+
+enum class FieldSecurity {
+    unknown,
+    non_secure,
+    secure,
+};
+
+struct FocusedAccessibleTarget {
+    // The AT-SPI application's unique bus name and the accessible's object
+    // path form the runtime identity. accessibleId is toolkit-provided and may
+    // be empty, but is retained as an additional stable identity signal.
+    std::string busName;
+    std::string objectPath;
+    std::string accessibleId;
+    std::string role;
+    bool focused{false};
+    bool editable{false};
+    FieldSecurity security{FieldSecurity::unknown};
+};
 
 struct ApplicationInfo {
     std::string name;
     std::string applicationId;
     std::string windowTitle;
     std::int64_t processId{-1};
+    std::optional<FocusedAccessibleTarget> focusedTarget;
 };
+
+// Captures the exact focused AT-SPI object. Implementations bound tree walks,
+// bus calls, and depth; an unidentified target is an error rather than a
+// partially populated success.
+class FocusedTargetProvider {
+public:
+    virtual ~FocusedTargetProvider() = default;
+    [[nodiscard]] virtual Result<ApplicationInfo> snapshotFocusedTarget() = 0;
+};
+
+// Pure validation helper shared by insertion backends and deterministic tests.
+// Success means both snapshots identify the exact same focused, editable,
+// non-secure accessible object.
+[[nodiscard]] Status validateFocusedTarget(
+    const ApplicationInfo& expected,
+    const ApplicationInfo& current);
 
 enum class PixelFormat {
     bgra8,
@@ -52,6 +89,10 @@ public:
 
 [[nodiscard]] std::unique_ptr<ScreenContextBackend> makeScreenContextBackend(
     SessionType session,
-    std::shared_ptr<ScreenshotPortal> portal = {});
+    std::shared_ptr<ScreenshotPortal> portal = {},
+    std::shared_ptr<FocusedTargetProvider> focusedTargets = {});
+
+[[nodiscard]] std::shared_ptr<FocusedTargetProvider>
+makeAtSpiFocusedTargetProvider(const CapabilityReport& report);
 
 }  // namespace localflow::platform::linux

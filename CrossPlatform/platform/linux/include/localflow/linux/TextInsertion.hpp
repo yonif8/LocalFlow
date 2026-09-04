@@ -1,6 +1,7 @@
 #pragma once
 
 #include "localflow/linux/Capabilities.hpp"
+#include "localflow/linux/ScreenContext.hpp"
 #include "localflow/linux/Status.hpp"
 
 #include <chrono>
@@ -18,6 +19,15 @@ public:
     // Inserts at the focused object's caret. Implementations must return
     // not_editable when focus is known but does not implement EditableText.
     virtual Status insertAtCaret(const std::string& utf8Text) = 0;
+
+    // Production AT-SPI implementations revalidate the exact expected target
+    // and insert through the same accessible object they just verified.
+    virtual Status insertAtCaret(
+        const std::string& utf8Text,
+        const ApplicationInfo& expectedTarget) {
+        (void)expectedTarget;
+        return insertAtCaret(utf8Text);
+    }
 };
 
 struct ClipboardSnapshot {
@@ -74,6 +84,7 @@ struct InsertionResult {
 struct InsertionOptions {
     bool allowClipboardFallback{true};
     std::chrono::milliseconds clipboardRestoreDelay{180};
+    bool copyOnFocusChange{true};
 };
 
 class TextInsertionCoordinator {
@@ -82,15 +93,24 @@ public:
         std::unique_ptr<AccessibilityTextInserter> accessibility,
         std::unique_ptr<Clipboard> clipboard,
         std::unique_ptr<PasteInjector> paste,
-        InsertionOptions options = {});
+        InsertionOptions options = {},
+        std::shared_ptr<FocusedTargetProvider> focusedTargets = {});
 
     [[nodiscard]] InsertionResult insert(const std::string& utf8Text);
+    [[nodiscard]] InsertionResult insert(
+        const std::string& utf8Text,
+        const ApplicationInfo& expectedTarget);
 
 private:
+    [[nodiscard]] InsertionResult insertImpl(
+        const std::string& utf8Text,
+        const ApplicationInfo* expectedTarget);
+
     std::unique_ptr<AccessibilityTextInserter> accessibility_;
     std::unique_ptr<Clipboard> clipboard_;
     std::unique_ptr<PasteInjector> paste_;
     InsertionOptions options_;
+    std::shared_ptr<FocusedTargetProvider> focusedTargets_;
 };
 
 [[nodiscard]] std::unique_ptr<AccessibilityTextInserter>

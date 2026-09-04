@@ -76,6 +76,7 @@ bool CapabilityReport::canShipCoreDictation() const noexcept {
     };
     return usable(Feature::global_shortcut) &&
            usable(Feature::microphone_capture) &&
+           usable(Feature::accessibility_context) &&
            (usable(Feature::accessibility_insertion) || usable(Feature::clipboard_paste));
 }
 
@@ -218,11 +219,13 @@ CapabilityReport CapabilityDetector::detect(const HostProbe& host) const {
         report.capabilities.push_back(makeCapability(
             Feature::active_application,
             atSpi ? Availability::degraded : Availability::unsupported,
-            atSpi ? "AT-SPI" : "Wayland",
+            atSpi ? "AT-SPI focused target" : "Wayland",
             atSpi
-                ? "Focused accessibility objects provide app metadata, but Wayland has no universal foreground-window API."
+                ? "A bounded accessibility snapshot provides the focused object's exact bus/path identity and application PID."
                 : "Wayland intentionally has no universal foreground-window API.",
-            atSpi ? std::string{} : "Enable the desktop accessibility bus for metadata, or rely on the selected capture stream."));
+            atSpi
+                ? "Applications that do not expose AT-SPI metadata are rejected as unverifiable."
+                : "Enable the desktop accessibility bus for safe target verification."));
 
         report.capabilities.push_back(screenshotPortal
             ? makeCapability(
@@ -314,7 +317,7 @@ CapabilityReport CapabilityDetector::detect(const HostProbe& host) const {
               Feature::accessibility_insertion,
               Availability::available,
               "AT-SPI2 EditableText",
-              "Text can be inserted at the caret in applications exposing EditableText.")
+              "Text can be inserted only after the exact focused, editable, non-secure object is revalidated.")
         : makeCapability(
               Feature::accessibility_insertion,
               Availability::unavailable,
@@ -323,7 +326,8 @@ CapabilityReport CapabilityDetector::detect(const HostProbe& host) const {
               "Install at-spi2-core and enable desktop accessibility."));
 
     if (report.session.type == SessionType::x11) {
-        report.capabilities.push_back((qtClipboard || x11Clipboard) && xTest
+        report.capabilities.push_back(
+            (qtClipboard || x11Clipboard) && xTest && atSpi
             ? makeCapability(
                   Feature::clipboard_paste,
                   Availability::available,
@@ -337,12 +341,17 @@ CapabilityReport CapabilityDetector::detect(const HostProbe& host) const {
                   Feature::clipboard_paste,
                   Availability::unavailable,
                   "X11",
-                  "A clipboard provider or safe XTest paste injector is missing.",
-                  qtClipboard
+                  !atSpi
+                      ? "Clipboard paste is disabled because the exact focused field cannot be verified without AT-SPI2."
+                      : "A clipboard provider or safe XTest paste injector is missing.",
+                  !atSpi
+                      ? "Install at-spi2-core and enable desktop accessibility."
+                      : qtClipboard
                       ? "Install libXtst."
                       : "Install xclip (or xsel) and libXtst."));
     } else if (report.session.type == SessionType::wayland) {
-        report.capabilities.push_back((qtClipboard || waylandClipboard) && remoteDesktopPortal
+        report.capabilities.push_back(
+            (qtClipboard || waylandClipboard) && remoteDesktopPortal && atSpi
             ? makeCapability(
                   Feature::clipboard_paste,
                   Availability::permission_required,
@@ -357,8 +366,12 @@ CapabilityReport CapabilityDetector::detect(const HostProbe& host) const {
                   Feature::clipboard_paste,
                   Availability::unavailable,
                   "Wayland",
-                  "Wayland clipboard access alone cannot inject Ctrl+V safely.",
-                  qtClipboard
+                  !atSpi
+                      ? "Clipboard paste is disabled because the exact focused field cannot be verified without AT-SPI2."
+                      : "Wayland clipboard access alone cannot inject Ctrl+V safely.",
+                  !atSpi
+                      ? "Install at-spi2-core and enable desktop accessibility."
+                      : qtClipboard
                       ? "Use AT-SPI insertion, or a desktop that supports the RemoteDesktop portal."
                       : "Use AT-SPI insertion, or install wl-clipboard and a desktop that supports the RemoteDesktop portal."));
     } else {

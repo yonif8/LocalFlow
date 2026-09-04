@@ -13,6 +13,8 @@ namespace localflow::platform::linux::detail {
 [[nodiscard]] std::unique_ptr<GlobalShortcutBackend> makeX11ShortcutBackend();
 [[nodiscard]] std::unique_ptr<ScreenContextBackend> makeX11ScreenContextBackend();
 [[nodiscard]] std::unique_ptr<AccessibilityTextInserter> makeAtSpiInserter();
+[[nodiscard]] std::shared_ptr<FocusedTargetProvider>
+makeAtSpiFocusedTargetProvider();
 [[nodiscard]] std::unique_ptr<Clipboard> makeCommandClipboard(
     SessionType session,
     std::string backend);

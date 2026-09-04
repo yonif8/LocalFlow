@@ -2,6 +2,7 @@
 
 #include "PortalSupport.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -107,7 +108,13 @@ void testWaylandWithoutPortalsFailsClearly() {
 void testX11Capabilities() {
     FakeHost host;
     host.environmentValues["DISPLAY"] = ":0";
-    host.libraries = {"libX11.so.6", "libXtst.so.6", "libpulse.so.0"};
+    host.libraries = {
+        "libX11.so.6",
+        "libXtst.so.6",
+        "libpulse.so.0",
+        "libatspi.so.0",
+    };
+    host.busNames = {"org.a11y.Bus"};
     host.executables = {"xclip", "pactl", "parec"};
     const auto report = CapabilityDetector{}.detect(host);
     EXPECT_EQ(report.session.type, SessionType::x11);
@@ -115,6 +122,21 @@ void testX11Capabilities() {
     EXPECT_EQ(report.find(Feature::screen_capture)->availability, Availability::available);
     EXPECT_TRUE(report.find(Feature::clipboard_paste)->usable());
     EXPECT_EQ(report.find(Feature::microphone_capture)->availability, Availability::degraded);
+}
+
+void testClipboardCannotShipWithoutFocusedTargetVerification() {
+    FakeHost host;
+    host.environmentValues["DISPLAY"] = ":0";
+    host.libraries = {"libX11.so.6", "libXtst.so.6", "libpulse.so.0"};
+    host.executables = {"xclip", "pactl", "parec"};
+    const auto report = CapabilityDetector{}.detect(host);
+    EXPECT_EQ(
+        report.find(Feature::clipboard_paste)->availability,
+        Availability::unavailable);
+    EXPECT_TRUE(
+        report.find(Feature::clipboard_paste)->detail.find("AT-SPI2") !=
+        std::string::npos);
+    EXPECT_TRUE(!report.canShipCoreDictation());
 }
 
 class FakeShortcutPortal final : public GlobalShortcutsPortal {
@@ -227,8 +249,16 @@ class FakeAccessibility final : public AccessibilityTextInserter {
 public:
     Status response;
     int calls{0};
+    int expectedTargetCalls{0};
     explicit FakeAccessibility(Status value) : response(std::move(value)) {}
     Status insertAtCaret(const std::string&) override { ++calls; return response; }
+    Status insertAtCaret(
+        const std::string&,
+        const ApplicationInfo&) override {
+        ++calls;
+        ++expectedTargetCalls;
+        return response;
+    }
 };
 
 class FakeClipboard final : public Clipboard {
@@ -236,13 +266,18 @@ public:
     int snapshots{0};
     int writes{0};
     int restores{0};
+    std::string lastText;
     Result<ClipboardSnapshot> snapshot() override {
         ++snapshots;
         ClipboardSnapshot value;
         value.payloads["text/plain"] = {'o', 'l', 'd'};
         return Result<ClipboardSnapshot>::success(std::move(value));
     }
-    Status setText(const std::string&) override { ++writes; return Status::success(); }
+    Status setText(const std::string& text) override {
+        ++writes;
+        lastText = text;
+        return Status::success();
+    }
     Status restore(const ClipboardSnapshot&) override { ++restores; return Status::success(); }
 };
 
@@ -253,6 +288,244 @@ public:
     explicit FakePaste(Status value) : response(std::move(value)) {}
     Status paste() override { ++calls; return response; }
 };
+
+ApplicationInfo focusedTarget(
+    std::string objectPath = "/org/a11y/atspi/accessible/42",
+    FieldSecurity security = FieldSecurity::non_secure,
+    bool editable = true,
+    bool focused = true) {
+    ApplicationInfo result;
+    result.name = "Example Editor";
+    result.applicationId = "org.example.Editor";
+    result.windowTitle = "Document";
+    result.processId = 4242;
+    result.focusedTarget = FocusedAccessibleTarget{
+        ":1.42",
+        std::move(objectPath),
+        "editor-body",
+        "text",
+        focused,
+        editable,
+        security,
+    };
+    return result;
+}
+
+class FakeFocusedTargets final : public FocusedTargetProvider {
+public:
+    std::vector<ApplicationInfo> snapshots;
+    Status failure;
+    int calls{0};
+
+    Result<ApplicationInfo> snapshotFocusedTarget() override {
+        ++calls;
+        if (!failure.ok()) return Result<ApplicationInfo>::failure(failure);
+        if (snapshots.empty()) {
+            return Result<ApplicationInfo>::failure(Status::failure(
+                ErrorCode::service_unavailable, "No fake target."));
+        }
+        const auto index = std::min<std::size_t>(
+            static_cast<std::size_t>(calls - 1), snapshots.size() - 1);
+        return Result<ApplicationInfo>::success(snapshots[index]);
+    }
+};
+
+void testFocusedTargetValidationIsExactAndFailClosed() {
+    const auto expected = focusedTarget();
+    EXPECT_TRUE(validateFocusedTarget(expected, expected).ok());
+
+    auto changed = expected;
+    changed.focusedTarget->objectPath = "/org/a11y/atspi/accessible/43";
+    EXPECT_EQ(
+        validateFocusedTarget(expected, changed).code,
+        ErrorCode::focus_changed);
+
+    changed = expected;
+    changed.processId = 4243;
+    EXPECT_EQ(
+        validateFocusedTarget(expected, changed).code,
+        ErrorCode::focus_changed);
+
+    changed = expected;
+    changed.focusedTarget->security = FieldSecurity::secure;
+    EXPECT_EQ(
+        validateFocusedTarget(expected, changed).code,
+        ErrorCode::secure_field);
+
+    changed = expected;
+    changed.focusedTarget->security = FieldSecurity::unknown;
+    EXPECT_EQ(
+        validateFocusedTarget(expected, changed).code,
+        ErrorCode::secure_field);
+
+    changed = expected;
+    changed.focusedTarget->editable = false;
+    EXPECT_EQ(
+        validateFocusedTarget(expected, changed).code,
+        ErrorCode::not_editable);
+
+    changed = expected;
+    changed.focusedTarget.reset();
+    EXPECT_EQ(
+        validateFocusedTarget(expected, changed).code,
+        ErrorCode::not_configured);
+}
+
+void testVerifiedTargetIsPassedToAccessibilityInsertion() {
+    const auto expected = focusedTarget();
+    auto targets = std::make_shared<FakeFocusedTargets>();
+    targets->snapshots = {expected};
+    auto accessibility = std::make_unique<FakeAccessibility>(Status::success());
+    auto* accessibilityRaw = accessibility.get();
+    auto clipboard = std::make_unique<FakeClipboard>();
+    auto paste = std::make_unique<FakePaste>(Status::success());
+    auto* pasteRaw = paste.get();
+    TextInsertionCoordinator coordinator(
+        std::move(accessibility), std::move(clipboard), std::move(paste),
+        {true, std::chrono::milliseconds(0)}, targets);
+
+    const auto result = coordinator.insert("hello", expected);
+    EXPECT_TRUE(result.ok());
+    EXPECT_EQ(targets->calls, 1);
+    EXPECT_EQ(accessibilityRaw->expectedTargetCalls, 1);
+    EXPECT_EQ(pasteRaw->calls, 0);
+}
+
+void testFocusChangeRefusesPasteAndCopiesRecovery() {
+    const auto expected = focusedTarget();
+    auto targets = std::make_shared<FakeFocusedTargets>();
+    targets->snapshots = {focusedTarget("/org/a11y/atspi/accessible/99")};
+    auto accessibility = std::make_unique<FakeAccessibility>(Status::success());
+    auto* accessibilityRaw = accessibility.get();
+    auto clipboard = std::make_unique<FakeClipboard>();
+    auto* clipboardRaw = clipboard.get();
+    auto paste = std::make_unique<FakePaste>(Status::success());
+    auto* pasteRaw = paste.get();
+    TextInsertionCoordinator coordinator(
+        std::move(accessibility), std::move(clipboard), std::move(paste),
+        {true, std::chrono::milliseconds(0)}, targets);
+
+    const auto result = coordinator.insert("safe recovery", expected);
+    EXPECT_EQ(result.status.code, ErrorCode::focus_changed);
+    EXPECT_EQ(result.backend, std::string("clipboard recovery"));
+    EXPECT_EQ(accessibilityRaw->calls, 0);
+    EXPECT_EQ(pasteRaw->calls, 0);
+    EXPECT_EQ(clipboardRaw->writes, 1);
+    EXPECT_EQ(clipboardRaw->lastText, std::string("safe recovery"));
+}
+
+void testSecureTargetNeverCopiesOrPastes() {
+    const auto expected = focusedTarget();
+    auto targets = std::make_shared<FakeFocusedTargets>();
+    targets->snapshots = {
+        focusedTarget(
+            "/org/a11y/atspi/accessible/42",
+            FieldSecurity::secure),
+    };
+    auto accessibility = std::make_unique<FakeAccessibility>(Status::success());
+    auto clipboard = std::make_unique<FakeClipboard>();
+    auto* clipboardRaw = clipboard.get();
+    auto paste = std::make_unique<FakePaste>(Status::success());
+    auto* pasteRaw = paste.get();
+    TextInsertionCoordinator coordinator(
+        std::move(accessibility), std::move(clipboard), std::move(paste),
+        {true, std::chrono::milliseconds(0)}, targets);
+
+    const auto result = coordinator.insert("never expose this", expected);
+    EXPECT_EQ(result.status.code, ErrorCode::secure_field);
+    EXPECT_EQ(clipboardRaw->writes, 0);
+    EXPECT_EQ(pasteRaw->calls, 0);
+}
+
+void testMissingExpectedTargetNeverPastes() {
+    auto targets = std::make_shared<FakeFocusedTargets>();
+    targets->snapshots = {focusedTarget()};
+    auto accessibility = std::make_unique<FakeAccessibility>(Status::success());
+    auto clipboard = std::make_unique<FakeClipboard>();
+    auto* clipboardRaw = clipboard.get();
+    auto paste = std::make_unique<FakePaste>(Status::success());
+    auto* pasteRaw = paste.get();
+    TextInsertionCoordinator coordinator(
+        std::move(accessibility), std::move(clipboard), std::move(paste),
+        {true, std::chrono::milliseconds(0)}, targets);
+
+    const auto result = coordinator.insert("hello");
+    EXPECT_EQ(result.status.code, ErrorCode::not_configured);
+    EXPECT_EQ(targets->calls, 0);
+    EXPECT_EQ(clipboardRaw->writes, 0);
+    EXPECT_EQ(pasteRaw->calls, 0);
+}
+
+void testExpectedTargetWithoutVerifierCannotFallBackToPaste() {
+    const auto expected = focusedTarget();
+    auto accessibility = std::make_unique<FakeAccessibility>(Status::failure(
+        ErrorCode::not_editable, "Direct insertion unavailable."));
+    auto clipboard = std::make_unique<FakeClipboard>();
+    auto* clipboardRaw = clipboard.get();
+    auto paste = std::make_unique<FakePaste>(Status::success());
+    auto* pasteRaw = paste.get();
+    TextInsertionCoordinator coordinator(
+        std::move(accessibility), std::move(clipboard), std::move(paste),
+        {true, std::chrono::milliseconds(0)});
+
+    const auto result = coordinator.insert("hello", expected);
+    EXPECT_EQ(result.status.code, ErrorCode::not_configured);
+    EXPECT_EQ(clipboardRaw->writes, 0);
+    EXPECT_EQ(pasteRaw->calls, 0);
+}
+
+void testFocusRaceImmediatelyBeforePasteLeavesRecoveryCopy() {
+    const auto expected = focusedTarget();
+    auto targets = std::make_shared<FakeFocusedTargets>();
+    targets->snapshots = {
+        expected,
+        focusedTarget("/org/a11y/atspi/accessible/88"),
+    };
+    auto accessibility = std::make_unique<FakeAccessibility>(Status::failure(
+        ErrorCode::not_editable, "Direct insertion unavailable."));
+    auto clipboard = std::make_unique<FakeClipboard>();
+    auto* clipboardRaw = clipboard.get();
+    auto paste = std::make_unique<FakePaste>(Status::success());
+    auto* pasteRaw = paste.get();
+    TextInsertionCoordinator coordinator(
+        std::move(accessibility), std::move(clipboard), std::move(paste),
+        {true, std::chrono::milliseconds(0)}, targets);
+
+    const auto result = coordinator.insert("keep this", expected);
+    EXPECT_EQ(result.status.code, ErrorCode::focus_changed);
+    EXPECT_EQ(result.backend, std::string("clipboard recovery"));
+    EXPECT_EQ(targets->calls, 2);
+    EXPECT_EQ(clipboardRaw->writes, 1);
+    EXPECT_EQ(clipboardRaw->restores, 0);
+    EXPECT_EQ(pasteRaw->calls, 0);
+}
+
+void testSecureRaceBeforePasteRestoresClipboard() {
+    const auto expected = focusedTarget();
+    auto targets = std::make_shared<FakeFocusedTargets>();
+    targets->snapshots = {
+        expected,
+        focusedTarget(
+            "/org/a11y/atspi/accessible/42",
+            FieldSecurity::secure),
+    };
+    auto accessibility = std::make_unique<FakeAccessibility>(Status::failure(
+        ErrorCode::not_editable, "Direct insertion unavailable."));
+    auto clipboard = std::make_unique<FakeClipboard>();
+    auto* clipboardRaw = clipboard.get();
+    auto paste = std::make_unique<FakePaste>(Status::success());
+    auto* pasteRaw = paste.get();
+    TextInsertionCoordinator coordinator(
+        std::move(accessibility), std::move(clipboard), std::move(paste),
+        {true, std::chrono::milliseconds(0)}, targets);
+
+    const auto result = coordinator.insert("do not paste", expected);
+    EXPECT_EQ(result.status.code, ErrorCode::secure_field);
+    EXPECT_EQ(targets->calls, 2);
+    EXPECT_EQ(clipboardRaw->writes, 1);
+    EXPECT_EQ(clipboardRaw->restores, 1);
+    EXPECT_EQ(pasteRaw->calls, 0);
+}
 
 void testInsertionPrefersAccessibility() {
     auto accessibility = std::make_unique<FakeAccessibility>(Status::success());
@@ -314,6 +587,24 @@ void testPortalScreenshotCapturesEachContextFrame() {
     EXPECT_EQ(portal->closes, 1);
 }
 
+void testWaylandScreenContextReturnsAtSpiApplicationInfo() {
+    auto portal = std::make_shared<FakeScreenPortal>();
+    auto targets = std::make_shared<FakeFocusedTargets>();
+    targets->snapshots = {focusedTarget()};
+    auto context = makeScreenContextBackend(
+        SessionType::wayland, portal, targets);
+    const auto application = context->activeApplication();
+    EXPECT_TRUE(application.ok());
+    if (application) {
+        EXPECT_EQ(application.value().processId, std::int64_t{4242});
+        EXPECT_EQ(
+            application.value().applicationId,
+            std::string("org.example.Editor"));
+        EXPECT_TRUE(application.value().focusedTarget.has_value());
+    }
+    EXPECT_EQ(targets->calls, 1);
+}
+
 class FakeRemoteDesktopPortal final : public RemoteDesktopPortal {
 public:
     Status ensureResult = Status::success();
@@ -354,14 +645,24 @@ int main() {
     testWaylandCapabilities();
     testWaylandWithoutPortalsFailsClearly();
     testX11Capabilities();
+    testClipboardCannotShipWithoutFocusedTargetVerification();
     testPortalShortcutMapsBothEdges();
     testWaylandMouseShortcutRejected();
     testPortalShortcutSetupCanBeCancelled();
     testPortalResponseDiagnostics();
     testPortalShortcutTriggerUsesXdgSyntax();
+    testFocusedTargetValidationIsExactAndFailClosed();
+    testVerifiedTargetIsPassedToAccessibilityInsertion();
+    testFocusChangeRefusesPasteAndCopiesRecovery();
+    testSecureTargetNeverCopiesOrPastes();
+    testMissingExpectedTargetNeverPastes();
+    testExpectedTargetWithoutVerifierCannotFallBackToPaste();
+    testFocusRaceImmediatelyBeforePasteLeavesRecoveryCopy();
+    testSecureRaceBeforePasteRestoresClipboard();
     testInsertionPrefersAccessibility();
     testInsertionRestoresClipboardAfterPasteFailure();
     testPortalScreenshotCapturesEachContextFrame();
+    testWaylandScreenContextReturnsAtSpiApplicationInfo();
     testPortalPasteUsesBalancedControlV();
 
     if (failures == 0) {
