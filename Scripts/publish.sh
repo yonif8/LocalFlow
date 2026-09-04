@@ -238,7 +238,7 @@ if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
 fi
 RELEASE_COMMIT="$(git rev-parse HEAD)"
 
-echo "==> [4/8] Creating and explicitly pushing $TAG…"
+echo "==> [4/8] Creating and explicitly pushing ${TAG}…"
 if git show-ref --verify --quiet "refs/tags/$TAG"; then
     if [[ "$(git rev-parse "$TAG^{commit}")" != "$RELEASE_COMMIT" ]]; then
         echo "error: local tag $TAG points at a different commit" >&2
@@ -350,7 +350,7 @@ DMG_SHA256="$(shasum -a 256 "$DMG" | awk '{print $1}')"
 APPCAST_SHA256="$(shasum -a 256 "$APPCAST" | awk '{print $1}')"
 
 if [[ "$release_public" != "true" ]]; then
-    echo "==> [6/8] Dispatching the exact-tag, three-platform release gate on $TAG…"
+    echo "==> [6/8] Dispatching the exact-tag, three-platform release gate on ${TAG}…"
     REQUEST_ID="$(openssl rand -hex 16)"
     run_output="$("$GH" workflow run release.yml --repo "$REPO" --ref "$TAG" \
         -f "tag=$TAG" -f "request_id=$REQUEST_ID" -f "dmg_sha256=$DMG_SHA256" \
