@@ -79,7 +79,7 @@ swift build -c release --product LocalFlowApp ${SCRATCH_ARGS[@]+"${SCRATCH_ARGS[
 BIN_PATH="$SCRATCH_DIR/release/LocalFlowApp"
 [[ -x "$BIN_PATH" ]] || { echo "error: built binary not found at $BIN_PATH" >&2; exit 1; }
 
-echo "==> Assembling $APP…"
+echo "==> Assembling ${APP}…"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 

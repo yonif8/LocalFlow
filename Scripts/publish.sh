@@ -80,7 +80,7 @@ else
     echo "    using existing $NOTES."
 fi
 
-echo "==> [5/5] Creating GitHub release $TAG…"
+echo "==> [5/5] Creating GitHub release ${TAG}…"
 if "$GH" release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
     echo "    release exists; uploading DMG (clobber)…"
     "$GH" release upload "$TAG" "$DMG" --repo "$REPO" --clobber

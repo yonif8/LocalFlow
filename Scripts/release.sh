@@ -44,7 +44,7 @@ if [[ ! -x "$TOOLS_DIR/generate_appcast" ]]; then
 fi
 
 # ---- Build ---------------------------------------------------------------
-echo "==> Building LocalFlow $VERSION…"
+echo "==> Building LocalFlow ${VERSION}…"
 # Always build releases in an isolated scratch dir: the default .build is
 # shared with dev/IDE/other-session builds and its llbuild state has served
 # STALE BINARIES that shipped without the code they claimed to contain.
@@ -53,7 +53,7 @@ echo "==> Building LocalFlow $VERSION…"
     --scratch-path "$REPO_ROOT/.build-release" "${@:2}"
 
 # ---- DMG -----------------------------------------------------------------
-echo "==> Creating $DMG…"
+echo "==> Creating ${DMG}…"
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
 cp -R "$APP" "$STAGING/LocalFlow.app"
