@@ -64,10 +64,11 @@ public:
 class ITextPolisher {
 public:
     virtual ~ITextPolisher() = default;
-    // Implementations must fail open: runtime/model errors return the input.
+    // Implementations should fail open internally when possible. The shared
+    // pipeline also catches failures and restores its deterministic input.
     virtual std::string polish(
         const std::string& text,
-        const PolishContext& context) noexcept = 0;
+        const PolishContext& context) = 0;
 };
 
 class ITextInserter {
@@ -77,4 +78,3 @@ public:
 };
 
 }  // namespace localflow::core
-

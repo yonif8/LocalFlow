@@ -4,6 +4,7 @@ project(LocalFlowCore LANGUAGES CXX)
 
 add_library(localflow_core STATIC
     src/audio_resampler.cpp
+    src/dictation_pipeline.cpp
     src/learned_terminology.cpp
     src/replacements.cpp
     src/terminology.cpp
@@ -28,7 +29,7 @@ else()
 endif()
 
 option(LOCALFLOW_BUILD_CORE_TESTS "Build the dependency-free core tests" OFF)
-if(LOCALFLOW_BUILD_CORE_TESTS)
+if(BUILD_TESTING OR LOCALFLOW_BUILD_CORE_TESTS)
     enable_testing()
     add_subdirectory(../tests/core ${CMAKE_CURRENT_BINARY_DIR}/tests)
 endif()

@@ -1,5 +1,6 @@
 #include "localflow/core/audio_resampler.hpp"
 #include "localflow/core/contracts.hpp"
+#include "localflow/core/dictation_pipeline.hpp"
 #include "localflow/core/learned_terminology.hpp"
 #include "localflow/core/replacements.hpp"
 #include "localflow/core/terminology.hpp"
@@ -399,6 +400,441 @@ void resampler_tests(TestRunner& runner) {
     });
 }
 
+struct FakeTranscriber final : lf::ITranscriber {
+    std::string response;
+    bool throws{false};
+    int calls{0};
+    std::vector<std::string>* events{nullptr};
+    std::function<void()> after_call;
+
+    std::string transcribe(const lf::Utterance&) override {
+        ++calls;
+        if (events != nullptr) events->push_back("transcribe");
+        if (throws) throw std::runtime_error("fake transcription failure");
+        if (after_call) after_call();
+        return response;
+    }
+};
+
+struct FakePolisher final : lf::ITextPolisher {
+    std::string response;
+    bool echo_input{true};
+    bool throws{false};
+    int calls{0};
+    std::string received_text;
+    std::optional<std::string> received_app_id;
+    std::vector<std::string>* events{nullptr};
+    std::function<void()> after_call;
+
+    std::string polish(const std::string& text, const lf::PolishContext& context) override {
+        ++calls;
+        received_text = text;
+        received_app_id = context.target_app_id;
+        if (events != nullptr) events->push_back("polish");
+        if (throws) throw std::runtime_error("fake polish failure containing private text");
+        if (after_call) after_call();
+        return echo_input ? text : response;
+    }
+};
+
+struct FakeInserter final : lf::ITextInserter {
+    bool throws{false};
+    int calls{0};
+    std::string received_text;
+    std::vector<std::string>* events{nullptr};
+    std::function<void()> before_return;
+
+    void insert(const std::string& text) override {
+        ++calls;
+        if (events != nullptr) events->push_back("insert");
+        if (throws) throw std::runtime_error("fake insertion failure");
+        received_text = text;
+        if (before_return) before_return();
+    }
+};
+
+lf::DictationRequest dictation_request(
+    std::vector<std::string> screen_terms = {},
+    std::optional<std::string> app_id = "example.app") {
+    lf::DictationRequest request;
+    request.utterance = {{0.1F, -0.1F, 0.2F}, 16'000.0};
+    request.press_context.screen_terms = std::move(screen_terms);
+    request.press_context.target_app_id = std::move(app_id);
+    return request;
+}
+
+void pipeline_tests(TestRunner& runner) {
+    runner.run("pipeline enforces shared stage order and learns after insertion", [] {
+        std::vector<std::string> events;
+        FakeTranscriber transcriber;
+        transcriber.response = "use echidna cams with postgressql";
+        transcriber.events = &events;
+        FakePolisher polisher;
+        polisher.events = &events;
+        FakeInserter inserter;
+        inserter.events = &events;
+        lf::LearnedTerminologyBank bank;
+        inserter.before_return = [&] { LF_CHECK(bank.terms().empty()); };
+        auto engine = replacement_engine({{"echidna cams", "EchidnaCams"}});
+        lf::DictationPipeline pipeline(
+            transcriber, std::move(engine), bank, polisher, inserter);
+
+        const auto result = pipeline.run(dictation_request(
+            {"PostgreSQL"}, "press.time.app"));
+        LF_CHECK(result.inserted());
+        LF_CHECK(events == std::vector<std::string>({"transcribe", "polish", "insert"}));
+        LF_CHECK(polisher.received_text == "use EchidnaCams with PostgreSQL");
+        LF_CHECK(polisher.received_app_id == std::optional<std::string>("press.time.app"));
+        LF_CHECK(inserter.received_text == "use EchidnaCams with PostgreSQL");
+        LF_CHECK(bank.terms().size() == 1);
+        LF_CHECK(bank.terms().front().canonical == "PostgreSQL");
+        LF_CHECK(bank.terms().front().source_app_id
+            == std::optional<std::string>("press.time.app"));
+        LF_CHECK(result.diagnostics.screen_match_count == 1);
+        LF_CHECK(result.diagnostics.learned_match_count == 0);
+        LF_CHECK(result.diagnostics.accepted_terminology_match_count == 1);
+        LF_CHECK(result.diagnostics.learning.outcome == lf::PipelineStageOutcome::succeeded);
+    });
+
+    runner.run("pipeline reasserts only terms confirmed before polish", [] {
+        FakeTranscriber transcriber;
+        transcriber.response = "use postgressql";
+        FakePolisher polisher;
+        polisher.echo_input = false;
+        polisher.response = "use postgressql then data grip";
+        FakeInserter inserter;
+        lf::LearnedTerminologyBank bank;
+        lf::DictationPipeline pipeline(
+            transcriber, replacement_engine({}), bank, polisher, inserter);
+        const auto result = pipeline.run(dictation_request({"PostgreSQL", "DataGrip"}));
+        LF_CHECK(result.inserted());
+        LF_CHECK(result.output_text == "use PostgreSQL then data grip");
+        LF_CHECK(result.diagnostics.post_polish_restoration_count == 1);
+        LF_CHECK(bank.terms().size() == 1);
+        LF_CHECK(bank.terms().front().canonical == "PostgreSQL");
+    });
+
+    runner.run("polish exceptions fail open to deterministic corrections", [] {
+        FakeTranscriber transcriber;
+        transcriber.response = "use postgressql";
+        FakePolisher polisher;
+        polisher.throws = true;
+        FakeInserter inserter;
+        lf::LearnedTerminologyBank bank;
+        lf::DictationPipeline pipeline(
+            transcriber, replacement_engine({}), bank, polisher, inserter);
+        const auto result = pipeline.run(dictation_request({"PostgreSQL"}));
+        LF_CHECK(result.inserted());
+        LF_CHECK(result.output_text == "use PostgreSQL");
+        LF_CHECK(inserter.received_text == "use PostgreSQL");
+        LF_CHECK(result.diagnostics.polish.outcome == lf::PipelineStageOutcome::failed_open);
+        LF_CHECK(bank.terms().size() == 1);
+    });
+
+    runner.run("blank polish output fails open", [] {
+        FakeTranscriber transcriber;
+        transcriber.response = "hello echidna cams";
+        FakePolisher polisher;
+        polisher.echo_input = false;
+        polisher.response = " \t\n ";
+        FakeInserter inserter;
+        lf::LearnedTerminologyBank bank;
+        lf::DictationPipeline pipeline(
+            transcriber,
+            replacement_engine({{"echidna cams", "EchidnaCams"}}),
+            bank, polisher, inserter);
+        const auto result = pipeline.run(dictation_request());
+        LF_CHECK(result.inserted());
+        LF_CHECK(result.output_text == "hello EchidnaCams");
+        LF_CHECK(result.diagnostics.polish.outcome == lf::PipelineStageOutcome::failed_open);
+    });
+
+    runner.run("empty ASR output never reaches polish or insertion", [] {
+        FakeTranscriber transcriber;
+        transcriber.response = " \n\t ";
+        FakePolisher polisher;
+        FakeInserter inserter;
+        lf::LearnedTerminologyBank bank;
+        lf::DictationPipeline pipeline(
+            transcriber, replacement_engine({}), bank, polisher, inserter);
+        const auto result = pipeline.run(dictation_request({"PostgreSQL"}));
+        LF_CHECK(result.diagnostics.completion == lf::PipelineCompletion::empty_output);
+        LF_CHECK(result.diagnostics.transcription.outcome == lf::PipelineStageOutcome::empty);
+        LF_CHECK(polisher.calls == 0);
+        LF_CHECK(inserter.calls == 0);
+        LF_CHECK(bank.terms().empty());
+    });
+
+    runner.run("replacement-created empty output is never inserted", [] {
+        FakeTranscriber transcriber;
+        transcriber.response = "discard me";
+        FakePolisher polisher;
+        FakeInserter inserter;
+        lf::LearnedTerminologyBank bank;
+        lf::DictationPipeline pipeline(
+            transcriber, replacement_engine({{"discard me", ""}}), bank, polisher, inserter);
+        const auto result = pipeline.run(dictation_request());
+        LF_CHECK(result.diagnostics.completion == lf::PipelineCompletion::empty_output);
+        LF_CHECK(result.diagnostics.replacements.outcome == lf::PipelineStageOutcome::empty);
+        LF_CHECK(polisher.calls == 0);
+        LF_CHECK(inserter.calls == 0);
+    });
+
+    runner.run("transcription failure stops every downstream side effect", [] {
+        FakeTranscriber transcriber;
+        transcriber.throws = true;
+        FakePolisher polisher;
+        FakeInserter inserter;
+        lf::LearnedTerminologyBank bank;
+        lf::DictationPipeline pipeline(
+            transcriber, replacement_engine({}), bank, polisher, inserter);
+        const auto result = pipeline.run(dictation_request({"PostgreSQL"}));
+        LF_CHECK(result.diagnostics.completion == lf::PipelineCompletion::transcription_failed);
+        LF_CHECK(result.diagnostics.transcription.outcome == lf::PipelineStageOutcome::failed);
+        LF_CHECK(result.output_text.empty());
+        LF_CHECK(polisher.calls == 0);
+        LF_CHECK(inserter.calls == 0);
+        LF_CHECK(bank.terms().empty());
+    });
+
+    runner.run("insertion failure cannot commit terminology learning", [] {
+        FakeTranscriber transcriber;
+        transcriber.response = "use postgressql";
+        FakePolisher polisher;
+        FakeInserter inserter;
+        inserter.throws = true;
+        lf::LearnedTerminologyBank bank;
+        lf::DictationPipeline pipeline(
+            transcriber, replacement_engine({}), bank, polisher, inserter);
+        const auto result = pipeline.run(dictation_request({"PostgreSQL"}));
+        LF_CHECK(result.diagnostics.completion == lf::PipelineCompletion::insertion_failed);
+        LF_CHECK(result.diagnostics.insertion.outcome == lf::PipelineStageOutcome::failed);
+        LF_CHECK(bank.terms().empty());
+        LF_CHECK(result.diagnostics.learning.outcome == lf::PipelineStageOutcome::not_run);
+    });
+
+    runner.run("failed insertion cannot refresh an existing learned alias", [] {
+        FakeTranscriber transcriber;
+        transcriber.response = "use postgressql";
+        FakePolisher polisher;
+        FakeInserter inserter;
+        inserter.throws = true;
+        lf::LearnedTerminologyBank bank({learned("PostgreSQL", {"postgressql"})});
+        const auto prior_count = bank.terms().front().use_count;
+        lf::DictationPipeline pipeline(
+            transcriber, replacement_engine({}), bank, polisher, inserter);
+        const auto result = pipeline.run(dictation_request());
+        LF_CHECK(result.diagnostics.completion == lf::PipelineCompletion::insertion_failed);
+        LF_CHECK(result.diagnostics.learned_match_count == 1);
+        LF_CHECK(bank.terms().front().use_count == prior_count);
+    });
+
+    runner.run("successful learned alias reuse refreshes only after insertion", [] {
+        FakeTranscriber transcriber;
+        transcriber.response = "use postgressql";
+        FakePolisher polisher;
+        FakeInserter inserter;
+        lf::LearnedTerminologyBank bank({learned("PostgreSQL", {"postgressql"})});
+        const auto prior_count = bank.terms().front().use_count;
+        inserter.before_return = [&] {
+            LF_CHECK(bank.terms().front().use_count == prior_count);
+        };
+        lf::DictationPipeline pipeline(
+            transcriber, replacement_engine({}), bank, polisher, inserter);
+        const auto result = pipeline.run(dictation_request());
+        LF_CHECK(result.inserted());
+        LF_CHECK(result.output_text == "use PostgreSQL");
+        LF_CHECK(result.diagnostics.learned_match_count == 1);
+        LF_CHECK(bank.terms().front().use_count == prior_count + 1);
+    });
+
+    runner.run("terms removed by polish are inserted but not learned", [] {
+        FakeTranscriber transcriber;
+        transcriber.response = "use postgressql";
+        FakePolisher polisher;
+        polisher.echo_input = false;
+        polisher.response = "use the database";
+        FakeInserter inserter;
+        lf::LearnedTerminologyBank bank;
+        lf::DictationPipeline pipeline(
+            transcriber, replacement_engine({}), bank, polisher, inserter);
+        const auto result = pipeline.run(dictation_request({"PostgreSQL"}));
+        LF_CHECK(result.inserted());
+        LF_CHECK(result.output_text == "use the database");
+        LF_CHECK(result.diagnostics.accepted_terminology_match_count == 0);
+        LF_CHECK(result.diagnostics.learning.outcome == lf::PipelineStageOutcome::skipped);
+        LF_CHECK(bank.terms().empty());
+    });
+
+    runner.run("personal dictionary output is protected from screen correction", [] {
+        FakeTranscriber transcriber;
+        transcriber.response = "use postgresql";
+        FakePolisher polisher;
+        FakeInserter inserter;
+        lf::LearnedTerminologyBank bank;
+        lf::DictationPipeline pipeline(
+            transcriber,
+            replacement_engine({{"postgresql", "Postgres"}}),
+            bank, polisher, inserter);
+        const auto result = pipeline.run(dictation_request({"PostgreSQL"}));
+        LF_CHECK(result.output_text == "use Postgres");
+        LF_CHECK(result.diagnostics.screen_match_count == 0);
+        LF_CHECK(bank.terms().empty());
+    });
+
+    runner.run("terminology can be disabled without disabling replacements", [] {
+        FakeTranscriber transcriber;
+        transcriber.response = "echidna cams and postgressql";
+        FakePolisher polisher;
+        FakeInserter inserter;
+        lf::LearnedTerminologyBank bank;
+        lf::DictationPipeline pipeline(
+            transcriber,
+            replacement_engine({{"echidna cams", "EchidnaCams"}}),
+            bank, polisher, inserter,
+            lf::DictationPipelineConfiguration{false});
+        const auto result = pipeline.run(dictation_request({"PostgreSQL"}));
+        LF_CHECK(result.output_text == "EchidnaCams and postgressql");
+        LF_CHECK(result.diagnostics.terminology.outcome == lf::PipelineStageOutcome::skipped);
+        LF_CHECK(bank.terms().empty());
+    });
+
+    runner.run("cancellation before transcription has no side effects", [] {
+        FakeTranscriber transcriber;
+        transcriber.response = "hello";
+        FakePolisher polisher;
+        FakeInserter inserter;
+        lf::LearnedTerminologyBank bank;
+        lf::DictationPipeline pipeline(
+            transcriber, replacement_engine({}), bank, polisher, inserter);
+        auto request = dictation_request();
+        request.is_cancelled = [] { return true; };
+        const auto result = pipeline.run(request);
+        LF_CHECK(result.diagnostics.completion == lf::PipelineCompletion::cancelled);
+        LF_CHECK(result.diagnostics.cancellation_boundary
+            == lf::CancellationBoundary::before_transcription);
+        LF_CHECK(transcriber.calls == 0);
+        LF_CHECK(polisher.calls == 0);
+        LF_CHECK(inserter.calls == 0);
+    });
+
+    runner.run("cancellation after transcription prevents downstream work", [] {
+        bool cancelled = false;
+        FakeTranscriber transcriber;
+        transcriber.response = "hello";
+        transcriber.after_call = [&] { cancelled = true; };
+        FakePolisher polisher;
+        FakeInserter inserter;
+        lf::LearnedTerminologyBank bank;
+        lf::DictationPipeline pipeline(
+            transcriber, replacement_engine({}), bank, polisher, inserter);
+        auto request = dictation_request();
+        request.is_cancelled = [&] { return cancelled; };
+        const auto result = pipeline.run(request);
+        LF_CHECK(result.diagnostics.completion == lf::PipelineCompletion::cancelled);
+        LF_CHECK(result.diagnostics.cancellation_boundary
+            == lf::CancellationBoundary::after_transcription);
+        LF_CHECK(polisher.calls == 0);
+        LF_CHECK(inserter.calls == 0);
+    });
+
+    runner.run("cancellation after polish prevents insertion and learning", [] {
+        bool cancelled = false;
+        FakeTranscriber transcriber;
+        transcriber.response = "use postgressql";
+        FakePolisher polisher;
+        polisher.after_call = [&] { cancelled = true; };
+        FakeInserter inserter;
+        lf::LearnedTerminologyBank bank;
+        lf::DictationPipeline pipeline(
+            transcriber, replacement_engine({}), bank, polisher, inserter);
+        auto request = dictation_request({"PostgreSQL"});
+        request.is_cancelled = [&] { return cancelled; };
+        const auto result = pipeline.run(request);
+        LF_CHECK(result.diagnostics.completion == lf::PipelineCompletion::cancelled);
+        LF_CHECK(result.diagnostics.cancellation_boundary
+            == lf::CancellationBoundary::after_polish);
+        LF_CHECK(inserter.calls == 0);
+        LF_CHECK(bank.terms().empty());
+    });
+
+    runner.run("cancellation cannot roll back a completed insertion", [] {
+        bool cancelled = false;
+        FakeTranscriber transcriber;
+        transcriber.response = "use postgressql";
+        FakePolisher polisher;
+        FakeInserter inserter;
+        inserter.before_return = [&] { cancelled = true; };
+        lf::LearnedTerminologyBank bank;
+        lf::DictationPipeline pipeline(
+            transcriber, replacement_engine({}), bank, polisher, inserter);
+        auto request = dictation_request({"PostgreSQL"});
+        request.is_cancelled = [&] { return cancelled; };
+        const auto result = pipeline.run(request);
+        LF_CHECK(result.inserted());
+        LF_CHECK(inserter.calls == 1);
+        LF_CHECK(bank.terms().size() == 1);
+    });
+
+    runner.run("throwing cancellation checks fail closed", [] {
+        FakeTranscriber transcriber;
+        transcriber.response = "hello";
+        FakePolisher polisher;
+        FakeInserter inserter;
+        lf::LearnedTerminologyBank bank;
+        lf::DictationPipeline pipeline(
+            transcriber, replacement_engine({}), bank, polisher, inserter);
+        auto request = dictation_request();
+        request.is_cancelled = []() -> bool { throw std::runtime_error("gone"); };
+        const auto result = pipeline.run(request);
+        LF_CHECK(result.diagnostics.completion == lf::PipelineCompletion::cancelled);
+        LF_CHECK(transcriber.calls == 0);
+        LF_CHECK(inserter.calls == 0);
+    });
+
+    runner.run("each request uses only its own press-time context", [] {
+        FakeTranscriber transcriber;
+        transcriber.response = "hello";
+        FakePolisher polisher;
+        FakeInserter inserter;
+        lf::LearnedTerminologyBank bank;
+        lf::DictationPipeline pipeline(
+            transcriber, replacement_engine({}), bank, polisher, inserter);
+        const auto first = pipeline.run(dictation_request({"PostgreSQL"}, "first.app"));
+        LF_CHECK(first.output_text == "hello");
+        LF_CHECK(polisher.received_app_id == std::optional<std::string>("first.app"));
+        transcriber.response = "use postgressql";
+        const auto second = pipeline.run(dictation_request({}, "second.app"));
+        LF_CHECK(second.output_text == "use postgressql");
+        LF_CHECK(polisher.received_app_id == std::optional<std::string>("second.app"));
+        LF_CHECK(bank.terms().empty());
+    });
+
+    runner.run("diagnostics expose outcomes and timings without error text", [] {
+        FakeTranscriber transcriber;
+        transcriber.response = "hello";
+        FakePolisher polisher;
+        FakeInserter inserter;
+        lf::LearnedTerminologyBank bank;
+        lf::DictationPipeline pipeline(
+            transcriber, replacement_engine({}), bank, polisher, inserter);
+        const auto result = pipeline.run(dictation_request());
+        LF_CHECK(result.diagnostics.completion == lf::PipelineCompletion::inserted);
+        LF_CHECK(result.diagnostics.transcription.outcome == lf::PipelineStageOutcome::succeeded);
+        LF_CHECK(result.diagnostics.replacements.outcome == lf::PipelineStageOutcome::succeeded);
+        LF_CHECK(result.diagnostics.terminology.outcome == lf::PipelineStageOutcome::succeeded);
+        LF_CHECK(result.diagnostics.polish.outcome == lf::PipelineStageOutcome::succeeded);
+        LF_CHECK(result.diagnostics.post_polish_terminology.outcome
+            == lf::PipelineStageOutcome::skipped);
+        LF_CHECK(result.diagnostics.insertion.outcome == lf::PipelineStageOutcome::succeeded);
+        LF_CHECK(result.diagnostics.learning.outcome == lf::PipelineStageOutcome::skipped);
+        LF_CHECK(result.diagnostics.total_elapsed.count() >= 0);
+        LF_CHECK(result.diagnostics.transcription.elapsed.count() >= 0);
+        LF_CHECK(result.diagnostics.polish.elapsed.count() >= 0);
+        LF_CHECK(result.diagnostics.insertion.elapsed.count() >= 0);
+    });
+}
+
 void extraction_tests(TestRunner& runner) {
     runner.run("extracts technical shapes and proper names", [] {
         const auto terms = lf::ScreenTermExtractor::extract({
@@ -658,6 +1094,7 @@ int main() {
     replacement_tests(runner);
     chunker_tests(runner);
     resampler_tests(runner);
+    pipeline_tests(runner);
     extraction_tests(runner);
     correction_tests(runner);
     learned_bank_tests(runner);
