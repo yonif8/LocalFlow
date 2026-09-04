@@ -74,6 +74,7 @@ LocalOcrResult LocalOcr::recognize(const LocalOcrFrame& frame) {
         return result;
     };
 #if !LOCALFLOW_HAVE_TESSERACT
+    static_cast<void>(frame);
     result.error = "This build does not include the local OCR runtime";
     return finish();
 #else
