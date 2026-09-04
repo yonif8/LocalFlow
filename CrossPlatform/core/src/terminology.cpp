@@ -477,6 +477,21 @@ bool ScreenTermExtractor::is_persistent_candidate(const std::string& term) {
     return tokens.size() == 1 && distinctive(tokens.front());
 }
 
+bool ScreenTermExtractor::is_correctable_learned_candidate(
+    const std::string& term) {
+    const auto trimmed = detail::trim_unicode_whitespace(term);
+    const auto cleaned = clean_term(term);
+    if (cleaned != trimmed || !is_safe(cleaned)) {
+        return false;
+    }
+    if (is_persistent_candidate(cleaned)) {
+        return true;
+    }
+    const auto tokens = detail::split_whitespace(cleaned);
+    return tokens.size() == 1 && title_cased(tokens.front())
+        && !is_common(tokens.front());
+}
+
 std::vector<std::string> ScreenTermExtractor::extract(
     const std::vector<std::string>& visible_strings,
     std::size_t limit) {
@@ -637,6 +652,10 @@ TerminologyCorrectionResult TerminologyCorrector::correct(
 
     std::vector<Candidate> candidates = screen_candidates;
     for (const auto& learned : learned_terms) {
+        if (!ScreenTermExtractor::is_correctable_learned_candidate(
+                learned.canonical)) {
+            continue;
+        }
         const auto key = ScreenTermExtractor::normalized(learned.canonical);
         const bool conflicts_with_screen = std::any_of(
             screen_keys.begin(), screen_keys.end(), [&](const auto& visible) {
@@ -646,8 +665,20 @@ TerminologyCorrectionResult TerminologyCorrector::correct(
         if (conflicts_with_screen) {
             continue;
         }
-        auto aliases = learned.aliases;
-        aliases.insert(aliases.begin(), learned.canonical);
+        std::vector<std::string> aliases{learned.canonical};
+        for (const auto& alias : learned.aliases) {
+            const auto alias_key = ScreenTermExtractor::normalized(alias);
+            if (alias_key.empty()) {
+                continue;
+            }
+            const bool close = std::min(
+                    normalized_length(alias_key), normalized_length(key)) >= 6
+                && similarity(alias_key, key) >= 0.72;
+            if (alias_key == key || close
+                || is_structured_spoken_match(learned.canonical, alias)) {
+                aliases.push_back(alias);
+            }
+        }
         candidates.push_back({learned.canonical, std::move(aliases), TerminologySource::learned});
     }
 

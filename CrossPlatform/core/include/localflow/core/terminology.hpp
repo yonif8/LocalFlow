@@ -38,6 +38,7 @@ public:
         std::size_t limit = 120);
 
     [[nodiscard]] static bool is_persistent_candidate(const std::string& term);
+    [[nodiscard]] static bool is_correctable_learned_candidate(const std::string& term);
     [[nodiscard]] static std::string normalized(const std::string& value);
 };
 
@@ -51,4 +52,3 @@ public:
 };
 
 }  // namespace localflow::core
-

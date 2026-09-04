@@ -776,6 +776,24 @@ void pipeline_tests(TestRunner& runner) {
         LF_CHECK(bank.terms().size() == 1);
     });
 
+    runner.run("last-moment cancellation is fenced before insertion", [] {
+        int checks = 0;
+        FakeTranscriber transcriber;
+        transcriber.response = "hello";
+        FakePolisher polisher;
+        FakeInserter inserter;
+        lf::LearnedTerminologyBank bank;
+        lf::DictationPipeline pipeline(
+            transcriber, replacement_engine({}), bank, polisher, inserter);
+        auto request = dictation_request();
+        request.is_cancelled = [&] { return ++checks >= 7; };
+        const auto result = pipeline.run(request);
+        LF_CHECK(result.diagnostics.completion == lf::PipelineCompletion::cancelled);
+        LF_CHECK(result.diagnostics.cancellation_boundary
+            == lf::CancellationBoundary::before_insertion);
+        LF_CHECK(inserter.calls == 0);
+    });
+
     runner.run("throwing cancellation checks fail closed", [] {
         FakeTranscriber transcriber;
         transcriber.response = "hello";
@@ -960,6 +978,26 @@ void correction_tests(TestRunner& runner) {
         const auto result = lf::TerminologyCorrector::correct(
             "the option is enabled", {}, {learned("enable.", {"enable"})});
         LF_CHECK(result.text == "the option is enabled");
+        LF_CHECK(result.matches.empty());
+    });
+
+    runner.run("corrector rejects legacy polluted learned terms directly", [] {
+        const std::string text =
+            "Can you decide what to enable and what to disable?";
+        const auto result = lf::TerminologyCorrector::correct(
+            text, {}, {
+                learned("it."), learned("enable."), learned("WITH"),
+                learned("You"), learned("And"), learned("Can You"),
+            });
+        LF_CHECK(result.text == text);
+        LF_CHECK(result.matches.empty());
+    });
+
+    runner.run("corrector rejects legacy polluted learned aliases", [] {
+        const auto result = lf::TerminologyCorrector::correct(
+            "it works and it is enabled", {},
+            {learned("PostgreSQL", {"it.", "enabled"})});
+        LF_CHECK(result.text == "it works and it is enabled");
         LF_CHECK(result.matches.empty());
     });
 
