@@ -105,10 +105,17 @@ final class S1MiniBackend: PolishModel, @unchecked Sendable {
             additionalContext: ["enable_thinking": false])
     }
 
-    private static func userMessage(_ input: String, tone: ToneHint) -> String {
+    /// S1's `casual` and `semi-casual` registers weaken normalization itself:
+    /// in practice they retain filled pauses, lowercase sentence starts, and
+    /// sometimes remove apostrophes.  ToneHint.casual is about preserving the
+    /// speaker's conversational wording, not accepting a rough transcript, so
+    /// both app tones use the model's reliable cleanup register. S1 still keeps
+    /// contractions and casual phrases because it normalizes rather than
+    /// rewriting the speaker's register.
+    static func userMessage(_ input: String, tone: ToneHint) -> String {
         let styling: String
         switch tone {
-        case .casual: styling = "semi-casual"
+        case .casual: styling = "semi-formal"
         case .neutral: styling = "semi-formal"
         }
         return "[Styling: \(styling)] [Structure: prose] [Context: general]\n\(input)"
