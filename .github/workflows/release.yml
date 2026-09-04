@@ -33,6 +33,8 @@ jobs:
     name: Validate immutable release request
     runs-on: ubuntu-22.04
     timeout-minutes: 5
+    permissions:
+      contents: write
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
