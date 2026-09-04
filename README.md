@@ -13,7 +13,21 @@ Mac: no accounts, no cloud, no audio uploaded anywhere.
 
 Models (~1.2 GB) are downloaded automatically on first run.
 
-Requires an Apple Silicon Mac running macOS 15 or later.
+The shipping release currently requires an Apple Silicon Mac running macOS 15
+or later. Windows and Linux versions are being developed in this same
+repository under [`CrossPlatform/`](CrossPlatform/README.md).
+
+## Platform layout
+
+- `Sources/`, `Tests/`, `Scripts/` — shipping macOS application
+- `CrossPlatform/` — shared Windows/Linux application, portable core, native
+  adapters, and installers
+- `docs/FEATURE_PARITY.md` — product-wide feature contract and implementation
+  status for all three operating systems
+
+Every product feature must either be implemented on macOS, Windows, and Linux,
+or carry an explicit documented platform exception. Cross-platform behavior is
+verified by shared golden fixtures and CI builds on all three operating systems.
 
 ## Install
 
