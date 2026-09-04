@@ -37,7 +37,9 @@ enum BugDiagnostics {
         Microphone: \(mic)
         Polish: enabled=\(AppSettings.polishEnabled), tone=\(AppSettings.polishTone), \
         timeout=\(String(format: "%.2fs", AppSettings.polishTimeout)), max-chars=\(AppSettings.polishMaxChars), \
-        spoken-punctuation=\(AppSettings.spokenPunctuation)
+        spoken-punctuation=\(AppSettings.spokenPunctuation), \
+        screen-terminology=\(AppSettings.screenTerminologyEnabled), \
+        learned-terms=\(LearnedTerminologyStore.load().count)
         Insertion: method=\(AppSettings.insertMethod), restore-delay=\(AppSettings.restoreDelayMs)ms
         General: hud=\(AppSettings.hudEnabled), history-limit=\(AppSettings.historyLimit), \
         launch-at-login=\(SMAppService.mainApp.status == .enabled), \

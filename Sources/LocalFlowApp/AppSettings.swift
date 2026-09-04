@@ -104,6 +104,13 @@ enum AppSettings {
         set { defaults.set(newValue, forKey: DefaultsKey.spokenPunctuation) }
     }
 
+    /// Extract visible terminology from the active window and remember only
+    /// high-confidence formatting corrections. Opt-in until field-tested.
+    static var screenTerminologyEnabled: Bool {
+        get { defaults.object(forKey: DefaultsKey.screenTerminology) as? Bool ?? false }
+        set { defaults.set(newValue, forKey: DefaultsKey.screenTerminology) }
+    }
+
     // MARK: Insertion
 
     /// "auto" (AX with paste fallback), "paste", or "type".
@@ -135,6 +142,12 @@ enum AppSettings {
     static var dictionaryURL: URL {
         URL(fileURLWithPath: NSString(
             string: "~/Library/Application Support/LocalFlow/dictionary.json"
+        ).expandingTildeInPath)
+    }
+
+    static var learnedTerminologyURL: URL {
+        URL(fileURLWithPath: NSString(
+            string: "~/Library/Application Support/LocalFlow/learned-terminology.json"
         ).expandingTildeInPath)
     }
 

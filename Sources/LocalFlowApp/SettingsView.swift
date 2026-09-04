@@ -395,7 +395,10 @@ private struct PolishSettingsTab: View {
 private struct DictionarySettingsTab: View {
     @State private var rules: [ReplacementRule] = AppSettings.loadDictionary().rules
     @State private var spokenPunctuation = AppSettings.spokenPunctuation
+    @State private var screenTerminology = AppSettings.screenTerminologyEnabled
+    @State private var learnedTerms: [LearnedTerm] = LearnedTerminologyStore.load()
     @State private var selection: Int?
+    @State private var learnedSelection: UUID?
 
     var body: some View {
         Form {
@@ -439,6 +442,50 @@ private struct DictionarySettingsTab: View {
                 }
             }
 
+            Section("Screen-aware terminology") {
+                Toggle("Learn terminology from the active window", isOn: $screenTerminology)
+                    .onChange(of: screenTerminology) { _, value in
+                        AppSettings.screenTerminologyEnabled = value
+                    }
+                Text("""
+                    While you dictate, LocalFlow reads visible text in the active window and uses names and technical terms as a temporary dictionary. High-confidence corrections are remembered for other apps. Password fields are ignored and all processing stays on this Mac.
+                    """)
+                    .font(.caption).foregroundStyle(.secondary)
+
+                if learnedTerms.isEmpty {
+                    Text("No terminology learned yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    List(selection: $learnedSelection) {
+                        ForEach(learnedTerms) { term in
+                            HStack {
+                                Text(term.canonical)
+                                Spacer()
+                                Text("used \(term.useCount)×")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            .tag(term.id)
+                        }
+                    }
+                    .frame(minHeight: 110)
+                    HStack {
+                        Button {
+                            guard let learnedSelection else { return }
+                            learnedTerms.removeAll { $0.id == learnedSelection }
+                            LearnedTerminologyStore.save(learnedTerms)
+                            self.learnedSelection = nil
+                        } label: { Image(systemName: "minus") }
+                            .disabled(learnedSelection == nil)
+                        Spacer()
+                        Button("Clear Learned Terms") {
+                            learnedTerms = []
+                            learnedSelection = nil
+                            LearnedTerminologyStore.removeAll()
+                        }
+                    }
+                }
+            }
+
             Section {
                 Toggle("Spoken punctuation commands", isOn: $spokenPunctuation)
                     .onChange(of: spokenPunctuation) { _, value in
@@ -450,6 +497,7 @@ private struct DictionarySettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { learnedTerms = LearnedTerminologyStore.load() }
         .onDisappear { save() }
     }
 

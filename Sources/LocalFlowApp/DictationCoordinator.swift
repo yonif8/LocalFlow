@@ -60,6 +60,7 @@ final class DictationCoordinator {
     private var pumpTasks: [Task<Void, Never>] = []
     private var lastLevelLog = ContinuousClock.now
     private var levelLogPeak: Float = 0
+    private var pendingScreenContext: ScreenContextSnapshot?
     private var errorResetTask: Task<Void, Never>?
     private var didPrepareTranscriber = false
 
@@ -223,6 +224,17 @@ final class DictationCoordinator {
         case .began:
             Self.logger.info("capture began")
             errorResetTask?.cancel()
+            if AppSettings.screenTerminologyEnabled {
+                let snapshot = ScreenContextCollector.capture()
+                pendingScreenContext = snapshot
+                Self.logger.info("""
+                    screen context: \(snapshot.terms.count, privacy: .public) terms from \
+                    \(snapshot.visitedElements, privacy: .public) elements in \
+                    \(String(describing: snapshot.elapsed), privacy: .public)
+                    """)
+            } else {
+                pendingScreenContext = nil
+            }
             state = .recording
             level = 0
             if AppSettings.duckWhileDictating {
@@ -246,6 +258,7 @@ final class DictationCoordinator {
             state = .idle
             level = 0
             HUDController.shared.hide()
+            pendingScreenContext = nil
 
         case .ended(let utterance):
             Self.logger.info("capture ended (\(utterance.duration, privacy: .public)s); transcribing")
@@ -254,11 +267,13 @@ final class DictationCoordinator {
             SystemAudioDucker.shared.restore()
             state = .processing
             level = 0
-            await runPipeline(utterance)
+            let screenContext = pendingScreenContext
+            pendingScreenContext = nil
+            await runPipeline(utterance, screenContext: screenContext)
         }
     }
 
-    private func runPipeline(_ utterance: Utterance) async {
+    private func runPipeline(_ utterance: Utterance, screenContext: ScreenContextSnapshot? = nil) async {
         // A warm engine finishes in ~110 ms; keep the "processing…" lozenge up
         // for a beat so it reads as a state, not a flicker. (Cold runs take
         // seconds and are unaffected.)
@@ -269,7 +284,25 @@ final class DictationCoordinator {
             // Parakeet output is verbatim WITH native punctuation; it serves
             // as both the polish input and the fail-open fallback.
             let raw = try await transcriber.transcribe(utterance)
-            let formatted = raw
+            var polishInput = raw
+            if AppSettings.screenTerminologyEnabled {
+                let dictionary = AppSettings.loadDictionary()
+                // Apply the personal dictionary first, then protect its chosen
+                // spellings from contextual correction.
+                polishInput = ReplacementEngine(dictionary: dictionary).apply(to: polishInput)
+                let correction = TerminologyCorrector.correct(
+                    polishInput,
+                    screenTerms: screenContext?.terms ?? [],
+                    learnedTerms: LearnedTerminologyStore.load(),
+                    protectedTerms: dictionary.rules.map(\.written))
+                polishInput = correction.text
+                LearnedTerminologyStore.learn(
+                    correction.matches, sourceBundleID: screenContext?.bundleID)
+                if !correction.matches.isEmpty {
+                    Self.logger.info("terminology corrections applied: \(correction.matches.count, privacy: .public)")
+                }
+            }
+            let formatted = polishInput
             // Raw transcript at debug level: when a user reports "that's not
             // what I said," this attributes the error to ASR vs polish in
             // seconds instead of a reconstruction hunt.
@@ -282,12 +315,13 @@ final class DictationCoordinator {
             // S1 works from the RAW transcript (punctuates better than the
             // pause-based formatter); the formatter output is the fallback.
             let context = PolishContext(
-                targetAppBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                targetAppBundleID: screenContext?.bundleID
+                    ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
             )
             let text: String
             if let localPolisher = polisher as? LocalPolisher {
                 text = await localPolisher.polishTranscript(
-                    raw: raw, formatted: formatted, context: context)
+                    raw: polishInput, formatted: formatted, context: context)
             } else {
                 text = await polisher.polish(formatted, context: context)
             }

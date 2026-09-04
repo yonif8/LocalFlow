@@ -7,6 +7,7 @@ Mac: no accounts, no cloud, no audio uploaded anywhere.
 - **Hold-to-talk** — hold Fn (or a configurable key/mouse button), speak, release.
 - **On-device speech recognition** — NVIDIA Parakeet TDT v3 (verbatim, natively punctuated) on the Neural Engine via [FluidAudio](https://github.com/FluidInference/FluidAudio).
 - **On-device polish** — an optional fast LLM pass cleans up filler words and phrasing, powered by **S1-mini by Superwhisper**, also running locally via MLX.
+- **Screen-aware terminology** — optionally uses names and technical terms visible in the active window, then remembers high-confidence corrections locally for future dictations.
 - **Menu bar app** — history, settings, permissions, all in a lightweight status item.
 - **Auto-updates** — via [Sparkle](https://sparkle-project.org); the app checks for updates and offers them in place.
 
@@ -58,6 +59,12 @@ Permissions window — grant it:
 
 Then it downloads the speech models (~1.2 GB, one time) and you're set: hold
 **Fn**, talk, release.
+
+Screen-aware terminology is opt-in under **Settings → Dictionary**. It reads a
+small, time-bounded portion of the active window through Accessibility while
+you dictate. Secure fields and sensitive-looking values are ignored; captured
+screen text is never logged or sent anywhere. Learned terms can be reviewed or
+deleted from the same settings page.
 
 ## Updates
 
