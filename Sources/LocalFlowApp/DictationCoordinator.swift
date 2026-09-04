@@ -338,6 +338,7 @@ final class DictationCoordinator {
             screenContextTask?.cancel()
             screenContextTask = nil
             var polishInput = raw
+            var terminologyMatches: [TerminologyMatch] = []
             if AppSettings.screenTerminologyEnabled {
                 let dictionary = AppSettings.loadDictionary()
                 // Apply the personal dictionary first, then protect its chosen
@@ -349,6 +350,7 @@ final class DictationCoordinator {
                     learnedTerms: LearnedTerminologyStore.load(),
                     protectedTerms: dictionary.rules.map(\.written))
                 polishInput = correction.text
+                terminologyMatches = correction.matches
                 LearnedTerminologyStore.learn(
                     correction.matches, sourceBundleID: screenContext?.bundleID)
                 if !correction.matches.isEmpty {
@@ -383,15 +385,18 @@ final class DictationCoordinator {
             } else {
                 polishedText = await polisher.polish(formatted, context: context)
             }
-            // The model may normalize casing inside a name or identifier.
-            // Reassert only high-confidence known spellings after polishing;
-            // this pass does not learn anything new.
+            // Reassert only terms that actually matched before polishing—not
+            // the entire screen or learned dictionary. This prevents stale
+            // context from introducing a new change after S1 cleaned the text.
             let text: String
-            if AppSettings.screenTerminologyEnabled {
+            if !terminologyMatches.isEmpty {
+                let matchedTerms = terminologyMatches.map {
+                    LearnedTerm(canonical: $0.canonical, aliases: [$0.heard])
+                }
                 let finalCorrection = TerminologyCorrector.correct(
                     polishedText,
-                    screenTerms: screenContext?.terms ?? [],
-                    learnedTerms: LearnedTerminologyStore.load(),
+                    screenTerms: [],
+                    learnedTerms: matchedTerms,
                     protectedTerms: AppSettings.loadDictionary().rules.map(\.written))
                 text = finalCorrection.text
                 if text != polishedText {

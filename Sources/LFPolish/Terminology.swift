@@ -48,22 +48,29 @@ public enum ScreenTermExtractor {
         pattern: #"(?:https?://|\b\S+@)\S+|\b[A-Za-z0-9_-]{24,}\b"#,
         options: [.caseInsensitive])
     private static let commonCapitalized: Set<String> = [
-        "about", "account", "add", "back", "cancel", "close", "configure", "connect", "continue",
-        "chat", "copy", "delete", "done", "edit", "file", "find", "general", "help",
-        "home", "learn", "menu", "new", "next", "open", "preferences",
-        "remove", "save", "search", "settings", "share", "tools", "view",
-        "window", "yes", "no", "today", "tomorrow", "the", "check"
+        "a", "about", "account", "add", "also", "am", "an", "and", "are", "as", "at",
+        "back", "be", "because", "but", "by", "can", "cancel", "chat", "check", "close",
+        "configure", "connect", "continue", "copy", "could", "delete", "did", "do", "does",
+        "done", "edit", "file", "find", "for", "from", "general", "go", "had", "has",
+        "have", "he", "help", "her", "him", "his", "home", "how", "i", "if", "in",
+        "is", "it", "its", "just", "learn", "may", "menu", "might", "my", "new", "next",
+        "no", "not", "of", "on", "open", "or", "our", "preferences", "remove", "save",
+        "search", "settings", "share", "she", "should", "so", "the", "their", "them", "then",
+        "there", "these", "they", "this", "those", "to", "today", "tomorrow", "tools", "view",
+        "was", "we", "were", "what", "when", "where", "which", "who", "why", "will", "window",
+        "with", "would", "yes", "you", "your"
     ]
     private static let nameConnectors: Set<String> = [
-        "al", "and", "da", "de", "del", "den", "der", "di", "el", "of", "the", "van", "von"
+        "al", "and", "da", "de", "del", "den", "der", "di", "el", "of", "the", "to", "van", "von"
     ]
+    private static let trailingTokenPunctuation = CharacterSet(charactersIn: ".,/\\-_")
 
     public static func extract(from visibleStrings: [String], limit: Int = 120) -> [String] {
         struct Ranked { let term: String; let score: Int }
         var best: [String: Ranked] = [:]
 
         func offer(_ term: String, score: Int) {
-            let cleaned = term.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleaned = cleanTerm(term)
             guard isSafe(cleaned) else { return }
             let key = normalized(cleaned)
             guard !key.isEmpty, best[key]?.score ?? -1 < score else { return }
@@ -79,8 +86,10 @@ public enum ScreenTermExtractor {
             let ns = sanitized as NSString
             let matches = tokenRegex.matches(
                 in: sanitized, range: NSRange(location: 0, length: ns.length))
-            let tokens = matches.map { ns.substring(with: $0.range) }
+            let rawTokens = matches.map { ns.substring(with: $0.range) }
+            let tokens = rawTokens.map(cleanToken)
             for token in tokens {
+                guard !token.isEmpty else { continue }
                 if distinctive(token) { offer(token, score: 4) }
                 else if titleCased(token), !commonCapitalized.contains(token.lowercased()) {
                     offer(token, score: 2)
@@ -114,6 +123,13 @@ public enum ScreenTermExtractor {
                 var end = index
                 while end + 1 < tokens.count, end - index < 3 {
                     let next = tokens[end + 1]
+                    let gapStart = matches[end].range.location + matches[end].range.length
+                    let gapEnd = matches[end + 1].range.location
+                    let gap = gapEnd >= gapStart
+                        ? ns.substring(with: NSRange(location: gapStart, length: gapEnd - gapStart))
+                        : ""
+                    // Don't construct a name across a sentence boundary.
+                    guard gap.allSatisfy(\.isWhitespace), rawTokens[end] == tokens[end] else { break }
                     if titleCased(next) || distinctive(next) {
                         end += 1
                     } else if nameConnectors.contains(next.lowercased()),
@@ -144,10 +160,17 @@ public enum ScreenTermExtractor {
     /// Strong enough to remember globally after it disappears from the
     /// screen. Ordinary title-cased UI/sentence words are intentionally not.
     public static func isPersistentCandidate(_ term: String) -> Bool {
-        let tokens = term.split(whereSeparator: \.isWhitespace).map(String.init)
+        let cleaned = cleanTerm(term)
+        guard cleaned == term.trimmingCharacters(in: .whitespacesAndNewlines),
+              isSafe(cleaned) else { return false }
+        let tokens = cleaned.split(whereSeparator: \.isWhitespace).map(String.init)
         if tokens.count >= 2 {
-            return tokens.filter { titleCased($0) || distinctive($0) }.count >= 2
-                || term.contains(where: { "._+#/\\-".contains($0) })
+            let significant = tokens.filter {
+                !commonCapitalized.contains($0.lowercased())
+                    && (titleCased($0) || distinctive($0))
+            }
+            return significant.count >= 2
+                || cleaned.contains(where: { "._+#/\\".contains($0) })
         }
         guard let token = tokens.first else { return false }
         return distinctive(token)
@@ -168,11 +191,27 @@ public enum ScreenTermExtractor {
         let letters = token.filter(\.isLetter)
         let hasUpper = letters.contains(where: \.isUppercase)
         let hasLower = letters.contains(where: \.isLowercase)
-        let innerUpper = token.dropFirst().contains(where: \.isUppercase)
-        let acronym = letters.count >= 2 && hasUpper && !hasLower
+        let innerUpper = hasLower && token.dropFirst().contains(where: \.isUppercase)
+        let acronym = (2...6).contains(letters.count) && hasUpper && !hasLower
+            && !commonCapitalized.contains(token.lowercased())
         let alphanumeric = token.contains(where: \.isNumber) && !letters.isEmpty
-        let technicalPunctuation = token.contains { "._+#/-".contains($0) }
-        return innerUpper || acronym || alphanumeric || technicalPunctuation
+        let technicalPunctuation = token.contains { "._+#/\\".contains($0) }
+        let hyphenated = token.split(separator: "-", maxSplits: 1).map(String.init)
+        let connectorName = hyphenated.count == 2
+            && nameConnectors.contains(hyphenated[0].lowercased())
+            && titleCased(hyphenated[1])
+        return innerUpper || acronym || alphanumeric || technicalPunctuation || connectorName
+    }
+
+    private static func cleanToken(_ token: String) -> String {
+        token.trimmingCharacters(in: trailingTokenPunctuation)
+    }
+
+    private static func cleanTerm(_ term: String) -> String {
+        let whitespaceTrimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = whitespaceTrimmed.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard let last = parts.last else { return "" }
+        return (parts.dropLast() + [cleanToken(last)]).joined(separator: " ")
     }
 
     private static func isSafe(_ term: String) -> Bool {
@@ -289,7 +328,7 @@ public enum TerminologyCorrector {
                     let structured = isStructuredSpokenMatch(
                         canonical: candidate.canonical, heard: heard)
                     let threshold = structured ? 0.72
-                        : (candidate.source == .screen ? 0.88 : 0.84)
+                        : (candidate.source == .screen ? 0.88 : 0.92)
                     if confidence >= threshold {
                         proposals.append(.init(
                             range: range, canonical: candidate.canonical, heard: heard,

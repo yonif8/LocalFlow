@@ -40,6 +40,10 @@ struct ScreenTermExtractorTests {
         #expect(ScreenTermExtractor.isPersistentCandidate("PostgreSQL"))
         #expect(ScreenTermExtractor.isPersistentCandidate("Terminology.swift"))
         #expect(ScreenTermExtractor.isPersistentCandidate("Jane Smith"))
+        #expect(!ScreenTermExtractor.isPersistentCandidate("it."))
+        #expect(!ScreenTermExtractor.isPersistentCandidate("enable."))
+        #expect(!ScreenTermExtractor.isPersistentCandidate("WITH"))
+        #expect(!ScreenTermExtractor.isPersistentCandidate("Can You"))
     }
 
     @Test func excludesLikelySecretsAndAddresses() {
@@ -53,6 +57,24 @@ struct ScreenTermExtractorTests {
         #expect(!terms.contains(where: { $0.localizedCaseInsensitiveContains("SecretProject") }))
         #expect(!terms.contains("A94F20B81C7348899918273619283746"))
         #expect(!terms.contains("Settings"))
+    }
+
+    @Test func sentencePunctuationAndEmphasisAreNotTerminology() {
+        let terms = ScreenTermExtractor.extract(from: [
+            "It works. Search is enabled.",
+            "WITH NOT You Can",
+        ])
+        #expect(!terms.contains("works."))
+        #expect(!terms.contains("enabled."))
+        #expect(!terms.contains("WITH"))
+        #expect(!terms.contains("NOT"))
+        #expect(!terms.contains("You Can"))
+    }
+
+    @Test func namePhrasesDoNotCrossSentenceBoundaries() {
+        let terms = ScreenTermExtractor.extract(from: ["Hello World. Native Codex"])
+        #expect(!terms.contains("World Native"))
+        #expect(terms.contains("Native Codex"))
     }
 }
 
@@ -115,6 +137,14 @@ struct TerminologyCorrectorTests {
             learnedTerms: [.init(canonical: "Alice")])
         #expect(result.text == "ask Alice tomorrow")
         #expect(result.matches.first?.source == .learned)
+    }
+
+    @Test func learnedFuzzyMatchDoesNotChangeOrdinaryWordInflection() {
+        let result = TerminologyCorrector.correct(
+            "the option is enabled", screenTerms: [],
+            learnedTerms: [.init(canonical: "enable.", aliases: ["enable"])])
+        #expect(result.text == "the option is enabled")
+        #expect(result.matches.isEmpty)
     }
 
 

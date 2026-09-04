@@ -115,7 +115,15 @@ enum LearnedTerminologyStore {
         do {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            return try decoder.decode([LearnedTerm].self, from: data)
+            let decoded = try decoder.decode([LearnedTerm].self, from: data)
+            let valid = decoded.filter {
+                ScreenTermExtractor.isPersistentCandidate($0.canonical)
+            }
+            if valid.count != decoded.count {
+                logger.info("removed \(decoded.count - valid.count, privacy: .public) invalid learned terms")
+                save(valid)
+            }
+            return valid
         }
         catch {
             logger.error("could not load learned terminology: \(String(describing: error), privacy: .public)")
@@ -177,7 +185,9 @@ enum LearnedTerminologyStore {
         do {
             let directory = AppSettings.learnedTerminologyURL.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            var boundedTerms = Array(terms.prefix(500))
+            var boundedTerms = Array(terms.filter {
+                ScreenTermExtractor.isPersistentCandidate($0.canonical)
+            }.prefix(500))
             for index in boundedTerms.indices where boundedTerms[index].aliases.count > 10 {
                 boundedTerms[index].aliases = Array(boundedTerms[index].aliases.suffix(10))
             }
