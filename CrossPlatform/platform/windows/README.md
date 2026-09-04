@@ -1,0 +1,100 @@
+# LocalFlow Windows platform adapter
+
+This directory is the native Windows edge of LocalFlow's cross-platform app.
+It is C++17, has no UI or model dependency, and is designed to sit behind the
+shared pipeline rather than duplicate dictation behavior.
+
+## Implemented
+
+- Stable foreground-window identity using HWND, PID, package family, and the
+  classic executable path.
+- Non-consuming global keyboard and mouse PTT hooks with press, release, and
+  Escape/stop cancellation semantics.
+- A dedicated callback dispatcher so slow microphone/model work cannot cause
+  Windows to remove the low-level hook.
+- WASAPI shared-mode capture, device enumeration, native PCM-to-float
+  conversion, and mono downmix.
+- Default-output audio ducking that restores the exact endpoint and volume.
+- Full-format clipboard preservation through OLE, sequence-number guarded
+  restoration, Ctrl+V insertion, and `KEYEVENTF_UNICODE` fallback.
+- A capture backend interface plus a dependency-free foreground-window GDI
+  implementation that produces local BGRA frames for OCR.
+- Platform-neutral PTT transition tests that run on macOS/Linux CI as well as
+  Windows.
+
+## Build
+
+On Windows with Visual Studio 2022:
+
+```powershell
+cmake -S CrossPlatform/platform/windows -B build/windows -A x64
+cmake --build build/windows --config Release
+ctest --test-dir build/windows -C Release --output-on-failure
+```
+
+From the eventual repository-level CMake project:
+
+```cmake
+add_subdirectory(CrossPlatform/platform/windows)
+target_link_libraries(localflow_windows_app PRIVATE
+    LocalFlow::Core
+    LocalFlow::Windows
+)
+```
+
+On non-Windows hosts, this subproject intentionally builds only
+`LocalFlow::WindowsState` and its tests.
+
+## Product wiring
+
+The app coordinator should keep one `ForegroundWindowIdentity` from the PTT
+press and follow this sequence:
+
+1. On `pressed`, duck output audio and start WASAPI capture. In parallel,
+   submit `IScreenCapture::capture()` to a background worker and OCR its BGRA
+   result locally.
+2. On `released`, stop capture, restore audio immediately, run shared ASR,
+   terminology, and polish, then call `ForegroundTextInserter::insert_utf8`.
+3. On `cancelled`, stop capture and restore audio without transcribing or
+   inserting.
+4. Pass the captured target into the inserter. If the user changed focus while
+   processing, insertion fails with `ERROR_CANCELLED` instead of pasting into
+   the wrong conversation.
+5. Queue `AudioChunk` data quickly in its callback. Resample the mono native-rate
+   stream to 16 kHz in the shared core so all platforms share one algorithm.
+
+`ForegroundTextInserter` is synchronous because the transient clipboard must
+remain alive long enough for asynchronous Electron/Chromium paste handlers.
+Call it on the pipeline worker, not the UI thread.
+
+## Windows-specific UX and safety constraints
+
+- Most laptop **Fn** keys are handled in keyboard firmware and never reach
+  Win32. The shipped default should therefore be user-selectable (F8 and side
+  mouse button are sensible choices; F8 is the adapter default), with the onboarding screen listening
+  for the user's preferred key.
+- Windows prevents a normal-integrity process from injecting into an elevated
+  process (UIPI), and secure-desktop/password fields intentionally reject
+  capture or insertion. The UI should report this clearly; LocalFlow should not
+  request administrator privileges to bypass it.
+- Clipboard restoration never overwrites a copy the user performs during the
+  paste delay. The retained OLE `IDataObject` preserves images, files, HTML,
+  rich text, and delayed-rendered formats—not only plain text.
+- The GDI capture backend is a reliable baseline for ordinary foreground apps.
+  A production Windows 11 build should add a Windows Graphics Capture
+  `IScreenCapture` implementation for GPU/protected surfaces. The shared OCR and
+  terminology layers do not need to change when that backend is swapped in.
+- `PrintWindow` can be slow for a hung target. Capture must stay on the existing
+  PTT background path and must never be awaited at key release, matching the
+  macOS fail-open behavior.
+- WASAPI reports device invalidation through the error callback. The coordinator
+  should end the active hold safely, restore ducking, and offer the newly
+  selected default microphone on the next hold.
+
+## Remaining Windows application work
+
+This adapter is intentionally below the product shell. A distributable build
+still needs the Qt tray/HUD/settings/onboarding UI, Windows Graphics Capture and
+OCR backend selection, Parakeet/S1 runtime integration, persistent settings and
+logs, signed MSIX/installer packaging, and a signed update channel. Those belong
+to the shared app/release layers rather than this OS adapter.
