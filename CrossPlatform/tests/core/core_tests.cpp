@@ -298,10 +298,10 @@ void resampler_tests(TestRunner& runner) {
     });
 
     runner.run("downsampling rejects out-of-band aliases", [] {
-        constexpr std::uint32_t rate = 96'000;
-        constexpr std::size_t count = rate / 5;
-        constexpr double test_pi = 3.141592653589793238462643383279502884;
-        auto sine = [count, rate, test_pi](double frequency) {
+        auto sine = [](double frequency) {
+            constexpr std::uint32_t rate = 96'000;
+            constexpr std::size_t count = rate / 5;
+            constexpr double test_pi = 3.141592653589793238462643383279502884;
             std::vector<float> result;
             result.reserve(count);
             for (std::size_t index = 0; index < count; ++index) {

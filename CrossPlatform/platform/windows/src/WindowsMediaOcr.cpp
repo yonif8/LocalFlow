@@ -201,7 +201,9 @@ OcrRecognitionResult recognize_frame(ScreenFrame frame, const OcrOptions& option
         Buffer buffer(static_cast<std::uint32_t>(image.pixels.size()));
         buffer.Length(static_cast<std::uint32_t>(image.pixels.size()));
         std::uint8_t* destination = nullptr;
-        winrt::check_hresult(buffer.as<IBufferByteAccess>()->Buffer(&destination));
+        winrt::check_hresult(
+            buffer.as<::Windows::Storage::Streams::IBufferByteAccess>()
+                ->Buffer(&destination));
         std::memcpy(destination, image.pixels.data(), image.pixels.size());
 
         SoftwareBitmap bitmap(
