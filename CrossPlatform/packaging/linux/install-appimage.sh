@@ -63,6 +63,9 @@ ln -sfn "$installed_image" "$launcher"
 
 desktop_executable="${installed_image//\\/\\\\}"
 desktop_executable="${desktop_executable//\"/\\\"}"
+desktop_executable="${desktop_executable//\$/\\\$}"
+desktop_executable="${desktop_executable//\`/\\\`}"
+desktop_executable="${desktop_executable//\%/%%}"
 temporary="${desktop_entry}.tmp.$$"
 trap 'rm -f -- "$temporary"' EXIT
 {
@@ -73,7 +76,6 @@ trap 'rm -f -- "$temporary"' EXIT
     echo 'GenericName=Voice Dictation'
     echo 'Comment=Private, fully local push-to-talk dictation'
     printf 'Exec="%s"\n' "$desktop_executable"
-    printf 'TryExec="%s"\n' "$desktop_executable"
     echo 'Icon=com.localflow.LocalFlow'
     echo 'Terminal=false'
     echo 'Categories=Utility;Accessibility;'

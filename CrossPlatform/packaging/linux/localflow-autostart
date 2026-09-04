@@ -14,6 +14,7 @@ desktop_quote() {
     value="${value//\"/\\\"}"
     value="${value//\$/\\\$}"
     value="${value//\`/\\\`}"
+    value="${value//\%/%%}"
     printf '"%s"' "$value"
 }
 
@@ -50,7 +51,6 @@ case "${1:-}" in
             echo 'Name=LocalFlow'
             echo 'Comment=Start private, local dictation in the background'
             printf 'Exec=%s --background\n' "$quoted_executable"
-            printf 'TryExec=%s\n' "$quoted_executable"
             echo 'Icon=com.localflow.LocalFlow'
             echo 'Terminal=false'
             echo 'StartupNotify=false'

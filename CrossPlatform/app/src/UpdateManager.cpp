@@ -31,7 +31,10 @@
 #include <QtConcurrentRun>
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <utility>
@@ -62,11 +65,16 @@
 
 namespace {
 
+#ifdef Q_OS_WIN
 constexpr auto kManifestUrl = "https://github.com/yonif8/LocalFlow/releases/"
                               "latest/download/windows-update.json";
-constexpr auto kReleasesUrl = "https://github.com/yonif8/LocalFlow/releases";
 constexpr int kManifestTimeoutMs = 15'000;
 constexpr int kDownloadTimeoutMs = 10 * 60 * 1000;
+#elif defined(Q_OS_LINUX)
+constexpr auto kReleasesUrl = "https://github.com/yonif8/LocalFlow/releases";
+constexpr int kLinuxUpdateCheckTimeoutMs = 60'000;
+constexpr int kLinuxInstallTimeoutMs = 10 * 60 * 1000;
+#endif
 
 void assignError(QString *error, const QString &message) {
   if (error != nullptr) {
@@ -155,6 +163,7 @@ bool hasSafeHttpsShape(const QUrl &url) {
          url.query().isEmpty() && url.fragment().isEmpty();
 }
 
+#ifdef Q_OS_WIN
 bool isAllowedDownloadedUrl(const QUrl &url) {
   if (!url.isValid() ||
       url.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) != 0 ||
@@ -165,6 +174,25 @@ bool isAllowedDownloadedUrl(const QUrl &url) {
   const QString host = url.host().toLower();
   return host == QStringLiteral("github.com") ||
          host == QStringLiteral("release-assets.githubusercontent.com");
+}
+
+void cleanupAbandonedWindowsUpdateDirectories() {
+  // The installer must survive the old app being closed by Inno Setup. Clean
+  // completed/abandoned handoff directories on a later launch instead of
+  // deleting the executable out from under a running installer.
+  const QDateTime cutoff = QDateTime::currentDateTimeUtc().addDays(-1);
+  QDir temporaryRoot(QDir::tempPath());
+  const QFileInfoList candidates = temporaryRoot.entryInfoList(
+      {QStringLiteral("LocalFlow-update-*")},
+      QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks,
+      QDir::Time);
+  for (const QFileInfo &candidate : candidates) {
+    if (candidate.isSymLink() || candidate.lastModified().toUTC() > cutoff) {
+      continue;
+    }
+    QDir abandoned(candidate.absoluteFilePath());
+    (void)abandoned.removeRecursively();
+  }
 }
 
 QNetworkRequest networkRequest(const QUrl &url, const QString &currentVersion) {
@@ -196,6 +224,7 @@ QString networkFailureMessage(const QNetworkReply *reply,
   }
   return {};
 }
+#endif
 
 #ifdef Q_OS_WIN
 QString windowsErrorCode(const LONG code) {
@@ -380,20 +409,33 @@ verifyAuthenticodeAndSigner(const QString &path, const qint64 expectedSize,
             QStringLiteral("The update signer certificate could not be read.")};
   }
 
-  CERT_INFO signerCertificateInfo{};
-  DWORD signerCertificateInfoSize =
-      static_cast<DWORD>(sizeof(signerCertificateInfo));
+  constexpr DWORD kMinimumSignerCertificateInfoBytes =
+      static_cast<DWORD>(sizeof(CERT_INFO));
+  constexpr DWORD kMaximumSignerCertificateInfoBytes = 1024U * 1024U;
+  DWORD signerCertificateInfoSize = 0;
   if (CryptMsgGetParam(cryptographicMessage, CMSG_SIGNER_CERT_INFO_PARAM, 0,
-                       &signerCertificateInfo,
+                       nullptr, &signerCertificateInfoSize) == FALSE ||
+      signerCertificateInfoSize < kMinimumSignerCertificateInfoBytes ||
+      signerCertificateInfoSize > kMaximumSignerCertificateInfoBytes) {
+    CryptMsgClose(cryptographicMessage);
+    CertCloseStore(certificateStore, 0);
+    return {false,
+            QStringLiteral("The update contains no readable signer identity.")};
+  }
+  std::vector<BYTE> signerCertificateInfoBuffer(signerCertificateInfoSize);
+  if (CryptMsgGetParam(cryptographicMessage, CMSG_SIGNER_CERT_INFO_PARAM, 0,
+                       signerCertificateInfoBuffer.data(),
                        &signerCertificateInfoSize) == FALSE) {
     CryptMsgClose(cryptographicMessage);
     CertCloseStore(certificateStore, 0);
     return {false,
             QStringLiteral("The update contains no readable signer identity.")};
   }
+  const auto *signerCertificateInfo =
+      reinterpret_cast<const CERT_INFO *>(signerCertificateInfoBuffer.data());
   PCCERT_CONTEXT signerCertificate = CertFindCertificateInStore(
       certificateStore, encoding, 0, CERT_FIND_SUBJECT_CERT,
-      &signerCertificateInfo, nullptr);
+      signerCertificateInfo, nullptr);
 
   QString actualFingerprint;
   if (signerCertificate != nullptr) {
@@ -736,6 +778,86 @@ parseWindowsUpdateManifest(const QByteArray &json, QString *error) {
   return manifest;
 }
 
+#ifdef Q_OS_LINUX
+namespace detail {
+
+bool copyLinuxAppImageForStaging(const QString &sourcePath,
+                                 const QString &stagedPath,
+                                 const QFileDevice::Permissions permissions,
+                                 QString *error) {
+  if (sourcePath.isEmpty() || stagedPath.isEmpty() ||
+      QFileInfo::exists(stagedPath)) {
+    assignError(
+        error,
+        QStringLiteral("The private update staging path is invalid."));
+    return false;
+  }
+
+  const QFileInfo source(sourcePath);
+  const QFileInfo stagingParent(QFileInfo(stagedPath).absolutePath());
+  if (!source.exists() || !source.isFile() || source.isSymLink() ||
+      !stagingParent.exists() || !stagingParent.isDir() ||
+      !QFile::copy(sourcePath, stagedPath)) {
+    assignError(
+        error,
+        QStringLiteral("The current AppImage could not be copied into private "
+                       "update staging."));
+    return false;
+  }
+  if (!QFile::setPermissions(stagedPath, permissions)) {
+    QFile::remove(stagedPath);
+    assignError(
+        error,
+        QStringLiteral(
+            "The staged AppImage permissions could not be preserved."));
+    return false;
+  }
+  return true;
+}
+
+bool commitLinuxStagedAppImage(const QString &stagedPath,
+                               const QString &destinationPath,
+                               const QFileDevice::Permissions permissions,
+                               QString *error) {
+  const QFileInfo staged(stagedPath);
+  const QFileInfo destination(destinationPath);
+  if (stagedPath.isEmpty() || destinationPath.isEmpty() ||
+      staged.absoluteFilePath() == destination.absoluteFilePath() ||
+      !staged.exists() || !staged.isFile() || staged.isSymLink() ||
+      staged.size() <= 0 || !destination.exists() || !destination.isFile() ||
+      destination.isSymLink()) {
+    assignError(
+        error,
+        QStringLiteral(
+            "The validated staged AppImage is no longer safe to install."));
+    return false;
+  }
+  if (!QFile::setPermissions(stagedPath, permissions)) {
+    assignError(
+        error,
+        QStringLiteral(
+            "The validated AppImage permissions could not be preserved."));
+    return false;
+  }
+
+  const QByteArray stagedNative = QFile::encodeName(stagedPath);
+  const QByteArray destinationNative = QFile::encodeName(destinationPath);
+  errno = 0;
+  if (std::rename(stagedNative.constData(), destinationNative.constData()) != 0) {
+    const int renameError = errno;
+    assignError(
+        error,
+        QStringLiteral(
+            "The validated AppImage could not be installed atomically (%1).")
+            .arg(QString::fromLocal8Bit(std::strerror(renameError))));
+    return false;
+  }
+  return true;
+}
+
+} // namespace detail
+#endif
+
 } // namespace localflow::updates
 
 struct UpdateManager::Implementation {
@@ -747,6 +869,9 @@ struct UpdateManager::Implementation {
   explicit Implementation(UpdateManager *ownerValue)
       : owner(ownerValue),
         currentVersionText(QString::fromUtf8(LOCALFLOW_VERSION)) {
+#ifdef Q_OS_WIN
+    cleanupAbandonedWindowsUpdateDirectories();
+#endif
     operationTimeout.setSingleShot(true);
     QObject::connect(&operationTimeout, &QTimer::timeout, owner, [this] {
       const bool checking = manifestReply != nullptr;
@@ -755,6 +880,25 @@ struct UpdateManager::Implementation {
                : QStringLiteral(
                      "The update download timed out. Please try again."));
     });
+#ifdef Q_OS_LINUX
+    linuxProcessTimeout.setSingleShot(true);
+    QObject::connect(&linuxProcessTimeout, &QTimer::timeout, owner, [this] {
+      auto *process = linuxUpdateProcess;
+      if (process == nullptr) {
+        return;
+      }
+      linuxUpdateProcess = nullptr;
+      process->disconnect(owner);
+      process->kill();
+      (void)process->waitForFinished(1000);
+      process->deleteLater();
+      fail(state == UpdateManager::State::Updating
+               ? QStringLiteral(
+                     "The AppImage updater did not finish within ten minutes. The existing app was left in place; try again or update from Releases.")
+               : QStringLiteral(
+                     "The AppImage update check did not respond within one minute. Try again or update from Releases."));
+    });
+#endif
   }
 
   ~Implementation() {
@@ -771,6 +915,17 @@ struct UpdateManager::Implementation {
     if (verificationWatcher != nullptr && verificationWatcher->isRunning()) {
       verificationWatcher->waitForFinished();
     }
+#ifdef Q_OS_LINUX
+    linuxProcessTimeout.stop();
+    if (linuxUpdateProcess != nullptr) {
+      linuxUpdateProcess->disconnect(owner);
+      linuxUpdateProcess->kill();
+      (void)linuxUpdateProcess->waitForFinished(1000);
+      delete linuxUpdateProcess;
+      linuxUpdateProcess = nullptr;
+    }
+    cleanupLinuxStaging();
+#endif
     cleanupTemporaryDownload();
   }
 
@@ -800,8 +955,16 @@ struct UpdateManager::Implementation {
     }
     downloadFile.close();
     cleanupTemporaryDownload();
+#ifdef Q_OS_LINUX
+    cleanupLinuxStaging();
+#endif
     manifest.reset();
     progress = 0.0;
+    if (silentCheck) {
+      silentCheck = false;
+      setState(UpdateManager::State::Idle, {});
+      return;
+    }
     setState(UpdateManager::State::Error,
              QStringLiteral("Update could not be completed."),
              std::move(detail));
@@ -914,13 +1077,19 @@ struct UpdateManager::Implementation {
                                                       *currentVersion) <= 0) {
         const QString checkedVersion = manifest->version;
         manifest.reset();
-        setState(UpdateManager::State::UpToDate,
-                 QStringLiteral("LocalFlow is up to date."),
-                 QStringLiteral("Installed version: %1. Latest release: %2.")
-                     .arg(currentVersionText, checkedVersion));
+        if (silentCheck) {
+          silentCheck = false;
+          setState(UpdateManager::State::Idle, {});
+        } else {
+          setState(UpdateManager::State::UpToDate,
+                   QStringLiteral("LocalFlow is up to date."),
+                   QStringLiteral("Installed version: %1. Latest release: %2.")
+                       .arg(currentVersionText, checkedVersion));
+        }
         return;
       }
       availableVersion = manifest->version;
+      silentCheck = false;
       setState(
           UpdateManager::State::UpdateAvailable,
           QStringLiteral("LocalFlow %1 is available.").arg(availableVersion),
@@ -946,10 +1115,10 @@ struct UpdateManager::Implementation {
           QCoreApplication::applicationDirPath();
       const QStringList updaterCandidates{
           QDir(applicationDirectory)
-              .filePath(QStringLiteral("AppImageUpdate-x86_64.AppImage")),
+              .filePath(QStringLiteral("appimageupdatetool-x86_64.AppImage")),
           QDir(applicationDirectory)
               .absoluteFilePath(QStringLiteral(
-                  "../libexec/localflow/AppImageUpdate-x86_64.AppImage")),
+                  "../libexec/localflow/appimageupdatetool-x86_64.AppImage")),
       };
       for (const QString &candidate : updaterCandidates) {
         const QFileInfo updaterInfo(candidate);
@@ -961,25 +1130,166 @@ struct UpdateManager::Implementation {
       }
     }
     if (!linuxAppImagePath.isEmpty() && !linuxUpdaterPath.isEmpty()) {
-      setState(UpdateManager::State::ReadyToInstall,
-               QStringLiteral("AppImage updates are ready."),
-               QStringLiteral("Choose Update LocalFlow to open the bundled "
-                              "updater. Nothing is uploaded."));
+      auto *updater = new QProcess(owner);
+      linuxUpdateProcess = updater;
+      linuxUpdaterOutput.clear();
+      updater->setProgram(linuxUpdaterPath);
+      updater->setArguments({QStringLiteral("--check-for-update"),
+                             QStringLiteral("--"), linuxAppImagePath});
+      updater->setProcessEnvironment(linuxUpdaterEnvironment());
+      updater->setWorkingDirectory(QFileInfo(linuxAppImagePath).absolutePath());
+      updater->setProcessChannelMode(QProcess::MergedChannels);
+      QObject::connect(updater, &QProcess::readyRead, owner,
+                       [this, updater] { appendLinuxUpdaterOutput(updater); });
+      QObject::connect(
+          updater, &QProcess::errorOccurred, owner,
+          [this, updater](const QProcess::ProcessError processError) {
+            if (linuxUpdateProcess != updater ||
+                processError != QProcess::FailedToStart) {
+              return;
+            }
+            linuxUpdateProcess = nullptr;
+            linuxProcessTimeout.stop();
+            const QString error = updater->errorString();
+            updater->deleteLater();
+            fail(QStringLiteral("The bundled updater could not start: %1")
+                     .arg(error));
+          });
+      QObject::connect(
+          updater, qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+          owner,
+          [this, updater](const int exitCode,
+                          const QProcess::ExitStatus exitStatus) {
+            if (linuxUpdateProcess != updater) {
+              return;
+            }
+            appendLinuxUpdaterOutput(updater);
+            linuxUpdateProcess = nullptr;
+            linuxProcessTimeout.stop();
+            updater->deleteLater();
+            if (exitStatus == QProcess::NormalExit && exitCode == 0) {
+              if (silentCheck) {
+                silentCheck = false;
+                setState(UpdateManager::State::Idle, {});
+              } else {
+                setState(UpdateManager::State::UpToDate,
+                         QStringLiteral("LocalFlow is up to date."));
+              }
+              return;
+            }
+            if (exitStatus == QProcess::NormalExit && exitCode == 1) {
+              silentCheck = false;
+              setState(
+                  UpdateManager::State::ReadyToInstall,
+                  QStringLiteral("A LocalFlow update is available."),
+                  QStringLiteral("Choose Update LocalFlow to install it in "
+                                 "place. Nothing is uploaded."));
+              return;
+            }
+            fail(linuxUpdaterFailure(exitCode));
+          });
+      setState(UpdateManager::State::Checking,
+               QStringLiteral("Checking for updates…"));
+      updater->start();
+      linuxProcessTimeout.start(kLinuxUpdateCheckTimeoutMs);
       return;
     }
-    setState(
-        UpdateManager::State::ExternalUpdateAvailable,
-        QStringLiteral("Use the LocalFlow Releases page for updates."),
-        linuxAppImagePath.isEmpty()
-            ? QStringLiteral(
-                  "This installation is not running as an AppImage. Choose "
-                  "Open Releases to download the right package.")
-            : QStringLiteral("The bundled AppImage updater is unavailable. "
-                             "Choose Open Releases to update manually."));
+    if (silentCheck) {
+      silentCheck = false;
+      setState(UpdateManager::State::Idle, {});
+    } else {
+      setState(
+          UpdateManager::State::ExternalUpdateAvailable,
+          QStringLiteral("Use the LocalFlow Releases page for updates."),
+          linuxAppImagePath.isEmpty()
+              ? QStringLiteral(
+                    "This installation is not running as an AppImage. Choose "
+                    "Open Releases to download the right package.")
+              : QStringLiteral("The bundled AppImage updater is unavailable. "
+                               "Choose Open Releases to update manually."));
+    }
 #else
     fail(QStringLiteral("Linux updating is unavailable on this platform."));
 #endif
   }
+
+#ifdef Q_OS_LINUX
+  void cleanupLinuxStaging() {
+    linuxStagedAppImagePath.clear();
+    linuxOriginalAppImagePermissions = {};
+    linuxStagingDirectory.reset();
+  }
+
+  bool prepareLinuxStaging(QString *error) {
+    cleanupLinuxStaging();
+    const QFileInfo current(linuxAppImagePath);
+    if (!current.exists() || !current.isFile() || current.isSymLink()) {
+      assignError(
+          error,
+          QStringLiteral(
+              "The current AppImage is no longer available for updating."));
+      return false;
+    }
+
+    linuxOriginalAppImagePermissions = current.permissions();
+    linuxStagingDirectory = std::make_unique<QTemporaryDir>(
+        QDir(current.absolutePath())
+            .filePath(QStringLiteral(".localflow-update-XXXXXX")));
+    if (!linuxStagingDirectory->isValid() ||
+        !QFile::setPermissions(
+            linuxStagingDirectory->path(),
+            QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                QFileDevice::ExeOwner)) {
+      cleanupLinuxStaging();
+      assignError(
+          error,
+          QStringLiteral("A private update staging folder could not be created "
+                         "beside the current AppImage."));
+      return false;
+    }
+
+    linuxStagedAppImagePath = linuxStagingDirectory->filePath(current.fileName());
+    if (!localflow::updates::detail::copyLinuxAppImageForStaging(
+            linuxAppImagePath, linuxStagedAppImagePath,
+            linuxOriginalAppImagePermissions, error)) {
+      cleanupLinuxStaging();
+      return false;
+    }
+    return true;
+  }
+
+  QProcessEnvironment linuxUpdaterEnvironment() const {
+    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    // AppRun gives the desktop process a private NeMo library path. A nested
+    // AppImage must bootstrap with its own libraries instead of inheriting it.
+    environment.remove(QStringLiteral("LD_LIBRARY_PATH"));
+    environment.insert(QStringLiteral("APPIMAGE_EXTRACT_AND_RUN"),
+                       QStringLiteral("1"));
+    return environment;
+  }
+
+  void appendLinuxUpdaterOutput(QProcess *updater) {
+    if (linuxUpdateProcess != updater) {
+      return;
+    }
+    linuxUpdaterOutput += updater->readAll();
+    constexpr qsizetype kMaximumUpdaterDiagnostics = 16 * 1024;
+    if (linuxUpdaterOutput.size() > kMaximumUpdaterDiagnostics) {
+      linuxUpdaterOutput.remove(0, linuxUpdaterOutput.size() -
+                                       kMaximumUpdaterDiagnostics);
+    }
+  }
+
+  QString linuxUpdaterFailure(const int exitCode) const {
+    const QString diagnostic =
+        QString::fromUtf8(linuxUpdaterOutput).trimmed().right(1000);
+    return diagnostic.isEmpty()
+               ? QStringLiteral("The bundled updater exited with code %1.")
+                     .arg(exitCode)
+               : QStringLiteral("The bundled updater failed: %1")
+                     .arg(diagnostic);
+  }
+#endif
 
   bool consumeDownloadBytes() {
 #ifdef Q_OS_WIN
@@ -1217,24 +1527,86 @@ struct UpdateManager::Implementation {
 #ifdef Q_OS_LINUX
     if (state == UpdateManager::State::ReadyToInstall &&
         !linuxUpdaterPath.isEmpty() && !linuxAppImagePath.isEmpty()) {
-      QProcess updater;
-      updater.setProgram(linuxUpdaterPath);
-      updater.setArguments({linuxAppImagePath});
-      QProcessEnvironment environment =
-          QProcessEnvironment::systemEnvironment();
-      environment.insert(QStringLiteral("APPIMAGE_EXTRACT_AND_RUN"),
-                         QStringLiteral("1"));
-      updater.setProcessEnvironment(environment);
-      updater.setWorkingDirectory(QFileInfo(linuxUpdaterPath).absolutePath());
-      if (!updater.startDetached()) {
-        fail(QStringLiteral(
-            "The bundled AppImage updater could not be opened."));
+      if (linuxUpdateProcess != nullptr) {
         return;
       }
+      QString stagingError;
+      if (!prepareLinuxStaging(&stagingError)) {
+        fail(stagingError + QStringLiteral(
+                                " The existing AppImage was left unchanged."));
+        return;
+      }
+      auto *updater = new QProcess(owner);
+      linuxUpdateProcess = updater;
+      linuxUpdaterOutput.clear();
+      updater->setProgram(linuxUpdaterPath);
+      updater->setArguments({QStringLiteral("--overwrite"),
+                             QStringLiteral("--"), linuxStagedAppImagePath});
+      updater->setProcessEnvironment(linuxUpdaterEnvironment());
+      updater->setWorkingDirectory(linuxStagingDirectory->path());
+      updater->setProcessChannelMode(QProcess::MergedChannels);
+      QObject::connect(updater, &QProcess::readyRead, owner,
+                       [this, updater] { appendLinuxUpdaterOutput(updater); });
+      QObject::connect(
+          updater, &QProcess::errorOccurred, owner,
+          [this, updater](const QProcess::ProcessError processError) {
+            if (linuxUpdateProcess != updater ||
+                processError != QProcess::FailedToStart) {
+              return;
+            }
+            linuxUpdateProcess = nullptr;
+            linuxProcessTimeout.stop();
+            const QString error = updater->errorString();
+            updater->deleteLater();
+            fail(QStringLiteral("The bundled updater could not start: %1")
+                     .arg(error) +
+                 QStringLiteral(" The existing AppImage was left unchanged."));
+          });
+      QObject::connect(
+          updater, qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+          owner,
+          [this, updater](const int exitCode,
+                          const QProcess::ExitStatus exitStatus) {
+            if (linuxUpdateProcess != updater) {
+              return;
+            }
+            appendLinuxUpdaterOutput(updater);
+            linuxUpdateProcess = nullptr;
+            linuxProcessTimeout.stop();
+            updater->deleteLater();
+            if (exitStatus == QProcess::NormalExit && exitCode == 0) {
+              QString commitError;
+              const QString stagedPath = linuxStagedAppImagePath;
+              if (!localflow::updates::detail::commitLinuxStagedAppImage(
+                      stagedPath, linuxAppImagePath,
+                      linuxOriginalAppImagePermissions, &commitError)) {
+                fail(commitError +
+                     QStringLiteral(
+                         " The existing AppImage was left unchanged."));
+                return;
+              }
+              // The staged path has moved to the live path. Clearing it before
+              // removing the private directory ensures cleanup cannot touch the
+              // newly installed AppImage.
+              linuxStagedAppImagePath.clear();
+              cleanupLinuxStaging();
+              progress = 1.0;
+              setState(UpdateManager::State::UpToDate,
+                       QStringLiteral("LocalFlow was updated."),
+                       QStringLiteral("Restart LocalFlow when convenient to "
+                                      "use the new version."));
+              return;
+            }
+            fail(linuxUpdaterFailure(exitCode) +
+                 QStringLiteral(" The existing AppImage was left unchanged."));
+          });
       setState(
-          UpdateManager::State::Idle,
-          QStringLiteral("The AppImage updater is open."),
-          QStringLiteral("Follow its prompts to finish updating LocalFlow."));
+          UpdateManager::State::Updating, QStringLiteral("Updating LocalFlow…"),
+          QStringLiteral("A private copy is being updated and verified. The "
+                         "current AppImage stays in place until validation "
+                         "passes."));
+      updater->start();
+      linuxProcessTimeout.start(kLinuxInstallTimeoutMs);
       emit owner->installerStarted();
       return;
     }
@@ -1269,12 +1641,21 @@ struct UpdateManager::Implementation {
   QString availableVersion;
   QString statusText;
   QString detailText;
-  QString linuxAppImagePath;
-  QString linuxUpdaterPath;
   QString downloadFailureReason;
   qint64 downloadedBytes = 0;
   double progress = 0.0;
   UpdateManager::State state = UpdateManager::State::Idle;
+  bool silentCheck = false;
+#ifdef Q_OS_LINUX
+  QString linuxAppImagePath;
+  QString linuxUpdaterPath;
+  QString linuxStagedAppImagePath;
+  QByteArray linuxUpdaterOutput;
+  QProcess *linuxUpdateProcess = nullptr;
+  QTimer linuxProcessTimeout;
+  std::unique_ptr<QTemporaryDir> linuxStagingDirectory;
+  QFileDevice::Permissions linuxOriginalAppImagePermissions{};
+#endif
 #ifdef Q_OS_WIN
   HANDLE trustedInstallerHandle = INVALID_HANDLE_VALUE;
 #endif
@@ -1291,7 +1672,7 @@ QString UpdateManager::detailText() const { return d_->detailText; }
 QString UpdateManager::availableVersion() const { return d_->availableVersion; }
 bool UpdateManager::busy() const {
   return d_->state == State::Checking || d_->state == State::Downloading ||
-         d_->state == State::Verifying;
+         d_->state == State::Verifying || d_->state == State::Updating;
 }
 bool UpdateManager::updateAvailable() const {
   return d_->state == State::UpdateAvailable ||
@@ -1309,18 +1690,43 @@ double UpdateManager::progress() const { return d_->progress; }
 
 void UpdateManager::checkForUpdates() {
   if (busy()) {
+    if (d_->silentCheck) {
+      d_->silentCheck = false;
+      d_->statusText = QStringLiteral("Checking for updates…");
+      d_->detailText.clear();
+      emit changed();
+    }
     return;
   }
   d_->cleanupTemporaryDownload();
   d_->manifest.reset();
   d_->availableVersion.clear();
   d_->progress = 0.0;
+  d_->silentCheck = false;
 #ifdef Q_OS_WIN
   d_->checkForWindowsUpdate();
 #elif defined(Q_OS_LINUX)
   d_->prepareLinuxUpdate();
 #else
   d_->fail(QStringLiteral("Updates are not available on this platform."));
+#endif
+}
+
+void UpdateManager::checkForUpdatesSilently() {
+  if (busy() || updateAvailable()) {
+    return;
+  }
+  d_->cleanupTemporaryDownload();
+  d_->manifest.reset();
+  d_->availableVersion.clear();
+  d_->progress = 0.0;
+  d_->silentCheck = true;
+#ifdef Q_OS_WIN
+  d_->checkForWindowsUpdate();
+#elif defined(Q_OS_LINUX)
+  d_->prepareLinuxUpdate();
+#else
+  d_->silentCheck = false;
 #endif
 }
 

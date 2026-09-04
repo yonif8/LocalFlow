@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QFileDevice>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -47,6 +48,21 @@ parseSemanticVersion(const QString &text, QString *error = nullptr);
 [[nodiscard]] std::optional<WindowsUpdateManifest>
 parseWindowsUpdateManifest(const QByteArray &json, QString *error = nullptr);
 
+#ifdef Q_OS_LINUX
+namespace detail {
+
+// Kept separately testable because an AppImage update must never mutate the
+// live executable until the external updater has completed validation.
+[[nodiscard]] bool copyLinuxAppImageForStaging(
+    const QString &sourcePath, const QString &stagedPath,
+    QFileDevice::Permissions permissions, QString *error = nullptr);
+[[nodiscard]] bool commitLinuxStagedAppImage(
+    const QString &stagedPath, const QString &destinationPath,
+    QFileDevice::Permissions permissions, QString *error = nullptr);
+
+} // namespace detail
+#endif
+
 } // namespace localflow::updates
 
 class UpdateManager final : public QObject {
@@ -70,6 +86,7 @@ public:
     UpdateAvailable,
     Downloading,
     Verifying,
+    Updating,
     ReadyToInstall,
     ExternalUpdateAvailable,
     Error,
@@ -89,8 +106,9 @@ public:
   [[nodiscard]] bool readyToInstall() const;
   [[nodiscard]] double progress() const;
 
-  // None of these actions is automatic. A UI must invoke each successive
-  // action after obtaining the user's confirmation.
+  // Background checks may discover an update, but downloading and installing
+  // always require an explicit user action.
+  void checkForUpdatesSilently();
   Q_INVOKABLE void checkForUpdates();
   Q_INVOKABLE void downloadUpdate();
   Q_INVOKABLE void installUpdate();

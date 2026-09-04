@@ -1,6 +1,10 @@
 #include "../src/UpdateManager.hpp"
 
 #include <QDebug>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QTemporaryDir>
 
 #include <cstdlib>
 
@@ -25,7 +29,7 @@ QByteArray validManifest() {
   "platform": {
     "os": "windows",
     "architecture": "x86_64",
-    "minimumBuild": 19041
+    "minimumBuild": 22000
   },
   "installer": {
     "fileName": "LocalFlow-2.4.1-windows-x64.exe",
@@ -137,12 +141,77 @@ void testManifestContract() {
          "rejects a fractional installer size");
 }
 
+#ifdef Q_OS_LINUX
+QByteArray readFile(const QString& path) {
+  QFile input(path);
+  if (!input.open(QIODevice::ReadOnly)) {
+    return {};
+  }
+  return input.readAll();
+}
+
+void testLinuxStagedCommit() {
+  QTemporaryDir root;
+  expect(root.isValid(), "creates Linux update test directory");
+  const QString livePath = root.filePath(QStringLiteral("LocalFlow.AppImage"));
+  QFile live(livePath);
+  expect(live.open(QIODevice::WriteOnly), "creates live AppImage fixture");
+  expect(live.write("current") == 7, "writes live AppImage fixture");
+  live.close();
+  const QFileDevice::Permissions permissions =
+      QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+      QFileDevice::ExeOwner | QFileDevice::ReadGroup;
+  expect(QFile::setPermissions(livePath, permissions),
+         "sets live AppImage fixture permissions");
+
+  const QString stagingDirectory = root.filePath(QStringLiteral("private-stage"));
+  expect(QDir().mkpath(stagingDirectory), "creates private staging directory");
+  const QString stagedPath =
+      QDir(stagingDirectory).filePath(QStringLiteral("LocalFlow.AppImage"));
+  QString error;
+  expect(localflow::updates::detail::copyLinuxAppImageForStaging(
+             livePath, stagedPath, permissions, &error),
+         "copies live AppImage into staging");
+  expect(readFile(livePath) == QByteArrayLiteral("current"),
+         "staging does not mutate the live AppImage");
+
+  QFile staged(stagedPath);
+  expect(staged.open(QIODevice::WriteOnly | QIODevice::Truncate),
+         "opens staged AppImage fixture");
+  expect(staged.write("validated-update") == 16,
+         "writes staged AppImage fixture");
+  staged.close();
+  expect(readFile(livePath) == QByteArrayLiteral("current"),
+         "updated staging remains isolated before commit");
+  expect(localflow::updates::detail::commitLinuxStagedAppImage(
+             stagedPath, livePath, permissions, &error),
+         "atomically commits validated staged AppImage");
+  expect(readFile(livePath) == QByteArrayLiteral("validated-update"),
+         "atomic commit replaces the live AppImage");
+  expect(!QFileInfo::exists(stagedPath),
+         "atomic commit consumes the staged path");
+  expect((QFileInfo(livePath).permissions() & permissions) == permissions,
+         "atomic commit preserves executable permissions");
+
+  error.clear();
+  expect(!localflow::updates::detail::commitLinuxStagedAppImage(
+             stagedPath, livePath, permissions, &error),
+         "rejects a missing staged AppImage");
+  expect(!error.isEmpty(), "explains a rejected staged commit");
+  expect(readFile(livePath) == QByteArrayLiteral("validated-update"),
+         "a rejected commit leaves the live AppImage unchanged");
+}
+#endif
+
 } // namespace
 
 int main() {
   testSemanticVersions();
   testFingerprintNormalization();
   testManifestContract();
+#ifdef Q_OS_LINUX
+  testLinuxStagedCommit();
+#endif
   if (failures == 0) {
     qInfo() << "UpdateManager tests passed";
     return EXIT_SUCCESS;

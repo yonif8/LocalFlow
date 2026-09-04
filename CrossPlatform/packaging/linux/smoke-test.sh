@@ -170,8 +170,9 @@ cmp --silent "${desktop_root}/usr/libexec/localflow/localflow-polish-worker" \
     "${deb_root}/opt/localflow/usr/libexec/localflow/localflow-polish-worker"
 
 # Exercise the actual per-user integration scripts with XDG paths containing
-# spaces. The installer must copy exact bytes, create a valid startup entry,
-# and remove only LocalFlow-owned integration while preserving app data.
+# spaces and Exec-reserved characters. The installer must copy exact bytes,
+# create a valid startup entry, and remove only LocalFlow-owned integration
+# while preserving app data.
 tar -xzf "$integration" -C "$integration_root"
 bundle="${integration_root}/LocalFlow-Linux-Integration"
 cmp --silent "${script_root}/assets/com.localflow.LocalFlow.svg" \
@@ -179,7 +180,7 @@ cmp --silent "${script_root}/assets/com.localflow.LocalFlow.svg" \
 cmp --silent "${script_root}/../../app/assets/LocalFlow.png" \
     "${bundle}/assets/com.localflow.LocalFlow.png"
 home_dir="${user_root}/Home With Spaces"
-data_dir="${user_root}/Data With Spaces"
+data_dir="${user_root}/Data With Spaces \$ cash % percent \` tick"
 config_dir="${user_root}/Config With Spaces"
 cache_dir="${user_root}/Cache With Spaces"
 mkdir -p "$home_dir" "$data_dir" "$config_dir/LocalFlow" "$cache_dir"
@@ -199,8 +200,14 @@ cmp --silent "${script_root}/../../app/assets/LocalFlow.png" \
     "${data_dir}/icons/hicolor/256x256/apps/com.localflow.LocalFlow.png"
 desktop-file-validate "$installed_desktop"
 desktop-file-validate "$autostart_entry"
-grep -Fq "$installed_image" "$installed_desktop"
-grep -Fq "$installed_image" "$autostart_entry"
+for entry in "$installed_desktop" "$autostart_entry"; do
+    ! grep -Fq 'TryExec=' "$entry"
+    grep -Fq 'Exec="' "$entry"
+    grep -Fq 'LocalFlow.AppImage' "$entry"
+    grep -Fq '\$' "$entry"
+    grep -Fq '\`' "$entry"
+    grep -Fq '%%' "$entry"
+done
 installed_probe="$(env HOME="$home_dir" XDG_DATA_HOME="$data_dir" \
     XDG_CONFIG_HOME="$config_dir" XDG_CACHE_HOME="$cache_dir" \
     APPIMAGE_EXTRACT_AND_RUN=1 "$installed_image" --probe-runtime)"
