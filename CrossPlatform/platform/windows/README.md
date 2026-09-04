@@ -106,15 +106,14 @@ Call it on the pipeline worker, not the UI thread.
   should end the active hold safely, restore ducking, and offer the newly
   selected default microphone on the next hold.
 
-## Remaining Windows release work
+## Public release and pending validation
 
-The shared Qt shell, Parakeet/S1 runtimes, persistence, Inno Setup packaging,
-and authenticated update client now live in the app and release layers. Their
-presence does not make this adapter a public download. Windows remains an
-engineering beta until the exact-field APIs are exercised through the complete
-app, Windows Graphics Capture covers GPU-rendered surfaces, the real application
-matrix passes on clean Windows 11 systems, and the installer/update path passes
-the pinned LocalFlow Ed25519 release-signature gates. Authenticode is an optional
-additional identity layer for a future paid-certificate distribution. Track
-those gates in the [feature parity contract](../../../docs/FEATURE_PARITY.md);
-do not distribute CI smoke artifacts.
+The Windows v1.3.0 EXE is publicly available. Automated production inference,
+installer smoke tests, and pinned Ed25519 signature verification passed.
+Hands-on full-app certification on clean Windows 11 systems is still pending
+and is deferred until test machines are available. Windows Graphics Capture
+is not implemented; GDI capture remains a known limitation for some surfaces.
+Authenticode is optional and is absent from the free installer. Track validation
+in the [feature parity contract](../../../docs/FEATURE_PARITY.md) and
+[release record](../../../docs/releases/v1.3.0.md). Distribute public release
+assets rather than unsigned CI smoke artifacts.

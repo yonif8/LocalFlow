@@ -1,11 +1,22 @@
 # LocalFlow — agent notes
 
-Fully-local macOS dictation (Wispr Flow replacement). Hold Fn (or a mouse
-button) → speak → release → polished text lands at the caret. Menu bar agent
-app, SwiftPM, AppKit lifecycle (no Xcode project). Public repo + releases:
+Fully local dictation for macOS, Windows, and Linux. Hold a configured shortcut,
+speak, and release to insert text. macOS uses SwiftPM and AppKit/SwiftUI;
+Windows/Linux share C++/Qt in `CrossPlatform/`. Public repo + releases:
 github.com/yonif8/LocalFlow.
 
-## Pipeline
+v1.3.0 is public on all three platforms. Windows/Linux automated production
+checks passed; hands-on certification is pending and deferred at the owner's
+request until test machines are available. See `docs/releases/v1.3.0.md`.
+Follow `CONTRIBUTING.md` and `docs/FEATURE_PARITY.md` for every feature change.
+Changes to Swift behavior must also address the C++ implementation.
+
+Windows uses WASAPI, GDI capture, Windows OCR, NeMo-Speech.cpp, and llama.cpp.
+Linux uses X11/Wayland adapters, Tesseract, and the same inference runtimes.
+Windows Graphics Capture is not implemented. Wayland has documented desktop
+and accessibility limitations.
+
+## macOS pipeline
 
 mic (LFCapture: CGEventTap hold-to-talk + AVAudioEngine 16kHz;
   SystemAudioDucker drops output volume to 20% while recording — CoreAudio
@@ -25,12 +36,17 @@ Contracts in `Sources/LFContracts` (Utterance/Transcriber/TextPolisher/…).
 
 ## Commands
 
-- Build/test: `swift build` / `swift test` (CLT is enough; no Xcode needed).
+- macOS build/test: `swift build` / `swift test`. App packaging compiles a
+  Metal library: use full Xcode with its Metal Toolchain installed and set
+  `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` explicitly.
+- Windows/Linux build recipes: `CrossPlatform/README.md` and native workflows.
 - Debug CLIs: `engine-cli <wav>`, `polish-cli`, `capture-cli`, `insert-cli
   --doctor`. Fixtures in `Fixtures/`.
 - Release: `Scripts/release.sh X.Y.Z` → commit `appcast.xml` →
   `Scripts/publish.sh X.Y.Z` (gh CLI at ~/.local/bin/gh, authed as yonif8).
-  Sparkle auto-updates every install; version every user-visible change.
+  Sparkle updates macOS; Windows verifies EXE updates with Ed25519; Linux
+  AppImage uses signed AppImageUpdate; DEB updates are manual. Version every
+  user-visible application change; documentation-only corrections need no binary release.
 - Headless app driving: distributed notifications `com.localflow.app.simulate`
   / `.showSettings` / `.checkForUpdates`; env `LOCALFLOW_SIM_WAV=<wav>` feeds
   real audio to Simulate Dictation. Logs: `log show --info --predicate
@@ -50,7 +66,8 @@ Contracts in `Sources/LFContracts` (Utterance/Transcriber/TextPolisher/…).
    Scripts/setup-signing.sh). Sign inside-out, no `--deep`, NO hardened
    runtime (breaks mic). The cert-anchored designated requirement is why TCC
    permissions survive updates — never switch to ad-hoc.
-4. **Sparkle EdDSA private key** lives in the login keychain and is
+4. **Release EdDSA private key** lives in the login keychain, with the Windows
+   CI seed stored in its GitHub Actions secret, and is
    IRREPLACEABLE (no Apple signing backstop). Never print/commit it; never
    remove SUPublicEDKey from Info.plist in an update.
 5. **Polish must fail open, fast**: Swift task groups await all children —

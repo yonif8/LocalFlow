@@ -1,5 +1,10 @@
 # Linux packaging and updates
 
+v1.3.0 AppImage and DEB packages are public. Production inference, signing,
+package verification, and installer smoke tests passed in Ubuntu CI.
+Hands-on X11/GNOME/KDE certification is pending and deferred until test machines
+are available. See the [release record](../../../docs/releases/v1.3.0.md).
+
 The Linux release lane builds on Ubuntu 22.04 x86-64 and produces one shared
 runtime payload in two formats:
 

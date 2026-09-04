@@ -29,6 +29,12 @@ feature complete.
 
 ## Validation and release policy
 
+The public v1.3.0 release has automated validation evidence but incomplete
+hands-on Windows/Linux certification. This is recorded in
+[`docs/releases/v1.3.0.md`](docs/releases/v1.3.0.md); do not infer full parity
+from the public release label or mark untested rows certified. As of 2026-09-05,
+hands-on testing is deferred at the owner's request until machines are available.
+
 The native macOS, Windows, and Linux workflows are the source of truth for
 build dependencies and automated checks. Relevant lanes must pass before merge;
 all three must pass at the exact stable release commit. Unsigned CI artifacts
@@ -38,7 +44,7 @@ A stable version uses one `vX.Y.Z` tag and one GitHub release for all three
 operating systems. `Scripts/publish.sh` and `.github/workflows/release.yml`
 publish transactionally: the release stays a draft unless every expected
 signed artifact verifies. A build or installer existing is not enough to mark
-a feature **Released**; complete the real-system gates in
+a feature **certified**; complete the real-system gates in
 `docs/FEATURE_PARITY.md` first.
 
 Windows and Linux CI signing credentials belong only in GitHub Actions secrets;

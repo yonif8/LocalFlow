@@ -16,7 +16,7 @@ system substitution.
 CrossPlatform/
   core/                 Dictionary, terminology, pipeline contracts, persistence
   inference/            Parakeet ASR and S1-mini polish model adapters
-  platform/windows/     Win32, WASAPI, UI Automation and Graphics Capture
+  platform/windows/     Win32, WASAPI, UI Automation, GDI capture and Windows OCR
   platform/linux/       X11, Wayland portals, PipeWire and AT-SPI
   app/                   Shared Qt/QML tray app, settings, onboarding and HUD
   tests/                 Portable behavior and platform contract tests
@@ -27,14 +27,14 @@ operating system; `inference` and each `platform` implement core interfaces; the
 `app` composes them. No platform adapter may contain terminology, dictionary, or
 polishing policy.
 
-## Initial supported targets
+## Package targets
 
 - Windows 11 x86-64
-- Ubuntu/Fedora x86-64 on recent GNOME or KDE Wayland
-- Mainstream x86-64 X11 desktops
+- Linux x86-64, packaged on Ubuntu 22.04, with X11 or desktop-provided Wayland portals
 
-Other architectures and Linux compositors are added only after their complete
-capability and regression matrices pass.
+Hands-on Windows 11 and Linux X11/GNOME/KDE certification is pending. Fedora
+and individual compositor versions are not certified by the Ubuntu CI run.
+See the root README for installation instructions and platform limitations.
 
 ## Product rules
 
@@ -53,19 +53,23 @@ capability and regression matrices pass.
 
 - ASR: NVIDIA Parakeet TDT 0.6B v3 through NeMo-Speech.cpp
 - Polish: S1-mini by Superwhisper through llama.cpp
-- OCR: selected by a cross-platform technical-token benchmark; it must remain
-  fully local
+- OCR: Windows OCR with GDI capture on Windows; Tesseract on Linux. Both run locally.
 
 Models are downloaded on first run with progress, resumption, size limits, and
 cryptographic checksum verification.
 
 ## Development status
 
-The Windows and Linux application, platform adapters, model runtimes, tests,
-installers, and update clients are buildable in their native CI lanes. That is
-an engineering beta, not a public release: the complete certification matrix
-and production-signing gates have not passed. GitHub Actions smoke artifacts
-may be unsigned and must not be sent to end users.
+Windows and Linux packages are public in v1.3.0. Automated production builds,
+real-model inference, signature checks, and installer smoke tests passed.
+Hands-on certification across real applications and Linux desktops remains
+pending; it is explicitly deferred until test machines are available.
+Use public Releases downloads, not unsigned GitHub Actions smoke artifacts.
+See the [release evidence](../docs/releases/v1.3.0.md).
+
+Windows currently uses GDI capture; Windows Graphics Capture is not implemented.
+GPU-rendered surfaces may not provide useful OCR pixels. Wayland functionality
+depends on available desktop portals and application accessibility support.
 
 The checked-in CMake presets provide the shortest local build path. Bootstrap
 the checksum-pinned runtimes first, then build and test from `CrossPlatform/`:
@@ -90,3 +94,8 @@ ctest --preset windows-release
 The native workflows are the canonical dependency and packaging recipes. See
 [`CONTRIBUTING.md`](../CONTRIBUTING.md) for feature-parity rules and
 [`docs/FEATURE_PARITY.md`](../docs/FEATURE_PARITY.md) for the release gates.
+
+The Windows local preset uses Visual Studio 2022; CI uses the
+`windows-2025-vs2026` runner. The source-build default version remains
+`1.3.0-beta.1`; production workflows explicitly supply the stable tag version.
+This development default does not describe the public v1.3.0 installer.

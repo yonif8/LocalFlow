@@ -1,10 +1,7 @@
-<!-- sparkle-sign-warning:
-IMPORTANT: This file was signed by Sparkle. Any modifications to this file requires updating signatures in appcasts that reference this file! This will involve re-running generate_appcast or sign_update.
--->
 # Windows packaging and updates
 
-The Windows workflow builds `CrossPlatform/CMakeLists.txt` with Visual Studio
-2022 for x64, runs CTest, installs `localflow_desktop` as `LocalFlow.exe`, runs
+The Windows workflow builds `CrossPlatform/CMakeLists.txt` with the Visual Studio
+toolchain on `windows-2025-vs2026` for x64, runs CTest, installs `localflow_desktop` as `LocalFlow.exe`, runs
 `windeployqt`, and creates a per-user Inno Setup installer. Installation never
 asks for elevation and defaults to:
 
@@ -122,9 +119,11 @@ compiled into the app and cannot be selected by the downloaded manifest. When
 an Authenticode thumbprint is compiled in, the same helper additionally requires
 `WinVerifyTrust` and that exact certificate.
 
-CI installs and uninstalls the generated installer on its Windows runner. A
-stable release additionally requires the clean-machine, real-app certification
-in `docs/FEATURE_PARITY.md`; CI installation alone is not sufficient. If any
+CI installs and uninstalls the generated installer on its Windows runner.
+The public v1.3.0 release passed those automated checks, but clean-machine,
+real-app certification remains pending; see the
+[release record](../../../docs/releases/v1.3.0.md). CI installation alone is
+not full certification. If any
 artifact changes, rerun the workflow; never edit the manifest or checksum by
 hand.
 

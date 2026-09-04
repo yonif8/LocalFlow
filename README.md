@@ -1,109 +1,147 @@
 # LocalFlow
 
-Fully-local dictation for macOS. Hold a key, speak, release — your words are
-transcribed and typed into whatever app you're using. Nothing ever leaves your
-Mac: no accounts, no cloud, no audio uploaded anywhere.
+Fully local dictation for **macOS, Windows, and Linux**. Hold a shortcut, speak,
+and release to insert polished text into the focused app. Speech recognition,
+polishing, and screen terminology run on your computer. No account or cloud
+processing is required. Internet access is used for model/update downloads;
+bug reports are sent only when you choose to submit them.
 
-- **Hold-to-talk** — hold Fn (or a configurable key/mouse button), speak, release.
-- **On-device speech recognition** — NVIDIA Parakeet TDT v3 (verbatim, natively punctuated) on the Neural Engine via [FluidAudio](https://github.com/FluidInference/FluidAudio).
-- **On-device polish** — an optional fast LLM pass cleans up filler words and phrasing, powered by **S1-mini by Superwhisper**, also running locally via MLX.
-- **Screen-aware terminology** — optionally uses names and technical terms visible in the active window, then remembers high-confidence corrections locally for future dictations.
-- **Menu bar app** — history, settings, permissions, all in a lightweight status item.
-- **Auto-updates** — via [Sparkle](https://sparkle-project.org); the app checks for updates and offers them in place.
+- Hold-to-talk with configurable keyboard and supported mouse triggers.
+- Parakeet TDT v3 speech recognition and optional S1-mini polishing.
+- Optional screen terminology and a bounded, editable local terminology bank.
+- Tray/menu bar controls, recording HUD, settings, and session history.
+- Signed update verification, with installation appropriate to each platform.
 
-Models (~1.2 GB) are downloaded automatically on first run.
+## Downloads and validation status
 
-The shipping release currently requires an Apple Silicon Mac running macOS 15
-or later. Windows and Linux versions are being developed in this same
-repository under [`CrossPlatform/`](CrossPlatform/README.md).
+[Download LocalFlow](https://github.com/yonif8/LocalFlow/releases/latest).
+Version 1.3.0 has public packages for all three platforms. Windows and Linux
+passed automated builds, real-model inference, signing checks, and installer
+smoke tests. **Hands-on Windows/Linux testing is still pending.** Availability
+does not mean every desktop/app combination has been certified.
+See the [validation record and limitations](docs/FEATURE_PARITY.md).
 
-## Platform layout
+| Platform | Download | Target |
+| --- | --- | --- |
+| macOS | `LocalFlow-<version>.dmg` | Apple Silicon, macOS 15 or later |
+| Windows | `LocalFlow-<version>-windows-x64-setup.exe` | Windows 11, x86-64 |
+| Linux | `LocalFlow-x86_64.AppImage` (recommended), or `localflow_<version>_amd64.deb` | x86-64; packaged on Ubuntu 22.04; desktop capabilities vary |
 
-- `Sources/`, `Tests/`, `Scripts/` — shipping macOS application
-- `CrossPlatform/` — shared Windows/Linux application, portable core, native
-  adapters, and installers
-- `docs/FEATURE_PARITY.md` — product-wide feature contract and implementation
-  status for all three operating systems
-
-Every product feature must either be implemented on macOS, Windows, and Linux,
-or carry an explicit, tested platform exception. Native CI lanes build and test
-all three editions; behavior fixtures are shared when the implementations can
-consume the same format. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the parity
-and release rules.
+Windows ARM64 and Linux ARM64 packages are not included in this release.
 
 ## Install
 
-1. Download the latest `LocalFlow-<version>.dmg` from [Releases](https://github.com/yonif8/LocalFlow/releases).
-2. Open the DMG and drag **LocalFlow** into **Applications**.
-3. Double-click LocalFlow in Applications.
+### macOS
 
-### First launch: "Apple could not verify…"
+1. Download the DMG, open it, and drag **LocalFlow** into **Applications**.
+2. Open LocalFlow. The free distribution uses a self-signed certificate and is
+   not Apple-notarized, so macOS may block the first launch.
+3. If blocked, dismiss the warning, then open **System Settings → Privacy &
+   Security → Open Anyway** and confirm. If the option is absent, try opening
+   the app again before returning to Settings.
+4. Grant Microphone, Input Monitoring, and Accessibility permissions when asked.
+5. Complete the model download, then hold **Fn**, speak, and release. Change the
+   shortcut in Settings if needed.
 
-LocalFlow is a free, self-signed app (no Apple Developer subscription), so
-Gatekeeper blocks the first launch. This is a **one-time** dance:
+Screen terminology is opt-in under **Settings → Dictionary** and additionally
+requires Screen Recording permission. macOS uses Apple Vision OCR supplemented
+by accessibility metadata.
 
-1. Double-click LocalFlow. A dialog says *"Apple could not verify 'LocalFlow'
-   is free of malware…"* — click **Done** (**not** "Move to Trash").
-2. Open **System Settings → Privacy & Security**, scroll down to the
-   **Security** section. You'll see *"LocalFlow was blocked to protect your
-   Mac."* — click **Open Anyway**.
-3. Confirm in the dialog that appears and authenticate (password / Touch ID).
+### Windows
 
-LocalFlow now opens normally forever after — including after auto-updates.
+1. Download and run the Windows setup EXE from Releases.
+2. The free installer has no paid Authenticode certificate. Windows may show
+   **Unknown publisher** or SmartScreen. If **More info → Run anyway** is offered,
+   use it for the installer downloaded from this repository. Managed security
+   policies may prevent installation.
+3. Follow setup, then open LocalFlow from the Start Menu. It installs for your
+   user without administrator access.
+4. Allow microphone access, complete the model download, and choose your
+   push-to-talk shortcut in Settings. Fn/Globe is not generally available.
 
-> **macOS 26 note:** the **Open Anyway** button only appears for about an hour
-> after the blocked launch attempt. If you don't see it, double-click LocalFlow
-> again and re-check System Settings.
+Screen terminology uses GDI window capture and Windows OCR. Some GPU-rendered
+surfaces may not capture correctly. Elevated and protected apps can restrict
+insertion; LocalFlow does not bypass those protections.
 
-<details>
-<summary>Terminal alternative (skips the dialogs)</summary>
+### Linux
 
-```sh
-xattr -dr com.apple.quarantine /Applications/LocalFlow.app
-```
-
-</details>
-
-### First run
-
-LocalFlow lives in the menu bar (waveform icon). On first run it opens a
-Permissions window — grant it:
-
-- **Microphone** — to hear you,
-- **Input Monitoring** — to detect the hold-to-talk key,
-- **Accessibility** — to type the transcript into the frontmost app.
-
-Then it downloads the speech models (~1.2 GB, one time) and you're set: hold
-**Fn**, talk, release.
-
-Screen-aware terminology is opt-in under **Settings → Dictionary**. On each
-push-to-talk press it captures the active window and runs Apple Vision OCR
-locally while you speak. Accessibility metadata supplements OCR for details
-such as link URLs. Only likely names and technical tokens are retained, and a
-term is saved after a high-confidence correction. Screen text is never logged
-or sent anywhere; learned terms can be reviewed or deleted in Settings. This
-feature requires macOS Screen Recording permission.
-
-## Updates
-
-LocalFlow checks for updates automatically (Sparkle, EdDSA-signed). You can
-also check manually via the menu bar icon → **Check for Updates…**.
-
-## Building from source
+Download the AppImage, make it executable, and open it:
 
 ```sh
-Scripts/setup-signing.sh   # once: stable self-signed identity (TCC persistence)
-Scripts/make-app.sh        # dev build -> dist/LocalFlow.app
-Scripts/release.sh 1.3.0   # versioned macOS build + DMG + signed appcast
-Scripts/publish.sh 1.3.0   # verify and publish one signed three-platform release
+chmod +x LocalFlow-x86_64.AppImage
+./LocalFlow-x86_64.AppImage
 ```
 
-`publish.sh` keeps the GitHub release in draft state unless the macOS, Windows,
-and Linux assets for the same stable version are all present and verified.
+If FUSE is unavailable, try `APPIMAGE_EXTRACT_AND_RUN=1 ./LocalFlow-x86_64.AppImage`.
+The matching `LocalFlow-<version>-Linux-Integration.tar.gz` contains optional
+per-user application-menu installation/uninstallation scripts. See the
+[Linux installation guide](CrossPlatform/packaging/linux/README.md#desktop-integration-and-uninstall).
 
-## Credits
+On Debian/Ubuntu, install the DEB with
+`sudo apt install ./localflow_<version>_amd64.deb`, replacing `<version>` with
+the downloaded version. Complete onboarding and model downloads after launch.
 
-- Speech recognition: NVIDIA **Parakeet TDT v3**, via [FluidAudio](https://github.com/FluidInference/FluidAudio)
-- Polish LLM: **S1-mini by Superwhisper**
-- Runtime: [MLX / mlx-swift](https://github.com/ml-explore/mlx-swift), [mlx-swift-lm](https://github.com/ml-explore/mlx-swift-lm)
-- Updates: [Sparkle](https://sparkle-project.org)
+X11 uses native shortcuts and capture. Wayland depends on desktop portals and
+accessibility support; approve desktop prompts when requested. Global mouse
+triggers, Escape cancellation, tray visibility, and insertion into inaccessible
+apps have limitations. GNOME/KDE hands-on certification is pending. See
+[Linux platform limitations](CrossPlatform/platform/linux/README.md#remaining-platform-limitations).
+
+## Models, terminology, and updates
+
+First-run setup downloads local models; Windows/Linux require about 1.2 GB
+for Parakeet and S1-mini. macOS uses CoreML/MLX model files and manages their
+downloads separately. Models are not embedded in the installers.
+
+Screen terminology is optional. OCR runs while you speak, and available results
+help restore visible names and spellings. High-confidence corrections may be
+remembered locally. Review or delete learned terms in Settings; the bank is
+limited to 500 terms and 10 aliases per term. Screen images are not uploaded.
+
+- **macOS:** Sparkle checks automatically; use **Check for Updates…** in the menu
+  bar menu for a manual check.
+- **Windows:** use **Check for Updates…**, download, then confirm installation.
+  LocalFlow verifies the installer with its pinned Ed25519 key even though the
+  free installer has no Authenticode certificate.
+- **Linux AppImage:** the in-app updater checks and verifies signed updates;
+  restart after installation. **DEB:** the app opens Releases for a manual
+  package update and does not overwrite package-managed files.
+
+## Development
+
+- `Sources/`, `Tests/`, `Scripts/`: native macOS Swift application.
+- `CrossPlatform/`: shared Windows/Linux C++/Qt app and native adapters.
+- [Cross-platform build guide](CrossPlatform/README.md).
+- [Contributing and parity rules](CONTRIBUTING.md).
+- [Feature parity and release evidence](docs/FEATURE_PARITY.md).
+- [v1.3.0 release notes](docs/releases/v1.3.0.md).
+
+Feature changes must address every affected platform. Sharing a repository
+does not automatically port Swift changes to C++; equivalent behavior and
+validation are required.
+
+For a macOS app/release build, use full Xcode with its Metal Toolchain component
+installed and select it explicitly:
+
+```sh
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+Scripts/setup-signing.sh
+Scripts/make-app.sh
+```
+
+Maintainers use `Scripts/release.sh X.Y.Z` followed by `Scripts/publish.sh X.Y.Z`
+for a new version. Preserve existing tags and signed assets. See the release
+record for the v1.3.0 publication exception and pending manual validation.
+
+## Credits and licensing status
+
+Speech recognition: NVIDIA Parakeet TDT v3 through FluidAudio on macOS and
+NeMo-Speech.cpp on Windows/Linux. Polish: S1-mini by Superwhisper through MLX
+on macOS and llama.cpp on Windows/Linux. Desktop UI: AppKit/SwiftUI and Qt/QML.
+OCR: Apple Vision, Windows OCR, and Tesseract. Updates: Sparkle, LocalFlow's
+Ed25519 verifier, and AppImageUpdate.
+
+The application is available as a free download. This repository currently has
+no project-wide LICENSE file; public source availability is not a declaration
+of an open-source license. The owner has not selected a project-wide license.
+Bundled third-party components retain their own licenses and notices.
