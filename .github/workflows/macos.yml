@@ -45,6 +45,17 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Select the shipping Swift toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          developer_dir="/Applications/Xcode_26.3.app/Contents/Developer"
+          test -d "$developer_dir" || {
+            echo "The pinned Xcode 26.3 toolchain is unavailable on this runner." >&2
+            exit 1
+          }
+          sudo xcode-select --switch "$developer_dir"
+
       - name: Record toolchain
         shell: bash
         run: |

@@ -34,9 +34,10 @@ not LocalFlow's own tamper protection. Authenticode remains an optional additive
 layer if certificate credentials are configured later.
 
 All third-party and GitHub actions in the workflow are pinned to immutable
-commit SHAs. Qt itself is pinned to 6.8.3. `windows-2022` supplies Visual Studio,
-the Windows SDK/signing tools, and Inno Setup; the workflow discovers their
-installed paths and fails rather than downloading an unverified compiler.
+commit SHAs. Qt itself is pinned to 6.8.3. `windows-2025` supplies Visual Studio,
+the Windows SDK/signing tools, and Inno Setup while satisfying the app's Windows
+11 build floor. The workflow discovers their installed paths and fails rather
+than downloading an unverified compiler.
 
 ## Required GitHub Actions secret
 

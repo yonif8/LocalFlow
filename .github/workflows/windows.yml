@@ -58,7 +58,7 @@ concurrency:
 jobs:
   build-package:
     name: Windows x64 Release
-    runs-on: windows-2022
+    runs-on: windows-2025
     timeout-minutes: 120
 
     env:
@@ -75,6 +75,16 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Verify supported Windows host
+        shell: pwsh
+        run: |
+          $minimumBuild = 22000
+          $hostBuild = [Environment]::OSVersion.Version.Build
+          if ($hostBuild -lt $minimumBuild) {
+            throw "The Windows packaging contract requires build $minimumBuild or newer; this runner is build $hostBuild."
+          }
+          Write-Host "Windows host build $hostBuild satisfies the build $minimumBuild app contract."
 
       - name: Resolve build identity
         shell: pwsh
@@ -454,7 +464,7 @@ jobs:
               | Select-Object -First 1 -ExpandProperty FullName
           }
           if (-not $iscc -or -not (Test-Path -LiteralPath $iscc)) {
-            throw "Inno Setup compiler is not installed on this windows-2022 image."
+            throw "Inno Setup compiler is not installed on this Windows runner image."
           }
           & $iscc `
             "/DAppVersion=$env:APP_VERSION" `
