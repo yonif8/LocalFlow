@@ -206,13 +206,20 @@ public enum TerminologyCorrector {
         let protected = Set(protectedTerms.map(ScreenTermExtractor.normalized))
 
         struct Candidate { let canonical: String; let aliases: [String]; let source: TerminologyMatch.Source }
-        let screenCandidates = screenTerms.map {
+        // A capital letter alone is not enough evidence: ordinary words at
+        // sentence starts ("You", "And", "Check") are common on every
+        // screen. Plain single-word names must first be explicitly learned or
+        // added to the personal dictionary. Technical shapes and multiword
+        // names remain eligible immediately.
+        let screenCandidates = screenTerms.filter {
+            ScreenTermExtractor.isPersistentCandidate($0)
+        }.map {
             Candidate(canonical: $0, aliases: [$0], source: .screen)
         }
         // A visible spelling is fresher evidence than memory. Suppress a
         // similar-but-different learned spelling so an earlier OCR mistake
         // cannot override what is currently on screen.
-        let screenKeys = screenTerms.map(ScreenTermExtractor.normalized)
+        let screenKeys = screenCandidates.map { ScreenTermExtractor.normalized($0.canonical) }
         let learnedCandidates = learnedTerms.filter { learned in
             let key = ScreenTermExtractor.normalized(learned.canonical)
             return !screenKeys.contains { visible in

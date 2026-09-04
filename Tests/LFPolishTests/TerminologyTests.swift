@@ -101,6 +101,22 @@ struct TerminologyCorrectorTests {
         #expect(result.text == "please send the report tomorrow")
     }
 
+    @Test func screenDoesNotCapitalizeOrdinarySingleWords() {
+        let result = TerminologyCorrector.correct(
+            "Can you decide what to enable and what to disable?",
+            screenTerms: ["You", "And", "Check"], learnedTerms: [])
+        #expect(result.text == "Can you decide what to enable and what to disable?")
+        #expect(result.matches.isEmpty)
+    }
+
+    @Test func explicitlyLearnedSingleWordCanRestoreCapitalization() {
+        let result = TerminologyCorrector.correct(
+            "ask alice tomorrow", screenTerms: [],
+            learnedTerms: [.init(canonical: "Alice")])
+        #expect(result.text == "ask Alice tomorrow")
+        #expect(result.matches.first?.source == .learned)
+    }
+
 
     @Test func recoversSpokenFilePathWhenDirectoryIsMangledByASR() {
         let result = TerminologyCorrector.correct(
