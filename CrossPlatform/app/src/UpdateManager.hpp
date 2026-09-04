@@ -48,6 +48,25 @@ parseSemanticVersion(const QString &text, QString *error = nullptr);
 [[nodiscard]] std::optional<WindowsUpdateManifest>
 parseWindowsUpdateManifest(const QByteArray &json, QString *error = nullptr);
 
+#ifdef Q_OS_WIN
+namespace detail {
+
+inline constexpr auto kWindowsVerificationHelperMode =
+    "--localflow-private-verify-windows-update-v1";
+inline constexpr qsizetype kMaximumWindowsVerificationResponseBytes = 8 * 1024;
+
+// The helper is deliberately hosted by the already-running, signed application
+// binary. Its caller supplies only artifact facts; the trusted signer remains
+// compiled into the helper and cannot be selected through the command line.
+[[nodiscard]] int runWindowsVerificationHelper(
+    const QStringList &arguments, QByteArray *response);
+[[nodiscard]] bool acceptWindowsVerificationHelperResult(
+    int exitCode, bool normalExit, const QByteArray &response,
+    QString *error = nullptr);
+
+} // namespace detail
+#endif
+
 #ifdef Q_OS_LINUX
 namespace detail {
 

@@ -1,8 +1,10 @@
 #include "AppController.hpp"
 #include "SingleInstance.hpp"
+#include "UpdateManager.hpp"
 #include "localflow/inference/NemoTranscriber.hpp"
 
 #include <QApplication>
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QLockFile>
@@ -14,6 +16,7 @@
 #include <QTimer>
 #include <QUrl>
 
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 
@@ -28,6 +31,19 @@ QString instanceName() {
 }
 
 int main(int argc, char* argv[]) {
+#ifdef Q_OS_WIN
+    if (argc > 1 && std::strcmp(
+            argv[1], localflow::updates::detail::kWindowsVerificationHelperMode) == 0) {
+        QCoreApplication helperApplication(argc, argv);
+        QByteArray response;
+        const int exitCode = localflow::updates::detail::runWindowsVerificationHelper(
+            helperApplication.arguments().mid(2), &response);
+        const auto written = std::fwrite(
+            response.constData(), 1, std::size_t(response.size()), stdout);
+        std::fflush(stdout);
+        return written == std::size_t(response.size()) ? exitCode : 74;
+    }
+#endif
     bool smokeUi = false;
     bool background = false;
     for (int index = 1; index < argc; ++index) {

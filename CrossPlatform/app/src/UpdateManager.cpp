@@ -14,7 +14,6 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QFutureWatcher>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -28,7 +27,6 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QVariant>
-#include <QtConcurrentRun>
 
 #include <algorithm>
 #include <cerrno>
@@ -70,6 +68,7 @@ constexpr auto kManifestUrl = "https://github.com/yonif8/LocalFlow/releases/"
                               "latest/download/windows-update.json";
 constexpr int kManifestTimeoutMs = 15'000;
 constexpr int kDownloadTimeoutMs = 10 * 60 * 1000;
+constexpr int kWindowsVerificationTimeoutMs = 2 * 60 * 1000;
 #elif defined(Q_OS_LINUX)
 constexpr auto kReleasesUrl = "https://github.com/yonif8/LocalFlow/releases";
 constexpr int kLinuxUpdateCheckTimeoutMs = 60'000;
@@ -778,6 +777,180 @@ parseWindowsUpdateManifest(const QByteArray &json, QString *error) {
   return manifest;
 }
 
+#ifdef Q_OS_WIN
+namespace detail {
+namespace {
+
+constexpr int kVerificationRejectedExitCode = 2;
+constexpr int kInvalidVerificationRequestExitCode = 64;
+constexpr qsizetype kMaximumVerificationErrorCharacters = 1000;
+
+struct ParsedVerificationResponse {
+  bool ok = false;
+  QString error;
+};
+
+QByteArray encodeVerificationResponse(const bool ok, QString error = {}) {
+  QJsonObject object{
+      {QStringLiteral("schemaVersion"), 1},
+      {QStringLiteral("ok"), ok},
+  };
+  if (!ok) {
+    error = error.trimmed().left(kMaximumVerificationErrorCharacters);
+    if (error.isEmpty()) {
+      error = QStringLiteral("Windows rejected the downloaded update.");
+    }
+    object.insert(QStringLiteral("error"), error);
+  }
+  return QJsonDocument(object).toJson(QJsonDocument::Compact);
+}
+
+std::optional<ParsedVerificationResponse>
+parseVerificationResponse(const QByteArray &response) {
+  if (response.isEmpty() ||
+      response.size() > kMaximumWindowsVerificationResponseBytes ||
+      response.trimmed() != response || response.contains('\r') ||
+      response.contains('\n')) {
+    return std::nullopt;
+  }
+  QJsonParseError parseError;
+  const QJsonDocument document = QJsonDocument::fromJson(response, &parseError);
+  if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+    return std::nullopt;
+  }
+  const QJsonObject object = document.object();
+  const QJsonValue schema = object.value(QStringLiteral("schemaVersion"));
+  const QJsonValue okValue = object.value(QStringLiteral("ok"));
+  if (!schema.isDouble() || schema.toDouble() != 1.0 || !okValue.isBool()) {
+    return std::nullopt;
+  }
+  const bool ok = okValue.toBool();
+  if (ok) {
+    if (!hasExactKeys(object,
+                      {QStringLiteral("schemaVersion"), QStringLiteral("ok")})) {
+      return std::nullopt;
+    }
+    return ParsedVerificationResponse{true, {}};
+  }
+  if (!hasExactKeys(object,
+                    {QStringLiteral("schemaVersion"), QStringLiteral("ok"),
+                     QStringLiteral("error")}) ||
+      !object.value(QStringLiteral("error")).isString()) {
+    return std::nullopt;
+  }
+  const QString responseError =
+      object.value(QStringLiteral("error")).toString();
+  if (responseError.isEmpty() ||
+      responseError.size() > kMaximumVerificationErrorCharacters ||
+      responseError.trimmed() != responseError ||
+      responseError.contains(QChar(u'\0'))) {
+    return std::nullopt;
+  }
+  return ParsedVerificationResponse{false, responseError};
+}
+
+} // namespace
+
+int runWindowsVerificationHelper(const QStringList &arguments,
+                                 QByteArray *response) {
+  const auto rejectRequest = [response](const QString &message) {
+    if (response != nullptr) {
+      *response = encodeVerificationResponse(false, message);
+    }
+    return kInvalidVerificationRequestExitCode;
+  };
+  if (response == nullptr) {
+    return kInvalidVerificationRequestExitCode;
+  }
+  response->clear();
+  if (arguments.size() != 4) {
+    return rejectRequest(
+        QStringLiteral("The private update verification request is invalid."));
+  }
+
+  const QString installerPath = arguments[0];
+  const QString sizeText = arguments[1];
+  const QString hashText = arguments[2];
+  const QString versionText = arguments[3];
+  const QFileInfo installerInfo(installerPath);
+  if (installerPath.isEmpty() || installerPath.size() > 32'767 ||
+      installerPath.contains(QChar(u'\0')) || !installerInfo.isAbsolute()) {
+    return rejectRequest(
+        QStringLiteral("The private update verification path is invalid."));
+  }
+  if (sizeText.isEmpty() || sizeText.size() > 19 ||
+      !isAsciiNumeric(sizeText) ||
+      (sizeText.size() > 1 && sizeText.front() == QLatin1Char('0'))) {
+    return rejectRequest(
+        QStringLiteral("The private update verification size is invalid."));
+  }
+  bool sizeConverted = false;
+  const qint64 expectedSize = sizeText.toLongLong(&sizeConverted, 10);
+  if (!sizeConverted || expectedSize < 1 ||
+      expectedSize > kMaximumInstallerBytes) {
+    return rejectRequest(
+        QStringLiteral("The private update verification size is invalid."));
+  }
+  static const QRegularExpression canonicalHash(
+      QStringLiteral(R"(^[0-9a-f]{64}$)"));
+  if (!canonicalHash.match(hashText).hasMatch()) {
+    return rejectRequest(
+        QStringLiteral("The private update verification hash is invalid."));
+  }
+  if (!parseSemanticVersion(versionText)) {
+    return rejectRequest(
+        QStringLiteral("The private update verification version is invalid."));
+  }
+  if (!installerInfo.exists() || !installerInfo.isFile() ||
+      installerInfo.isSymLink()) {
+    *response = encodeVerificationResponse(
+        false,
+        QStringLiteral("The downloaded update changed before verification."));
+    return kVerificationRejectedExitCode;
+  }
+
+  const NativeVerificationResult native = verifyAuthenticodeAndSigner(
+      installerInfo.absoluteFilePath(), expectedSize, hashText.toLatin1(),
+      QString::fromLatin1(LOCALFLOW_WINDOWS_SIGNER_SHA256), versionText);
+  *response = encodeVerificationResponse(native.ok, native.error);
+  return native.ok ? 0 : kVerificationRejectedExitCode;
+}
+
+bool acceptWindowsVerificationHelperResult(const int exitCode,
+                                           const bool normalExit,
+                                           const QByteArray &response,
+                                           QString *error) {
+  if (error != nullptr) {
+    error->clear();
+  }
+  if (!normalExit) {
+    assignError(
+        error,
+        QStringLiteral("The Windows update verifier stopped unexpectedly."));
+    return false;
+  }
+  const auto parsed = parseVerificationResponse(response);
+  const bool coherentExit = parsed &&
+      ((parsed->ok && exitCode == 0) ||
+       (!parsed->ok &&
+        (exitCode == kVerificationRejectedExitCode ||
+         exitCode == kInvalidVerificationRequestExitCode)));
+  if (!coherentExit) {
+    assignError(
+        error,
+        QStringLiteral("The Windows update verifier returned an invalid result."));
+    return false;
+  }
+  if (!parsed->ok) {
+    assignError(error, parsed->error);
+    return false;
+  }
+  return true;
+}
+
+} // namespace detail
+#endif
+
 #ifdef Q_OS_LINUX
 namespace detail {
 
@@ -861,11 +1034,6 @@ bool commitLinuxStagedAppImage(const QString &stagedPath,
 } // namespace localflow::updates
 
 struct UpdateManager::Implementation {
-  struct VerificationResult {
-    bool ok = false;
-    QString error;
-  };
-
   explicit Implementation(UpdateManager *ownerValue)
       : owner(ownerValue),
         currentVersionText(QString::fromUtf8(LOCALFLOW_VERSION)) {
@@ -880,6 +1048,18 @@ struct UpdateManager::Implementation {
                : QStringLiteral(
                      "The update download timed out. Please try again."));
     });
+#ifdef Q_OS_WIN
+    windowsVerificationTimeout.setSingleShot(true);
+    QObject::connect(&windowsVerificationTimeout, &QTimer::timeout, owner,
+                     [this] {
+                       stopWindowsVerificationProcess(false);
+                       fail(QStringLiteral(
+                           "Windows did not finish checking the update's "
+                           "signature within two minutes. Verification was "
+                           "canceled; try again when your network connection "
+                           "is stable."));
+                     });
+#endif
 #ifdef Q_OS_LINUX
     linuxProcessTimeout.setSingleShot(true);
     QObject::connect(&linuxProcessTimeout, &QTimer::timeout, owner, [this] {
@@ -912,9 +1092,9 @@ struct UpdateManager::Implementation {
       downloadReply->abort();
       downloadReply = nullptr;
     }
-    if (verificationWatcher != nullptr && verificationWatcher->isRunning()) {
-      verificationWatcher->waitForFinished();
-    }
+#ifdef Q_OS_WIN
+    stopWindowsVerificationProcess(true);
+#endif
 #ifdef Q_OS_LINUX
     linuxProcessTimeout.stop();
     if (linuxUpdateProcess != nullptr) {
@@ -941,6 +1121,9 @@ struct UpdateManager::Implementation {
 
   void fail(QString detail) {
     operationTimeout.stop();
+#ifdef Q_OS_WIN
+    stopWindowsVerificationProcess(false);
+#endif
     if (manifestReply != nullptr) {
       manifestReply->disconnect(owner);
       manifestReply->abort();
@@ -984,6 +1167,70 @@ struct UpdateManager::Implementation {
     downloadedBytes = 0;
     downloadFailureReason.clear();
   }
+
+#ifdef Q_OS_WIN
+  bool disposeWindowsVerificationProcess(QProcess *process,
+                                         const bool deleteImmediately) {
+    if (process == nullptr) {
+      return true;
+    }
+    QObject::disconnect(process, nullptr, owner, nullptr);
+    if (process->state() != QProcess::NotRunning) {
+      process->kill();
+      (void)process->waitForFinished(1000);
+    }
+    if (process->state() == QProcess::NotRunning) {
+      if (deleteImmediately) {
+        delete process;
+      } else {
+        process->deleteLater();
+      }
+      return true;
+    }
+
+    // TerminateProcess normally completes immediately. If a system component
+    // delays teardown anyway, do not transfer that delay back to the GUI or
+    // application shutdown. The OS reclaims the detached handles on exit; if
+    // the event loop remains alive, the QProcess deletes itself when done.
+    process->setParent(nullptr);
+    QObject::connect(
+        process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+        process, [process] { process->deleteLater(); });
+    return false;
+  }
+
+  void stopWindowsVerificationProcess(const bool deleteImmediately) {
+    windowsVerificationTimeout.stop();
+    QProcess *process = windowsVerificationProcess;
+    windowsVerificationProcess = nullptr;
+    const bool stopped =
+        disposeWindowsVerificationProcess(process, deleteImmediately);
+    if (!stopped && temporaryDirectory != nullptr) {
+      // A helper still holding the installer must not race QTemporaryDir's
+      // recursive deletion. A later LocalFlow launch removes this stale folder.
+      temporaryDirectory->setAutoRemove(false);
+    }
+    windowsVerificationOutput.clear();
+    windowsVerificationOutputOverflow = false;
+  }
+
+  void appendWindowsVerificationOutput(QProcess *process) {
+    if (windowsVerificationProcess != process) {
+      return;
+    }
+    const QByteArray chunk = process->readAllStandardOutput();
+    const qsizetype maximum =
+        localflow::updates::detail::kMaximumWindowsVerificationResponseBytes;
+    const qsizetype remaining =
+        std::max<qsizetype>(0, maximum + 1 - windowsVerificationOutput.size());
+    windowsVerificationOutput.append(chunk.left(remaining));
+    if (chunk.size() > remaining ||
+        windowsVerificationOutput.size() > maximum) {
+      windowsVerificationOutputOverflow = true;
+      process->kill();
+    }
+  }
+#endif
 
   void checkForWindowsUpdate() {
 #ifdef Q_OS_WIN
@@ -1451,27 +1698,77 @@ struct UpdateManager::Implementation {
 
   void verifyWindowsInstallerAsync() {
 #ifdef Q_OS_WIN
+    if (!manifest || windowsVerificationProcess != nullptr) {
+      fail(QStringLiteral(
+          "The downloaded update could not be prepared for verification."));
+      return;
+    }
     setState(
         UpdateManager::State::Verifying,
         QStringLiteral("Verifying the update…"),
         QStringLiteral(
             "Windows is checking the digital signature and trusted signer."));
-    const QString installerPath = downloadedInstallerPath;
-    const qint64 installerSize = manifest->sizeBytes;
-    const QByteArray installerSha256 = manifest->sha256;
-    const QString installerVersion = manifest->version;
-    const QString signerFingerprint =
-        QString::fromLatin1(LOCALFLOW_WINDOWS_SIGNER_SHA256);
-    verificationWatcher = new QFutureWatcher<VerificationResult>(owner);
+    windowsVerificationOutput.clear();
+    windowsVerificationOutputOverflow = false;
+    auto *process = new QProcess(owner);
+    windowsVerificationProcess = process;
+    process->setProgram(QCoreApplication::applicationFilePath());
+    process->setArguments(
+        {QString::fromLatin1(
+             localflow::updates::detail::kWindowsVerificationHelperMode),
+         downloadedInstallerPath, QString::number(manifest->sizeBytes),
+         QString::fromLatin1(manifest->sha256), manifest->version});
+    process->setProcessChannelMode(QProcess::SeparateChannels);
+    process->setStandardErrorFile(QProcess::nullDevice());
+    process->setCreateProcessArgumentsModifier(
+        [](QProcess::CreateProcessArguments *arguments) {
+          arguments->flags |= CREATE_NO_WINDOW;
+        });
+    QObject::connect(process, &QProcess::readyReadStandardOutput, owner,
+                     [this, process] {
+                       appendWindowsVerificationOutput(process);
+                     });
     QObject::connect(
-        verificationWatcher, &QFutureWatcher<VerificationResult>::finished,
-        owner, [this] {
-          QFutureWatcher<VerificationResult> *watcher = verificationWatcher;
-          verificationWatcher = nullptr;
-          const VerificationResult result = watcher->result();
-          watcher->deleteLater();
-          if (!result.ok) {
-            fail(result.error);
+        process, &QProcess::errorOccurred, owner,
+        [this, process](const QProcess::ProcessError processError) {
+          if (windowsVerificationProcess != process ||
+              processError != QProcess::FailedToStart) {
+            return;
+          }
+          windowsVerificationProcess = nullptr;
+          windowsVerificationTimeout.stop();
+          process->deleteLater();
+          windowsVerificationOutput.clear();
+          windowsVerificationOutputOverflow = false;
+          fail(QStringLiteral(
+              "Windows could not start the isolated update verifier."));
+        });
+    QObject::connect(
+        process, qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+        owner,
+        [this, process](const int exitCode,
+                        const QProcess::ExitStatus exitStatus) {
+          if (windowsVerificationProcess != process) {
+            return;
+          }
+          appendWindowsVerificationOutput(process);
+          windowsVerificationProcess = nullptr;
+          windowsVerificationTimeout.stop();
+          process->deleteLater();
+          const QByteArray response = std::move(windowsVerificationOutput);
+          windowsVerificationOutput.clear();
+          const bool overflow = windowsVerificationOutputOverflow;
+          windowsVerificationOutputOverflow = false;
+          QString verificationError;
+          if (overflow ||
+              !localflow::updates::detail::
+                  acceptWindowsVerificationHelperResult(
+                      exitCode, exitStatus == QProcess::NormalExit, response,
+                      &verificationError)) {
+            fail(overflow
+                     ? QStringLiteral(
+                           "The Windows update verifier returned too much data.")
+                     : verificationError);
             return;
           }
           progress = 1.0;
@@ -1481,14 +1778,10 @@ struct UpdateManager::Implementation {
                    QStringLiteral(
                        "Choose Install Update to open the signed installer."));
         });
-    verificationWatcher->setFuture(
-        QtConcurrent::run([installerPath, installerSize, installerSha256,
-                           installerVersion, signerFingerprint] {
-          const NativeVerificationResult native = verifyAuthenticodeAndSigner(
-              installerPath, installerSize, installerSha256, signerFingerprint,
-              installerVersion);
-          return VerificationResult{native.ok, native.error};
-        }));
+    process->start(QIODevice::ReadOnly);
+    if (windowsVerificationProcess == process) {
+      windowsVerificationTimeout.start(kWindowsVerificationTimeoutMs);
+    }
 #endif
   }
 
@@ -1629,7 +1922,6 @@ struct UpdateManager::Implementation {
   QTimer operationTimeout;
   QNetworkReply *manifestReply = nullptr;
   QNetworkReply *downloadReply = nullptr;
-  QFutureWatcher<VerificationResult> *verificationWatcher = nullptr;
   QFile downloadFile;
   std::unique_ptr<QTemporaryDir> temporaryDirectory;
   std::unique_ptr<QCryptographicHash> downloadHash;
@@ -1658,6 +1950,10 @@ struct UpdateManager::Implementation {
 #endif
 #ifdef Q_OS_WIN
   HANDLE trustedInstallerHandle = INVALID_HANDLE_VALUE;
+  QProcess *windowsVerificationProcess = nullptr;
+  QTimer windowsVerificationTimeout;
+  QByteArray windowsVerificationOutput;
+  bool windowsVerificationOutputOverflow = false;
 #endif
 };
 

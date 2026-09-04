@@ -442,6 +442,108 @@ jobs:
             throw "Installer ProductVersion '$productVersion' does not exactly match $($env:APP_VERSION)."
           }
 
+      - name: Exercise isolated update verifier
+        if: env.IS_RELEASE == 'true'
+        shell: pwsh
+        run: |
+          function Invoke-UpdateVerifier {
+            param(
+              [Parameter(Mandatory)][string] $Application,
+              [Parameter(Mandatory)][string] $Installer,
+              [Parameter(Mandatory)][long] $Size,
+              [Parameter(Mandatory)][string] $Sha256,
+              [Parameter(Mandatory)][string] $Version
+            )
+            $startInfo = [Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $Application
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            foreach ($argument in @(
+              "--localflow-private-verify-windows-update-v1",
+              $Installer, $Size.ToString([Globalization.CultureInfo]::InvariantCulture),
+              $Sha256, $Version
+            )) {
+              $startInfo.ArgumentList.Add($argument)
+            }
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo = $startInfo
+            if (-not $process.Start()) { throw "Could not start the update verifier." }
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(130000)) {
+              try { $process.Kill($true) } catch {}
+              throw "The update verifier exceeded its 130-second CI limit."
+            }
+            $result = [PSCustomObject]@{
+              ExitCode = $process.ExitCode
+              Stdout = $stdoutTask.Result
+              Stderr = $stderrTask.Result
+            }
+            $process.Dispose()
+            return $result
+          }
+
+          function ConvertFrom-VerifierResult {
+            param([Parameter(Mandatory)] $Result)
+            if ([Text.Encoding]::UTF8.GetByteCount($Result.Stdout) -gt 8192 `
+                -or $Result.Stdout.Contains("`r") -or $Result.Stdout.Contains("`n")) {
+              throw "The update verifier returned a noncanonical or oversized response."
+            }
+            try {
+              return $Result.Stdout | ConvertFrom-Json -ErrorAction Stop
+            } catch {
+              throw "The update verifier returned invalid JSON: $($Result.Stdout)"
+            }
+          }
+
+          $app = Join-Path $env:STAGE_DIR "bin\LocalFlow.exe"
+          $installer = Join-Path $env:PACKAGE_DIR "$env:INSTALLER_BASENAME.exe"
+          $installerItem = Get-Item -LiteralPath $installer
+          $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          $accepted = Invoke-UpdateVerifier `
+            -Application $app -Installer $installer -Size $installerItem.Length `
+            -Sha256 $installerHash -Version $env:APP_VERSION
+          $acceptedPayload = ConvertFrom-VerifierResult $accepted
+          $acceptedFields = @($acceptedPayload.PSObject.Properties.Name | Sort-Object)
+          if ($accepted.ExitCode -ne 0 -or $acceptedFields.Count -ne 2 `
+              -or ($acceptedFields -join ',') -cne 'ok,schemaVersion' `
+              -or $acceptedPayload.schemaVersion -ne 1 -or $acceptedPayload.ok -ne $true) {
+            throw "The signed release installer failed the LocalFlow update verifier: $($accepted.Stdout) $($accepted.Stderr)"
+          }
+
+          $tampered = Join-Path $env:RUNNER_TEMP "LocalFlow-update-verifier-tampered.exe"
+          Copy-Item -LiteralPath $installer -Destination $tampered -Force
+          $stream = [IO.File]::Open(
+            $tampered, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite,
+            [IO.FileShare]::Read)
+          try {
+            $tamperOffset = [Math]::Min([long]4096, $stream.Length - 1)
+            $stream.Position = $tamperOffset
+            $original = $stream.ReadByte()
+            if ($original -lt 0) { throw "The installer was unexpectedly empty." }
+            $stream.Position = $tamperOffset
+            $stream.WriteByte($original -bxor 1)
+            $stream.Flush($true)
+          } finally {
+            $stream.Dispose()
+          }
+          $tamperedItem = Get-Item -LiteralPath $tampered
+          $tamperedHash = (Get-FileHash -LiteralPath $tampered -Algorithm SHA256).Hash.ToLowerInvariant()
+          $rejected = Invoke-UpdateVerifier `
+            -Application $app -Installer $tampered -Size $tamperedItem.Length `
+            -Sha256 $tamperedHash -Version $env:APP_VERSION
+          $rejectedPayload = ConvertFrom-VerifierResult $rejected
+          $rejectedFields = @($rejectedPayload.PSObject.Properties.Name | Sort-Object)
+          if ($rejected.ExitCode -eq 0 -or $rejectedFields.Count -ne 3 `
+              -or ($rejectedFields -join ',') -cne 'error,ok,schemaVersion' `
+              -or $rejectedPayload.schemaVersion -ne 1 -or $rejectedPayload.ok -ne $false `
+              -or [string]::IsNullOrWhiteSpace($rejectedPayload.error)) {
+            throw "A same-size tampered installer was not rejected coherently: $($rejected.Stdout)"
+          }
+          Remove-Item -LiteralPath $tampered -Force
+
       - name: Smoke-test install and uninstall
         shell: pwsh
         run: |

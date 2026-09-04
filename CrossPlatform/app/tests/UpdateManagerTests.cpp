@@ -1,6 +1,7 @@
 #include "../src/UpdateManager.hpp"
 
 #include <QDebug>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -141,6 +142,98 @@ void testManifestContract() {
          "rejects a fractional installer size");
 }
 
+#ifdef Q_OS_WIN
+void testWindowsVerificationHelperProtocol() {
+  using localflow::updates::detail::acceptWindowsVerificationHelperResult;
+  using localflow::updates::detail::runWindowsVerificationHelper;
+
+  QString error;
+  const QByteArray success =
+      R"json({"ok":true,"schemaVersion":1})json";
+  expect(acceptWindowsVerificationHelperResult(0, true, success, &error),
+         "accepts an exact successful verifier response");
+  expect(error.isEmpty(), "successful verifier response has no error");
+
+  const QByteArray rejected =
+      R"json({"error":"Windows rejected the signature.","ok":false,"schemaVersion":1})json";
+  expect(!acceptWindowsVerificationHelperResult(2, true, rejected, &error),
+         "accepts a coherent verifier rejection as failure");
+  expect(error == QStringLiteral("Windows rejected the signature."),
+         "preserves the bounded verifier rejection detail");
+  expect(!acceptWindowsVerificationHelperResult(2, true, success, &error),
+         "rejects success JSON with a failure exit code");
+  expect(!acceptWindowsVerificationHelperResult(0, true, rejected, &error),
+         "rejects failure JSON with a success exit code");
+  expect(!acceptWindowsVerificationHelperResult(0, false, success, &error),
+         "rejects a crashed verifier even if it wrote success JSON");
+  expect(!acceptWindowsVerificationHelperResult(
+             0, true,
+             R"json({"extra":1,"ok":true,"schemaVersion":1})json", &error),
+         "rejects extra verifier response fields");
+  expect(!acceptWindowsVerificationHelperResult(
+             0, true, QByteArrayLiteral("{not-json}"), &error),
+         "rejects malformed verifier JSON");
+  expect(!acceptWindowsVerificationHelperResult(
+             0, true,
+             R"json({"ok":"true","schemaVersion":1})json", &error),
+         "rejects a verifier response with the wrong field types");
+  expect(!acceptWindowsVerificationHelperResult(
+             7, true, rejected, &error),
+         "rejects an unrecognized verifier exit code");
+  expect(!acceptWindowsVerificationHelperResult(
+             0, true, QByteArrayLiteral(" {\"ok\":true,\"schemaVersion\":1}"),
+             &error),
+         "rejects noncanonical surrounding whitespace");
+  expect(!acceptWindowsVerificationHelperResult(
+             0, true,
+             QByteArray(
+                 localflow::updates::detail::
+                         kMaximumWindowsVerificationResponseBytes +
+                     1,
+                 'x'),
+             &error),
+         "rejects an oversized verifier response");
+
+  QByteArray response;
+  const int invalidRequest = runWindowsVerificationHelper({}, &response);
+  expect(invalidRequest != 0, "rejects a verifier request with missing fields");
+  expect(!acceptWindowsVerificationHelperResult(
+             invalidRequest, true, response, &error),
+         "returns a coherent bounded response for an invalid request");
+
+  QTemporaryDir root;
+  expect(root.isValid(), "creates Windows verifier test directory");
+  const QString unsignedPath = root.filePath(
+      QStringLiteral("unsigned update fixture.exe"));
+  QFile unsignedInstaller(unsignedPath);
+  expect(unsignedInstaller.open(QIODevice::WriteOnly),
+         "creates unsigned Windows installer fixture");
+  const QByteArray unsignedBytes = QByteArrayLiteral("not-authenticode-signed");
+  expect(unsignedInstaller.write(unsignedBytes) == unsignedBytes.size(),
+         "writes unsigned Windows installer fixture");
+  unsignedInstaller.close();
+  const QString unsignedHash = QString::fromLatin1(
+      QCryptographicHash::hash(unsignedBytes, QCryptographicHash::Sha256)
+          .toHex());
+  const int unsignedStatus = runWindowsVerificationHelper(
+      {unsignedPath, QString::number(unsignedBytes.size()), unsignedHash,
+       QStringLiteral("1.2.3")},
+      &response);
+  expect(unsignedStatus != 0, "rejects an unsigned installer fixture");
+  expect(!acceptWindowsVerificationHelperResult(
+             unsignedStatus, true, response, &error),
+         "reports an unsigned installer as a coherent verification failure");
+  expect(!error.isEmpty(), "explains unsigned installer rejection");
+
+  const int uppercaseHashStatus = runWindowsVerificationHelper(
+      {unsignedPath, QString::number(unsignedBytes.size()),
+       unsignedHash.toUpper(), QStringLiteral("1.2.3")},
+      &response);
+  expect(uppercaseHashStatus != 0,
+         "rejects a noncanonical uppercase helper hash");
+}
+#endif
+
 #ifdef Q_OS_LINUX
 QByteArray readFile(const QString& path) {
   QFile input(path);
@@ -209,6 +302,9 @@ int main() {
   testSemanticVersions();
   testFingerprintNormalization();
   testManifestContract();
+#ifdef Q_OS_WIN
+  testWindowsVerificationHelperProtocol();
+#endif
 #ifdef Q_OS_LINUX
   testLinuxStagedCommit();
 #endif
