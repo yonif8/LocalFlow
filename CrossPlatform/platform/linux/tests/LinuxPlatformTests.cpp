@@ -1,9 +1,15 @@
 #include "localflow/linux/LinuxPlatform.hpp"
 
+#include "PortalSupport.hpp"
+
+#include <chrono>
+#include <condition_variable>
 #include <cstdlib>
+#include <future>
 #include <iostream>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -71,7 +77,7 @@ CapabilityReport detectWayland(bool portals) {
     if (portals) {
         host.portalInterfaces = {
             "org.freedesktop.portal.GlobalShortcuts",
-            "org.freedesktop.portal.ScreenCast",
+            "org.freedesktop.portal.Screenshot",
             "org.freedesktop.portal.RemoteDesktop",
         };
     }
@@ -152,6 +158,71 @@ void testWaylandMouseShortcutRejected() {
     EXPECT_TRUE(!status.remediation.empty());
 }
 
+class BlockingShortcutPortal final : public GlobalShortcutsPortal {
+public:
+    Status bind(const ShortcutSpec&, ShortcutCallback) override {
+        std::unique_lock<std::mutex> lock(mutex);
+        entered = true;
+        changed.notify_all();
+        changed.wait(lock, [&] { return closed; });
+        return Status::failure(ErrorCode::cancelled, "cancelled");
+    }
+    void close() noexcept override {
+        std::lock_guard<std::mutex> lock(mutex);
+        ++closes;
+        closed = true;
+        changed.notify_all();
+    }
+    void waitUntilEntered() {
+        std::unique_lock<std::mutex> lock(mutex);
+        changed.wait(lock, [&] { return entered; });
+    }
+
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool entered{false};
+    bool closed{false};
+    int closes{0};
+};
+
+void testPortalShortcutSetupCanBeCancelled() {
+    auto portal = std::make_shared<BlockingShortcutPortal>();
+    auto backend = makeGlobalShortcutBackend(detectWayland(true), portal);
+    auto starting = std::async(std::launch::async, [&] {
+        return backend->start(
+            {"push-to-talk", ShortcutKind::key, "F8", {}, 0},
+            [](const ShortcutEvent&) {});
+    });
+    portal->waitUntilEntered();
+    backend->stop();
+    const auto status = starting.get();
+    EXPECT_EQ(status.code, ErrorCode::cancelled);
+    EXPECT_EQ(portal->closes, 1);
+}
+
+void testPortalResponseDiagnostics() {
+    EXPECT_TRUE(detail::portalResponseStatus(0, "screenshot").ok());
+    EXPECT_EQ(
+        detail::portalResponseStatus(1, "screenshot").code,
+        ErrorCode::cancelled);
+    const auto denied = detail::portalResponseStatus(
+        2, "keyboard control", "approve it");
+    EXPECT_EQ(denied.code, ErrorCode::permission_denied);
+    EXPECT_EQ(denied.remediation, std::string("approve it"));
+    EXPECT_EQ(
+        detail::portalResponseStatus(99, "screenshot").code,
+        ErrorCode::protocol_error);
+}
+
+void testPortalShortcutTriggerUsesXdgSyntax() {
+    ShortcutSpec shortcut;
+    shortcut.trigger = "F8";
+    shortcut.modifiers = {Modifier::control, Modifier::shift};
+    EXPECT_EQ(
+        detail::portalShortcutTrigger(shortcut),
+        std::string("CTRL+SHIFT+F8"));
+}
+
 class FakeAccessibility final : public AccessibilityTextInserter {
 public:
     Status response;
@@ -216,13 +287,11 @@ void testInsertionRestoresClipboardAfterPasteFailure() {
     EXPECT_EQ(clipboardRaw->restores, 1);
 }
 
-class FakeScreenPortal final : public ScreenCastPortal {
+class FakeScreenPortal final : public ScreenshotPortal {
 public:
-    int sessions{0};
     int frames{0};
     int closes{0};
-    Status ensureSession() override { ++sessions; return Status::success(); }
-    Result<ScreenFrame> latestFrame() override {
+    Result<ScreenFrame> captureFrame() override {
         ++frames;
         ScreenFrame frame;
         frame.width = 1;
@@ -234,14 +303,47 @@ public:
     void close() noexcept override { ++closes; }
 };
 
-void testPortalScreenSessionIsReused() {
+void testPortalScreenshotCapturesEachContextFrame() {
     auto portal = std::make_shared<FakeScreenPortal>();
     {
         auto context = makeScreenContextBackend(SessionType::wayland, portal);
         EXPECT_TRUE(context->captureContextFrame().ok());
         EXPECT_TRUE(context->captureContextFrame().ok());
-        EXPECT_EQ(portal->sessions, 1);
         EXPECT_EQ(portal->frames, 2);
+    }
+    EXPECT_EQ(portal->closes, 1);
+}
+
+class FakeRemoteDesktopPortal final : public RemoteDesktopPortal {
+public:
+    Status ensureResult = Status::success();
+    Status sendResult = Status::success();
+    int sessions{0};
+    int closes{0};
+    std::vector<std::pair<std::uint32_t, bool>> keys;
+
+    Status ensureKeyboardSession() override {
+        ++sessions;
+        return ensureResult;
+    }
+    Status sendKeysym(std::uint32_t keysym, bool pressed) override {
+        keys.emplace_back(keysym, pressed);
+        return sendResult;
+    }
+    void close() noexcept override { ++closes; }
+};
+
+void testPortalPasteUsesBalancedControlV() {
+    auto portal = std::make_shared<FakeRemoteDesktopPortal>();
+    {
+        auto paste = makePasteInjector(detectWayland(true), portal);
+        EXPECT_TRUE(paste->paste().ok());
+        EXPECT_EQ(portal->sessions, 1);
+        EXPECT_EQ(portal->keys.size(), std::size_t{4});
+        EXPECT_EQ(portal->keys[0], std::make_pair(std::uint32_t{0xffe3}, true));
+        EXPECT_EQ(portal->keys[1], std::make_pair(std::uint32_t{0x0076}, true));
+        EXPECT_EQ(portal->keys[2], std::make_pair(std::uint32_t{0x0076}, false));
+        EXPECT_EQ(portal->keys[3], std::make_pair(std::uint32_t{0xffe3}, false));
     }
     EXPECT_EQ(portal->closes, 1);
 }
@@ -254,9 +356,13 @@ int main() {
     testX11Capabilities();
     testPortalShortcutMapsBothEdges();
     testWaylandMouseShortcutRejected();
+    testPortalShortcutSetupCanBeCancelled();
+    testPortalResponseDiagnostics();
+    testPortalShortcutTriggerUsesXdgSyntax();
     testInsertionPrefersAccessibility();
     testInsertionRestoresClipboardAfterPasteFailure();
-    testPortalScreenSessionIsReused();
+    testPortalScreenshotCapturesEachContextFrame();
+    testPortalPasteUsesBalancedControlV();
 
     if (failures == 0) {
         std::cout << "All Linux platform tests passed.\n";

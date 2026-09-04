@@ -21,5 +21,11 @@ namespace localflow::platform::linux::detail {
     std::string backend);
 [[nodiscard]] std::unique_ptr<AudioDucker> makeProcessAudioDucker(
     std::string backend);
+[[nodiscard]] std::shared_ptr<GlobalShortcutsPortal>
+makeQDbusGlobalShortcutsPortal();
+[[nodiscard]] std::shared_ptr<ScreenshotPortal>
+makeQDbusScreenshotPortal();
+[[nodiscard]] std::shared_ptr<RemoteDesktopPortal>
+makeQDbusRemoteDesktopPortal();
 
 }  // namespace localflow::platform::linux::detail

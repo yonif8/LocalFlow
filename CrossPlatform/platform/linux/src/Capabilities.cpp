@@ -7,6 +7,18 @@
 #include <cstdlib>
 #include <dlfcn.h>
 
+#ifndef LOCALFLOW_LINUX_WITH_QT_PORTALS
+#define LOCALFLOW_LINUX_WITH_QT_PORTALS 0
+#endif
+
+#if LOCALFLOW_LINUX_WITH_QT_PORTALS
+#include <QDBusConnection>
+#include <QDBusConnectionInterface>
+#include <QDBusMessage>
+#include <QDBusReply>
+#include <QString>
+#endif
+
 namespace localflow::platform::linux {
 namespace {
 
@@ -88,6 +100,13 @@ bool SystemHostProbe::sharedLibraryAvailable(
 }
 
 bool SystemHostProbe::sessionBusNameAvailable(const std::string& busName) const {
+#if LOCALFLOW_LINUX_WITH_QT_PORTALS
+    const auto bus = QDBusConnection::sessionBus();
+    if (!bus.isConnected() || bus.interface() == nullptr) return false;
+    const QDBusReply<bool> registered = bus.interface()->isServiceRegistered(
+        QString::fromStdString(busName));
+    return registered.isValid() && registered.value();
+#else
     if (!executableAvailable("gdbus")) {
         return false;
     }
@@ -105,6 +124,7 @@ bool SystemHostProbe::sessionBusNameAvailable(const std::string& busName) const 
     });
     return response.launched && !response.timedOut && response.exitCode == 0 &&
            response.standardOutput.find("true") != std::string::npos;
+#endif
 }
 
 bool SystemHostProbe::portalInterfaceAvailable(
@@ -112,6 +132,18 @@ bool SystemHostProbe::portalInterfaceAvailable(
     if (!sessionBusNameAvailable("org.freedesktop.portal.Desktop")) {
         return false;
     }
+#if LOCALFLOW_LINUX_WITH_QT_PORTALS
+    auto message = QDBusMessage::createMethodCall(
+        QStringLiteral("org.freedesktop.portal.Desktop"),
+        QStringLiteral("/org/freedesktop/portal/desktop"),
+        QStringLiteral("org.freedesktop.DBus.Properties"),
+        QStringLiteral("Get"));
+    message << QString::fromStdString(interfaceName) << QStringLiteral("version");
+    const auto response = QDBusConnection::sessionBus().call(
+        message, QDBus::Block, 2000);
+    return response.type() == QDBusMessage::ReplyMessage &&
+           response.arguments().size() == 1;
+#else
     const auto response = detail::runCommand({
         "gdbus",
         "call",
@@ -126,6 +158,7 @@ bool SystemHostProbe::portalInterfaceAvailable(
         "version",
     });
     return response.launched && !response.timedOut && response.exitCode == 0;
+#endif
 }
 
 CapabilityReport CapabilityDetector::detect(const HostProbe& host) const {
@@ -149,8 +182,8 @@ CapabilityReport CapabilityDetector::detect(const HostProbe& host) const {
                        host.sessionBusNameAvailable("org.a11y.Bus");
     const bool globalShortcutsPortal = host.portalInterfaceAvailable(
         "org.freedesktop.portal.GlobalShortcuts");
-    const bool screenCastPortal = host.portalInterfaceAvailable(
-        "org.freedesktop.portal.ScreenCast");
+    const bool screenshotPortal = host.portalInterfaceAvailable(
+        "org.freedesktop.portal.Screenshot");
     const bool remoteDesktopPortal = host.portalInterfaceAvailable(
         "org.freedesktop.portal.RemoteDesktop");
     const bool pipeWire = host.sharedLibraryAvailable({"libpipewire-0.3.so.0"}) ||
@@ -186,19 +219,19 @@ CapabilityReport CapabilityDetector::detect(const HostProbe& host) const {
                 : "Wayland intentionally has no universal foreground-window API.",
             atSpi ? std::string{} : "Enable the desktop accessibility bus for metadata, or rely on the selected capture stream."));
 
-        report.capabilities.push_back(screenCastPortal && pipeWire
+        report.capabilities.push_back(screenshotPortal
             ? makeCapability(
                   Feature::screen_capture,
                   Availability::permission_required,
-                  "xdg-desktop-portal ScreenCast + PipeWire",
-                  "The user selects a window or monitor; the restore token can be reused where supported.",
-                  "Approve a capture source the first time Screen Terminology is enabled.")
+                  "xdg-desktop-portal Screenshot",
+                  "A compositor-mediated screenshot supplies pixels without leaving a screen-sharing session active.",
+                  "Approve screenshot access when the desktop asks.")
             : makeCapability(
                   Feature::screen_capture,
                   Availability::unavailable,
                   "Wayland",
-                  "ScreenCast portal or PipeWire support is missing.",
-                  "Install xdg-desktop-portal and PipeWire for your desktop."));
+                  "The desktop does not expose the Screenshot portal.",
+                  "Install xdg-desktop-portal and the portal backend for your desktop."));
     } else if (report.session.type == SessionType::x11) {
         report.capabilities.push_back(x11
             ? makeCapability(

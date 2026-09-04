@@ -36,7 +36,7 @@ public:
             return Status::failure(
                 ErrorCode::not_configured,
                 "The GlobalShortcuts portal transport was not configured.",
-                "Attach the Qt/QDBus or GDBus portal transport before enabling push-to-talk.");
+                "Install Qt DBus support and xdg-desktop-portal before enabling push-to-talk.");
         }
         if (shortcut.kind == ShortcutKind::mouse_button) {
             return Status::failure(
@@ -50,29 +50,57 @@ public:
                 "A shortcut id, trigger, and callback are required.");
         }
 
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (running_) {
-            return Status::failure(
-                ErrorCode::busy,
-                "A global shortcut session is already active.");
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (state_ != State::idle) {
+                return Status::failure(
+                    ErrorCode::busy,
+                    "A global shortcut session is already active or changing state.");
+            }
+            state_ = State::starting;
         }
         const auto status = portal_->bind(shortcut, std::move(callback));
-        running_ = status.ok();
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (state_ != State::starting) {
+            if (state_ == State::stopping) state_ = State::idle;
+            return Status::failure(
+                ErrorCode::cancelled,
+                "Global shortcut setup was cancelled while waiting for desktop consent.");
+        }
+        state_ = status.ok() ? State::running : State::idle;
         return status;
     }
 
     void stop() noexcept override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (portal_ && running_) {
-            portal_->close();
+        bool setupInFlight = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!portal_ || state_ == State::idle || state_ == State::stopping) {
+                return;
+            }
+            setupInFlight = state_ == State::starting;
+            state_ = State::stopping;
         }
-        running_ = false;
+        // close() cancels an in-flight portal Request. Do not hold mutex_ here:
+        // bind() must be able to return and observe the stopping state.
+        portal_->close();
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!setupInFlight || state_ != State::stopping) {
+            state_ = State::idle;
+        }
     }
 
 private:
+    enum class State {
+        idle,
+        starting,
+        running,
+        stopping,
+    };
+
     std::shared_ptr<GlobalShortcutsPortal> portal_;
     std::mutex mutex_;
-    bool running_{false};
+    State state_{State::idle};
 };
 
 }  // namespace
@@ -92,6 +120,7 @@ std::unique_ptr<GlobalShortcutBackend> makeGlobalShortcutBackend(
         case SessionType::x11:
             return detail::makeX11ShortcutBackend();
         case SessionType::wayland:
+            if (!portal) portal = detail::makeQDbusGlobalShortcutsPortal();
             return std::make_unique<PortalShortcutBackend>(std::move(portal));
         case SessionType::unknown:
             break;

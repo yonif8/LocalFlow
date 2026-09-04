@@ -39,20 +39,19 @@ public:
     [[nodiscard]] virtual Result<ScreenFrame> captureContextFrame() = 0;
 };
 
-// Boundary for the ScreenCast portal + PipeWire frame consumer. The first
-// start may display the desktop's chooser. Implementations should persist the
-// portal restore token and reuse it when the compositor allows that.
-class ScreenCastPortal {
+// Boundary for org.freedesktop.portal.Screenshot. The first capture may show
+// a desktop consent dialog. Unlike ScreenCast, this does not leave a screen-
+// sharing session or indicator running between push-to-talk invocations.
+class ScreenshotPortal {
 public:
-    virtual ~ScreenCastPortal() = default;
+    virtual ~ScreenshotPortal() = default;
 
-    virtual Status ensureSession() = 0;
-    [[nodiscard]] virtual Result<ScreenFrame> latestFrame() = 0;
+    [[nodiscard]] virtual Result<ScreenFrame> captureFrame() = 0;
     virtual void close() noexcept = 0;
 };
 
 [[nodiscard]] std::unique_ptr<ScreenContextBackend> makeScreenContextBackend(
     SessionType session,
-    std::shared_ptr<ScreenCastPortal> portal = {});
+    std::shared_ptr<ScreenshotPortal> portal = {});
 
 }  // namespace localflow::platform::linux

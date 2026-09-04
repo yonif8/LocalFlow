@@ -59,10 +59,9 @@ public:
     virtual void stop() noexcept = 0;
 };
 
-// Event-loop-neutral boundary for org.freedesktop.portal.GlobalShortcuts.
-// A Qt/QDBus or GDBus implementation owns the portal session and maps its
-// Activated/Deactivated signals to this callback. This keeps portal consent
-// UI on the UI thread instead of hiding it in the dictation core.
+// Injectable boundary for org.freedesktop.portal.GlobalShortcuts. The Linux
+// factory supplies a production Qt/QDBus transport when none is injected and
+// maps Activated/Deactivated signals to this callback.
 class GlobalShortcutsPortal {
 public:
     virtual ~GlobalShortcutsPortal() = default;

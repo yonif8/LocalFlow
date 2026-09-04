@@ -11,7 +11,7 @@ namespace {
 
 class PortalScreenContext final : public ScreenContextBackend {
 public:
-    explicit PortalScreenContext(std::shared_ptr<ScreenCastPortal> portal)
+    explicit PortalScreenContext(std::shared_ptr<ScreenshotPortal> portal)
         : portal_(std::move(portal)) {}
 
     ~PortalScreenContext() override {
@@ -21,7 +21,7 @@ public:
     }
 
     std::string name() const override {
-        return "xdg-desktop-portal ScreenCast + PipeWire";
+        return "xdg-desktop-portal Screenshot";
     }
 
     Result<ApplicationInfo> activeApplication() override {
@@ -35,25 +35,16 @@ public:
         if (!portal_) {
             return Result<ScreenFrame>::failure(Status::failure(
                 ErrorCode::not_configured,
-                "The ScreenCast portal transport was not configured.",
-                "Attach the Qt/QDBus or GDBus ScreenCast + PipeWire transport before enabling Screen Terminology."));
+                "The Screenshot portal transport was not configured.",
+                "Install Qt DBus support and xdg-desktop-portal before enabling Screen Terminology."));
         }
-
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!sessionReady_) {
-            const auto status = portal_->ensureSession();
-            if (!status.ok()) {
-                return Result<ScreenFrame>::failure(status);
-            }
-            sessionReady_ = true;
-        }
-        return portal_->latestFrame();
+        return portal_->captureFrame();
     }
 
 private:
-    std::shared_ptr<ScreenCastPortal> portal_;
+    std::shared_ptr<ScreenshotPortal> portal_;
     std::mutex mutex_;
-    bool sessionReady_{false};
 };
 
 class UnavailableScreenContext final : public ScreenContextBackend {
@@ -78,11 +69,12 @@ private:
 
 std::unique_ptr<ScreenContextBackend> makeScreenContextBackend(
     SessionType session,
-    std::shared_ptr<ScreenCastPortal> portal) {
+    std::shared_ptr<ScreenshotPortal> portal) {
     switch (session) {
         case SessionType::x11:
             return detail::makeX11ScreenContextBackend();
         case SessionType::wayland:
+            if (!portal) portal = detail::makeQDbusScreenshotPortal();
             return std::make_unique<PortalScreenContext>(std::move(portal));
         case SessionType::unknown:
             return std::make_unique<UnavailableScreenContext>(Status::failure(

@@ -41,8 +41,8 @@ public:
     virtual Status paste() = 0;
 };
 
-// Event-loop-neutral boundary for an approved Wayland RemoteDesktop keyboard
-// session. sendKeysym maps directly to NotifyKeyboardKeysym (or libei).
+// Injectable boundary for an approved Wayland RemoteDesktop keyboard session.
+// The default Qt/QDBus transport maps sendKeysym to NotifyKeyboardKeysym.
 class RemoteDesktopPortal {
 public:
     virtual ~RemoteDesktopPortal() = default;

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <utility>
 
@@ -54,11 +55,12 @@ public:
     }
 
     Status paste() override {
+        std::lock_guard<std::mutex> lock(mutex_);
         if (!portal_) {
             return Status::failure(
                 ErrorCode::not_configured,
                 "The Wayland RemoteDesktop keyboard transport was not configured.",
-                "Attach the Qt/QDBus or GDBus/libei transport before using clipboard paste fallback.");
+                "Install Qt DBus support and xdg-desktop-portal before using clipboard paste fallback.");
         }
         auto status = portal_->ensureKeyboardSession();
         if (!status.ok()) {
@@ -83,6 +85,7 @@ public:
 
 private:
     std::shared_ptr<RemoteDesktopPortal> portal_;
+    std::mutex mutex_;
 };
 
 Status capabilityFailure(
@@ -221,6 +224,9 @@ std::unique_ptr<PasteInjector> makePasteInjector(
         case SessionType::x11:
             return detail::makeX11PasteInjector();
         case SessionType::wayland:
+            if (!remoteDesktop) {
+                remoteDesktop = detail::makeQDbusRemoteDesktopPortal();
+            }
             return std::make_unique<PortalPasteInjector>(std::move(remoteDesktop));
         case SessionType::unknown:
             break;
