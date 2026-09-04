@@ -336,13 +336,28 @@ void WasapiMicrophoneCapture::capture_main(std::promise<std::error_code> ready) 
     }
 
     ComPtr<IMMDevice> device;
+    const auto select_default_device = [&]() {
+        device.Reset();
+        HRESULT selection = enumerator->GetDefaultAudioEndpoint(
+            eCapture, eCommunications, &device);
+        if (selection == E_NOTFOUND) {
+            selection = enumerator->GetDefaultAudioEndpoint(
+                eCapture, eConsole, &device);
+        }
+        return selection;
+    };
+    bool using_configured_device = false;
     if (options_.endpoint_id.has_value()) {
         result = enumerator->GetDevice(options_.endpoint_id->c_str(), &device);
-    } else {
-        result = enumerator->GetDefaultAudioEndpoint(eCapture, eCommunications, &device);
-        if (result == E_NOTFOUND) {
-            result = enumerator->GetDefaultAudioEndpoint(eCapture, eConsole, &device);
+        DWORD state = 0;
+        using_configured_device = SUCCEEDED(result)
+            && SUCCEEDED(device->GetState(&state))
+            && (state & DEVICE_STATE_ACTIVE) != 0;
+        if (!using_configured_device) {
+            result = select_default_device();
         }
+    } else {
+        result = select_default_device();
     }
     if (FAILED(result)) {
         fail_start(result);
@@ -351,6 +366,17 @@ void WasapiMicrophoneCapture::capture_main(std::promise<std::error_code> ready) 
 
     ComPtr<IAudioClient> client;
     result = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, &client);
+    if (FAILED(result) && using_configured_device) {
+        // An endpoint can disappear between GetState and activation. Retry once
+        // with the current system default so unplugging a saved microphone does
+        // not strand push-to-talk until the user revisits Settings.
+        result = select_default_device();
+        if (SUCCEEDED(result)) {
+            client.Reset();
+            result = device->Activate(
+                __uuidof(IAudioClient), CLSCTX_ALL, nullptr, &client);
+        }
+    }
     if (FAILED(result)) {
         fail_start(result);
         return;

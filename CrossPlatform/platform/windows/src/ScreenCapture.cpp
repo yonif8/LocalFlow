@@ -6,9 +6,13 @@
 
 #include <algorithm>
 #include <limits>
+#include <new>
 
 namespace localflow::windows {
 namespace {
+
+constexpr LONG kMaximumCaptureDimension = 16'384;
+constexpr std::uint64_t kMaximumCapturePixels = 64ULL * 1024ULL * 1024ULL;
 
 class ScreenDc final {
 public:
@@ -84,7 +88,12 @@ std::optional<ScreenFrame> GdiWindowCapture::capture(
     }
     const LONG raw_width = bounds.right - bounds.left;
     const LONG raw_height = bounds.bottom - bounds.top;
-    if (raw_width <= 0 || raw_height <= 0 || raw_width > 32'768 || raw_height > 32'768) {
+    if (raw_width <= 0 || raw_height <= 0 ||
+        raw_width > kMaximumCaptureDimension ||
+        raw_height > kMaximumCaptureDimension ||
+        static_cast<std::uint64_t>(raw_width) *
+                static_cast<std::uint64_t>(raw_height) >
+            kMaximumCapturePixels) {
         error = win32_error(ERROR_INVALID_DATA);
         return std::nullopt;
     }
@@ -170,7 +179,13 @@ std::optional<ScreenFrame> GdiWindowCapture::capture(
     frame.stride_bytes = width * 4U;
     frame.source_window = window;
     const auto* first = static_cast<const std::uint8_t*>(pixels);
-    frame.bgra.assign(first, first + static_cast<std::size_t>(byte_count));
+    try {
+        frame.bgra.assign(first, first + static_cast<std::size_t>(byte_count));
+    } catch (const std::bad_alloc&) {
+        DeleteObject(bitmap);
+        error = win32_error(ERROR_NOT_ENOUGH_MEMORY);
+        return std::nullopt;
+    }
     DeleteObject(bitmap);
 
     // BI_RGB does not guarantee a useful alpha channel. OCR consumers expect

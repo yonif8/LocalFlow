@@ -62,6 +62,7 @@ enum class CancellationBoundary {
     after_terminology,
     after_polish,
     after_post_polish_terminology,
+    before_insertion,
 };
 
 struct PipelineStageDiagnostic {

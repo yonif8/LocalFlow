@@ -251,6 +251,13 @@ DictationPipelineResult DictationPipeline::run(const DictationRequest& request) 
         });
     result.diagnostics.accepted_terminology_match_count = accepted_matches.size();
 
+    // This final fence is intentionally adjacent to the only external side
+    // effect. A stop request during restoration/match accounting must never
+    // leak an old transcript into whichever app is focused now.
+    if (cancellation_requested(request)) {
+        return cancel_at(CancellationBoundary::before_insertion);
+    }
+
     const auto insertion_start = PipelineClock::now();
     try {
         inserter_.insert(result.output_text);
