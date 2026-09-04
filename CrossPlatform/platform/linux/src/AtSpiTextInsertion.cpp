@@ -370,7 +370,10 @@ Result<CapturedTarget> captureFocusedTarget(
         if (roleName) target.role = roleName.get();
     }
     if (budget.expired()) return timedOut();
-    atspi_accessible_clear_cache_single(focused.get());
+    // clear_cache_single is unavailable on the oldest AT-SPI2 version we
+    // support. The focused object is normally a leaf, so the longstanding
+    // recursive API has equivalent behavior here.
+    atspi_accessible_clear_cache(focused.get());
     target.focused = hasState(focused.get(), ATSPI_STATE_FOCUSED) &&
                      !hasState(focused.get(), ATSPI_STATE_DEFUNCT);
 
@@ -686,7 +689,7 @@ Status insertCaptured(CapturedTarget& captured, const std::string& utf8Text) {
     // Re-read focus immediately before touching the caret. We then insert
     // through this same retained object instead of performing a blind global
     // paste or resolving a second object after validation.
-    atspi_accessible_clear_cache_single(captured.focused.get());
+    atspi_accessible_clear_cache(captured.focused.get());
     if (!hasState(captured.focused.get(), ATSPI_STATE_FOCUSED) ||
         hasState(captured.focused.get(), ATSPI_STATE_DEFUNCT)) {
         return Status::failure(

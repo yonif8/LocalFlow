@@ -58,7 +58,7 @@ concurrency:
 jobs:
   build-package:
     name: Windows x64 Release
-    runs-on: windows-2025
+    runs-on: windows-2025-vs2026
     timeout-minutes: 120
 
     env:
@@ -218,7 +218,7 @@ jobs:
           $requireSignedUpdates = if ($env:IS_RELEASE -eq "true") { "ON" } else { "OFF" }
           $requireAuthenticode = if ($env:WINDOWS_CODESIGN_CERT_SHA256) { "ON" } else { "OFF" }
           cmake -S CrossPlatform -B $env:BUILD_DIR `
-            -G "Visual Studio 17 2022" -A x64 `
+            -G "Visual Studio 18 2026" -A x64 `
             -DBUILD_TESTING=ON `
             -DLOCALFLOW_BUILD_APP=ON `
             -DLOCALFLOW_STRICT_WARNINGS=ON `
