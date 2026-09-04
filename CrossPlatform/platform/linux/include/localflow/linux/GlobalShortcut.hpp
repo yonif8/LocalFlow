@@ -19,6 +19,10 @@ enum class ShortcutKind {
 enum class ShortcutEdge {
     pressed,
     released,
+    // Escape was pressed while a native hold-to-talk gesture was active.
+    // Callers must discard the active recording instead of treating this as
+    // an ordinary release.
+    cancelled,
 };
 
 enum class Modifier {

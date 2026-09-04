@@ -1,9 +1,14 @@
 #include "localflow/linux/LinuxPlatform.hpp"
 
+#include "AudioSupport.hpp"
+#include "InternalFactories.hpp"
 #include "PortalSupport.hpp"
+#include "Process.hpp"
+#include "ShortcutState.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdlib>
 #include <future>
@@ -167,6 +172,171 @@ void testPortalShortcutMapsBothEdges() {
     EXPECT_EQ(edges[1], ShortcutEdge::released);
     backend->stop();
     EXPECT_EQ(portal->closes, 1);
+}
+
+void testNativeShortcutCancellationState() {
+    detail::PushToTalkShortcutState state;
+    auto edge = state.handle(detail::ShortcutInput::escape_pressed);
+    EXPECT_TRUE(!edge.has_value());
+
+    edge = state.handle(detail::ShortcutInput::trigger_pressed);
+    EXPECT_TRUE(edge.has_value());
+    if (edge) EXPECT_EQ(*edge, ShortcutEdge::pressed);
+    EXPECT_TRUE(state.held());
+
+    // Auto-repeat cannot start another recording.
+    EXPECT_TRUE(!state.handle(detail::ShortcutInput::trigger_pressed).has_value());
+    edge = state.handle(detail::ShortcutInput::escape_pressed);
+    EXPECT_TRUE(edge.has_value());
+    if (edge) EXPECT_EQ(*edge, ShortcutEdge::cancelled);
+    EXPECT_TRUE(!state.held());
+
+    // The physical PTT release after Escape must not end a new session.
+    EXPECT_TRUE(!state.handle(detail::ShortcutInput::trigger_released).has_value());
+    edge = state.handle(detail::ShortcutInput::trigger_pressed);
+    EXPECT_TRUE(edge.has_value());
+    edge = state.handle(detail::ShortcutInput::trigger_released);
+    EXPECT_TRUE(edge.has_value());
+    if (edge) EXPECT_EQ(*edge, ShortcutEdge::released);
+}
+
+void testPactlCaptureDeviceParsing() {
+    const std::string sources =
+        "Source #41\n"
+        "\tState: RUNNING\n"
+        "\tName: alsa_input.usb-Rode_NT_USB-00.mono-fallback\n"
+        "\tDescription: RODE NT-USB Analog Mono\n"
+        "\tMonitor of Sink: n/a\n"
+        "Source #42\n"
+        "\tName: alsa_output.pci-0000_00_1f.3.analog-stereo.monitor\n"
+        "\tDescription: Monitor of Built-in Audio\n"
+        "\tMonitor of Sink: 12\n"
+        "Source #43\n"
+        "\tName: bluez_input.11_22_33_44_55_66.headset-head-unit\n"
+        "\tDescription: Family Headset\n"
+        "\tMonitor of Sink: n/a\n";
+    const auto devices = detail::parsePactlSources(
+        sources,
+        "bluez_input.11_22_33_44_55_66.headset-head-unit\n");
+    EXPECT_EQ(devices.size(), std::size_t{2});
+    if (devices.size() == 2) {
+        EXPECT_EQ(devices[0].id, std::string("alsa_input.usb-Rode_NT_USB-00.mono-fallback"));
+        EXPECT_EQ(devices[0].name, std::string("RODE NT-USB Analog Mono"));
+        EXPECT_TRUE(!devices[0].isDefault);
+        EXPECT_EQ(devices[1].name, std::string("Family Headset"));
+        EXPECT_TRUE(devices[1].isDefault);
+    }
+    const auto monitorsOnly = detail::parsePactlSources(
+        "Source #9\n"
+        "\tName: virtual_output.capture\n"
+        "\tDescription: Virtual output capture\n"
+        "\tMonitor of Sink: 8\n",
+        "virtual_output.capture\n");
+    EXPECT_TRUE(monitorsOnly.empty());
+}
+
+void testAudioServiceParsersAndSafeDuckingDecision() {
+    const auto wpctl = detail::parseWpctlVolume("Volume: 0.420000 [MUTED]\n");
+    EXPECT_TRUE(wpctl.ok());
+    if (wpctl) {
+        EXPECT_TRUE(std::fabs(wpctl.value().level - 0.42F) < 0.0001F);
+        EXPECT_TRUE(wpctl.value().muted);
+    }
+    const auto wpctlId = detail::parseWpctlObjectId(
+        "id 73, type PipeWire:Interface:Node\n"
+        "    node.name = \"alsa_output.usb-DAC\"\n");
+    EXPECT_TRUE(wpctlId.ok());
+    if (wpctlId) EXPECT_EQ(wpctlId.value(), std::string("73"));
+    const auto pulseId = detail::parseAudioServiceIdentifier(
+        "alsa_output.pci-0000_00_1f.3.analog-stereo\n");
+    EXPECT_TRUE(pulseId.ok());
+    EXPECT_TRUE(!detail::parseAudioServiceIdentifier("two sink names\n").ok());
+
+    const auto pactlVolume = detail::parsePactlVolume(
+        "Volume: front-left: 32768 / 50% / -18.06 dB, front-right: 32768 / 50% / -18.06 dB\n");
+    EXPECT_TRUE(pactlVolume.ok());
+    if (pactlVolume) EXPECT_TRUE(std::fabs(pactlVolume.value() - 0.5F) < 0.0001F);
+    const auto pactlMuted = detail::parsePactlMute("Mute: yes\n");
+    EXPECT_TRUE(pactlMuted.ok());
+    if (pactlMuted) EXPECT_TRUE(pactlMuted.value());
+    EXPECT_TRUE(!detail::parsePactlMute("unknown").ok());
+
+    const detail::OutputVolumeState applied{0.2F, false};
+    EXPECT_TRUE(detail::shouldRestoreDuckedVolume(applied, {0.2F, false}));
+    EXPECT_TRUE(!detail::shouldRestoreDuckedVolume(applied, {0.3F, false}));
+    EXPECT_TRUE(!detail::shouldRestoreDuckedVolume(applied, {0.2F, true}));
+}
+
+void testPcmDecoderPreservesSplitSample() {
+    detail::S16LePcmDecoder decoder;
+    std::vector<float> samples;
+    const std::uint8_t first[]{0x34};
+    decoder.decode(first, sizeof(first), samples);
+    EXPECT_TRUE(samples.empty());
+
+    const std::uint8_t second[]{0x12, 0x00};
+    decoder.decode(second, sizeof(second), samples);
+    EXPECT_EQ(samples.size(), std::size_t{1});
+    if (!samples.empty()) {
+        EXPECT_TRUE(std::fabs(samples[0] - (4660.0F / 32768.0F)) < 0.0001F);
+    }
+
+    const std::uint8_t third[]{0x80};
+    decoder.decode(third, sizeof(third), samples);
+    EXPECT_EQ(samples.size(), std::size_t{1});
+    if (!samples.empty()) EXPECT_EQ(samples[0], -1.0F);
+}
+
+void testIntentionalStopDrainsRecorderTailWithinBound() {
+    if (!detail::executableOnPath("python3")) return;
+
+    const std::string program =
+        "import os, signal, time\n"
+        "def stopped(signum, frame):\n"
+        "    os.write(1, b'\\x00\\x40')\n"
+        "    raise SystemExit(0)\n"
+        "signal.signal(signal.SIGINT, stopped)\n"
+        "os.write(1, b'\\x00\\x00')\n"
+        "while True:\n"
+        "    time.sleep(1)\n";
+    auto capture = detail::makeProcessAudioCaptureForTest(
+        {"python3", "-c", program});
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::vector<float> received;
+    bool failed = false;
+    const auto started = capture->start(
+        "fake-device", {16000, 1},
+        [&](const float* samples, std::size_t count) {
+            std::lock_guard<std::mutex> lock(mutex);
+            received.insert(received.end(), samples, samples + count);
+            changed.notify_all();
+        },
+        [&](const Status&) {
+            std::lock_guard<std::mutex> lock(mutex);
+            failed = true;
+            changed.notify_all();
+        });
+    EXPECT_TRUE(started.ok());
+    if (!started.ok()) return;
+
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        EXPECT_TRUE(changed.wait_for(
+            lock, std::chrono::seconds(2), [&] { return !received.empty() || failed; }));
+    }
+    const auto beforeStop = std::chrono::steady_clock::now();
+    capture->stop();
+    const auto stopDuration = std::chrono::steady_clock::now() - beforeStop;
+
+    std::lock_guard<std::mutex> lock(mutex);
+    EXPECT_TRUE(!failed);
+    EXPECT_TRUE(stopDuration < std::chrono::seconds(1));
+    EXPECT_EQ(received.size(), std::size_t{2});
+    if (received.size() == 2) {
+        EXPECT_EQ(received[0], 0.0F);
+        EXPECT_EQ(received[1], 0.5F);
+    }
 }
 
 void testWaylandMouseShortcutRejected() {
@@ -647,6 +817,11 @@ int main() {
     testX11Capabilities();
     testClipboardCannotShipWithoutFocusedTargetVerification();
     testPortalShortcutMapsBothEdges();
+    testNativeShortcutCancellationState();
+    testPactlCaptureDeviceParsing();
+    testAudioServiceParsersAndSafeDuckingDecision();
+    testPcmDecoderPreservesSplitSample();
+    testIntentionalStopDrainsRecorderTailWithinBound();
     testWaylandMouseShortcutRejected();
     testPortalShortcutSetupCanBeCancelled();
     testPortalResponseDiagnostics();

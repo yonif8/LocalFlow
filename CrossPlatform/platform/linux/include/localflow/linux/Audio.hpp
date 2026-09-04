@@ -36,6 +36,9 @@ public:
         CaptureFormat format,
         AudioSamplesCallback samples,
         AudioFailureCallback failure) = 0;
+    // Synchronous completion boundary. A backend may deliver its final queued
+    // samples from the calling thread's stop interval; callers must keep the
+    // active accumulator valid until this returns.
     virtual void stop() noexcept = 0;
 };
 

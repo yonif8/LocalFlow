@@ -10,7 +10,8 @@ macOS, Windows, and Linux.
 - A runtime capability report for X11, Wayland, XDG Desktop Portals, AT-SPI2,
   PipeWire/PulseAudio, clipboard tools, paste injection, and audio ducking.
 - Native X11 press/release shortcuts using `XGrabKey`/`XGrabButton`, including
-  Caps Lock and Num Lock variants and a synthetic release during shutdown.
+  Caps Lock and Num Lock variants, Escape-to-cancel while a hold is active,
+  and a synthetic release during shutdown.
 - A production Qt/QDBus GlobalShortcuts transport mapping Wayland `Activated`
   and `Deactivated` signals to push-to-talk edges. Portal requests are bounded,
   cancellable, and close their session deterministically.
@@ -38,7 +39,13 @@ macOS, Windows, and Linux.
   sequence and observes compositor session closure. No root helper,
   `/dev/uinput`, or `ydotool` path exists.
 - PipeWire-first, PulseAudio-second microphone adapters (`pw-record`/`parec`)
-  producing normalized float PCM, plus best-effort `wpctl`/`pactl` ducking.
+  producing normalized float PCM. Intentional stop drains the recorder pipe
+  for up to 500 ms before bounded termination, including samples split across
+  read boundaries. `pactl` supplies stable physical capture-source IDs,
+  friendly names, and the real default while monitor outputs are excluded.
+- `wpctl`/`pactl` ducking that preserves mute state and restores only when the
+  sink still has the exact state LocalFlow applied, so a user volume or mute
+  change during dictation wins.
 
 Every unavailable path returns a structured status containing an error code,
 human-readable explanation, and remediation text suitable for Settings or a
@@ -48,7 +55,7 @@ diagnostics report.
 
 | Capability | X11 | Wayland |
 | --- | --- | --- |
-| Hold keyboard shortcut | Native press/release | GlobalShortcuts portal |
+| Hold keyboard shortcut | Native press/release + Escape cancel | GlobalShortcuts portal |
 | Side mouse button | Native | Not in the standard portal; clearly rejected |
 | Active window metadata | EWMH | Exact focused AT-SPI target, or safe failure |
 | Screen context | Active-window capture | Compositor-mediated Screenshot |
@@ -128,6 +135,14 @@ accept a modifier-only binding such as Right Ctrl; those desktops require a
 regular key or chord such as F8 or Ctrl+F8. LocalFlow rejects unsupported mouse
 bindings instead of silently changing their behavior.
 
+Escape cancellation is conditional on an active PTT hold on X11: Escape is
+grabbed only after the PTT press and released on normal release/cancellation.
+The shell must map `ShortcutEdge::cancelled` to its discard path. Wayland does
+not offer a conditional, session-local Escape grab through GlobalShortcuts;
+registering Escape permanently would interfere with every application, so the
+portal backend intentionally exposes no Escape cancellation. A UI cancel
+button remains the safe Wayland option.
+
 RemoteDesktop consent is deliberately visible and may include a persistent
 desktop control indicator. LocalFlow uses it only when AT-SPI direct insertion
 fails. A compositor that does not expose keyboard control cannot support the
@@ -149,6 +164,10 @@ RemoteDesktop device approval, key press/release ordering, and session close.
 When Qt Gui is available, an offscreen integration test also exercises the real
 `QClipboard` backend from a worker thread: rich MIME and image round trips,
 empty clipboard restoration, and a user-copy race.
+When Xvfb and XTest are installed, a native X11 integration test drives a real
+F8 press, Escape cancellation, and late physical release through the adapter.
+The audio tests launch a signal-aware recorder process and verify that its
+final PCM buffer arrives before bounded `stop()` completion.
 
 Optional native adapters are enabled when their development packages are
 present (`libx11-dev`, `libxtst-dev`, `libatspi2.0-dev`). Wayland portal
@@ -162,6 +181,13 @@ when AT-SPI cannot verify the exact destination field. `wl-clipboard` on
 Wayland or `xclip`/`xsel` on X11 is needed only by a build without the Qt
 clipboard backend.
 
+`AudioCaptureBackend::stop()` is a synchronous drain boundary. The sample
+callback can continue to receive the final recorder buffer until `stop()`
+returns, so the application must keep the active session's sample accumulator
+open during that call and only move/finalize its samples afterward. Recorder
+shutdown is bounded to the 500 ms drain plus a short TERM/KILL reap window;
+sample callbacks themselves are expected to be non-blocking.
+
 ## Remaining platform limitations
 
 - The production Qt adapter targets the standard clipboard used by Ctrl+V, not
@@ -172,8 +198,16 @@ clipboard backend.
   UTF-8 plain text. It skips restoration when the visible text changed, but it
   cannot distinguish a newer rich-text copy with the same plain text from its
   own transient value. This degraded adapter is not used in normal packages.
-- Device selection currently exposes the stable system-default device. Native
-  PipeWire device enumeration can replace it without changing the core API.
+- Capture-device enumeration uses the PulseAudio compatibility service shared
+  by current PipeWire and PulseAudio desktops. A system without `pactl` still
+  exposes a clearly labelled system-default fallback, but cannot offer a
+  portable list of native PipeWire nodes through this adapter.
+- Audio services expose no ownership token for volume changes. LocalFlow never
+  restores after observing a different level or mute state, but it cannot
+  distinguish a user deliberately changing the sink back to the exact ducked
+  value from an unchanged sink.
+- Wayland's GlobalShortcuts portal cannot conditionally intercept Escape only
+  during a hold. LocalFlow does not register a permanent global Escape binding.
 - Wayland deliberately has no universal foreground-window identity API. AT-SPI
   identity is exact when an application participates in accessibility, but
   applications that do not expose it are intentionally unavailable rather

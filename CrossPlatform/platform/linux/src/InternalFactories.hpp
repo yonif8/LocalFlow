@@ -7,6 +7,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace localflow::platform::linux::detail {
 
@@ -22,6 +23,8 @@ makeAtSpiFocusedTargetProvider();
 [[nodiscard]] std::unique_ptr<PasteInjector> makeX11PasteInjector();
 [[nodiscard]] std::unique_ptr<AudioCaptureBackend> makeProcessAudioCapture(
     std::string backend);
+[[nodiscard]] std::unique_ptr<AudioCaptureBackend> makeProcessAudioCaptureForTest(
+    std::vector<std::string> command);
 [[nodiscard]] std::unique_ptr<AudioDucker> makeProcessAudioDucker(
     std::string backend);
 [[nodiscard]] std::shared_ptr<GlobalShortcutsPortal>

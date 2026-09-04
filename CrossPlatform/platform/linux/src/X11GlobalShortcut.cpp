@@ -1,4 +1,5 @@
 #include "InternalFactories.hpp"
+#include "ShortcutState.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -68,6 +69,7 @@ public:
         modifierMask_ = ::localflow::platform::linux::detail::modifierMask(shortcut.modifiers);
         shortcut_ = shortcut;
         callback_ = std::move(callback);
+        escapeKeycode_ = XKeysymToKeycode(display_, XK_Escape);
 
         if (shortcut.kind == ShortcutKind::key) {
             const auto keysym = XStringToKeysym(shortcut.trigger.c_str());
@@ -135,6 +137,7 @@ public:
         }
 
         lock.lock();
+        setEscapeGrabbed(false);
         constexpr unsigned int lockVariants[] = {
             0,
             LockMask,
@@ -153,43 +156,61 @@ public:
     }
 
 private:
+    void setEscapeGrabbed(bool grab) noexcept {
+        if (escapeKeycode_ == 0 ||
+            (shortcut_.kind == ShortcutKind::key && escapeKeycode_ == keycode_) ||
+            escapeGrabbed_ == grab) {
+            return;
+        }
+        if (grab) {
+            // Escape is intercepted only for the duration of an active hold.
+            // AnyModifier also catches it while the PTT chord's modifiers are
+            // still physically down.
+            XGrabKey(
+                display_, escapeKeycode_, AnyModifier, root_, False,
+                GrabModeAsync, GrabModeAsync);
+        } else {
+            XUngrabKey(display_, escapeKeycode_, AnyModifier, root_);
+        }
+        XSync(display_, False);
+        escapeGrabbed_ = grab;
+    }
+
     void eventLoop() noexcept {
-        bool held = false;
+        PushToTalkShortcutState state;
         while (running_) {
             while (running_ && XPending(display_) > 0) {
                 XEvent event{};
                 XNextEvent(display_, &event);
 
-                bool relevant = false;
-                ShortcutEdge edge = ShortcutEdge::pressed;
+                std::optional<ShortcutEdge> edge;
                 if (shortcut_.kind == ShortcutKind::key &&
                     (event.type == KeyPress || event.type == KeyRelease) &&
                     event.xkey.keycode == keycode_) {
-                    relevant = true;
-                    edge = event.type == KeyPress ? ShortcutEdge::pressed : ShortcutEdge::released;
+                    edge = state.handle(
+                        event.type == KeyPress
+                            ? ShortcutInput::trigger_pressed
+                            : ShortcutInput::trigger_released);
                 } else if (shortcut_.kind == ShortcutKind::mouse_button &&
                            (event.type == ButtonPress || event.type == ButtonRelease) &&
                            event.xbutton.button == shortcut_.mouseButton) {
-                    relevant = true;
-                    edge = event.type == ButtonPress ? ShortcutEdge::pressed : ShortcutEdge::released;
+                    edge = state.handle(
+                        event.type == ButtonPress
+                            ? ShortcutInput::trigger_pressed
+                            : ShortcutInput::trigger_released);
+                } else if (event.type == KeyPress &&
+                           event.xkey.keycode == escapeKeycode_) {
+                    edge = state.handle(ShortcutInput::escape_pressed);
                 }
 
-                if (!relevant) {
-                    continue;
-                }
-                if (edge == ShortcutEdge::pressed && held) {
-                    continue;
-                }
-                if (edge == ShortcutEdge::released && !held) {
-                    continue;
-                }
+                if (!edge) continue;
 
                 // Detectable autorepeat normally prevents fake release events.
                 // The held-state guard at least suppresses duplicate presses on
                 // older X servers where that XKB mode is unavailable.
-                held = edge == ShortcutEdge::pressed;
+                setEscapeGrabbed(*edge == ShortcutEdge::pressed);
                 try {
-                    callback_({shortcut_.id, edge, nowMs()});
+                    callback_({shortcut_.id, *edge, nowMs()});
                 } catch (...) {
                     // A UI callback must never tear down the native event loop.
                 }
@@ -198,7 +219,8 @@ private:
         }
 
         // A listener shutdown while held must not leave dictation recording.
-        if (held) {
+        setEscapeGrabbed(false);
+        if (state.held()) {
             try {
                 callback_({shortcut_.id, ShortcutEdge::released, nowMs()});
             } catch (...) {
@@ -213,8 +235,10 @@ private:
         }
         callback_ = {};
         keycode_ = 0;
+        escapeKeycode_ = 0;
         modifierMask_ = 0;
         root_ = 0;
+        escapeGrabbed_ = false;
     }
 
     std::mutex mutex_;
@@ -222,7 +246,9 @@ private:
     Display* display_{nullptr};
     Window root_{0};
     KeyCode keycode_{0};
+    KeyCode escapeKeycode_{0};
     unsigned int modifierMask_{0};
+    bool escapeGrabbed_{false};
     bool detectableAutoRepeat_{false};
     ShortcutSpec shortcut_;
     ShortcutCallback callback_;

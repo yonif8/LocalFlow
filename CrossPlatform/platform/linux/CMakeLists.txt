@@ -7,6 +7,7 @@ option(LOCALFLOW_LINUX_BUILD_TESTS "Build Linux platform unit tests" ON)
 add_library(localflow_linux_platform STATIC
     src/AtSpiTextInsertion.cpp
     src/Audio.cpp
+    src/AudioSupport.cpp
     src/Capabilities.cpp
     src/Clipboard.cpp
     src/GlobalShortcut.cpp
@@ -153,6 +154,32 @@ if(LOCALFLOW_LINUX_BUILD_TESTS)
             COMMAND "${LOCALFLOW_DBUS_RUN_SESSION}" --
                 $<TARGET_FILE:localflow_linux_qdbus_portal_tests>)
         set_tests_properties(localflow_linux_qdbus_portal_tests PROPERTIES
+            TIMEOUT 15)
+    endif()
+
+    find_program(LOCALFLOW_XVFB_RUN xvfb-run)
+    if(X11_FOUND AND LOCALFLOW_XTST_LIBRARY AND LOCALFLOW_XVFB_RUN)
+        add_executable(localflow_linux_x11_shortcut_tests
+            tests/X11ShortcutIntegrationTests.cpp)
+        set_target_properties(localflow_linux_x11_shortcut_tests PROPERTIES
+            CXX_STANDARD 17
+            CXX_STANDARD_REQUIRED YES
+            CXX_EXTENSIONS NO)
+        target_compile_options(localflow_linux_x11_shortcut_tests PRIVATE
+            -Wall -Wextra -Wpedantic)
+        if(LOCALFLOW_STRICT_WARNINGS)
+            target_compile_options(localflow_linux_x11_shortcut_tests PRIVATE
+                -Werror)
+        endif()
+        target_include_directories(localflow_linux_x11_shortcut_tests PRIVATE
+            src ${X11_INCLUDE_DIR})
+        target_link_libraries(localflow_linux_x11_shortcut_tests PRIVATE
+            localflow_linux_platform ${X11_LIBRARIES} ${LOCALFLOW_XTST_LIBRARY})
+        add_test(
+            NAME localflow_linux_x11_shortcut_tests
+            COMMAND "${LOCALFLOW_XVFB_RUN}" -a
+                $<TARGET_FILE:localflow_linux_x11_shortcut_tests>)
+        set_tests_properties(localflow_linux_x11_shortcut_tests PROPERTIES
             TIMEOUT 15)
     endif()
 endif()
