@@ -17,10 +17,12 @@ target_compile_features(localflow_windows_state PUBLIC cxx_std_17)
 target_include_directories(localflow_windows_state
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../common/include>
 )
 
 if(WIN32)
     add_library(localflow_windows STATIC
+        src/AccessibilityText.cpp
         src/AudioCapture.cpp
         src/ClipboardTransaction.cpp
         src/FocusedTextTarget.cpp
@@ -37,6 +39,7 @@ if(WIN32)
     target_include_directories(localflow_windows
         PUBLIC
             $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../common/include>
     )
     target_compile_definitions(localflow_windows
         PUBLIC
@@ -81,6 +84,27 @@ if(LOCALFLOW_WINDOWS_BUILD_TESTS)
     target_compile_features(localflow_windows_ocr_text_tests PRIVATE cxx_std_17)
     target_link_libraries(localflow_windows_ocr_text_tests PRIVATE LocalFlow::WindowsState)
     add_test(NAME localflow.windows.ocr_text_normalization COMMAND localflow_windows_ocr_text_tests)
+
+    add_executable(localflow_accessibility_text_policy_tests
+        ../common/tests/AccessibilityTextPolicyTests.cpp)
+    target_compile_features(localflow_accessibility_text_policy_tests PRIVATE cxx_std_17)
+    target_link_libraries(localflow_accessibility_text_policy_tests PRIVATE
+        LocalFlow::WindowsState)
+    if(MSVC)
+        target_compile_options(localflow_accessibility_text_policy_tests PRIVATE
+            /W4 /permissive- /EHsc /utf-8)
+        if(LOCALFLOW_STRICT_WARNINGS)
+            target_compile_options(localflow_accessibility_text_policy_tests PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(localflow_accessibility_text_policy_tests PRIVATE
+            -Wall -Wextra -Wpedantic)
+        if(LOCALFLOW_STRICT_WARNINGS)
+            target_compile_options(localflow_accessibility_text_policy_tests PRIVATE -Werror)
+        endif()
+    endif()
+    add_test(NAME localflow.windows.accessibility_text_policy
+        COMMAND localflow_accessibility_text_policy_tests)
 
     add_executable(localflow_windows_safety_state_tests tests/SafetyStateTests.cpp)
     target_compile_features(localflow_windows_safety_state_tests PRIVATE cxx_std_17)

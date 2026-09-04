@@ -6,6 +6,7 @@
 
 #include "localflow/windows/AudioCapture.hpp"
 #include "localflow/windows/AudioSafetyState.hpp"
+#include "localflow/windows/AccessibilityText.hpp"
 #include "localflow/windows/ClipboardTransaction.hpp"
 #include "localflow/windows/FocusedTextTarget.hpp"
 #include "localflow/windows/FocusedTextTargetState.hpp"

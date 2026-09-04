@@ -28,7 +28,9 @@ set_target_properties(localflow_linux_platform PROPERTIES
     CXX_STANDARD_REQUIRED YES
     CXX_EXTENSIONS NO)
 target_include_directories(localflow_linux_platform
-    PUBLIC include
+    PUBLIC
+        include
+        ../common/include
     PRIVATE src
 )
 target_compile_options(localflow_linux_platform PRIVATE
@@ -108,6 +110,20 @@ endif()
 
 if(LOCALFLOW_LINUX_BUILD_TESTS)
     enable_testing()
+    add_executable(localflow_accessibility_text_policy_tests
+        ../common/tests/AccessibilityTextPolicyTests.cpp)
+    target_compile_features(localflow_accessibility_text_policy_tests PRIVATE cxx_std_17)
+    target_include_directories(localflow_accessibility_text_policy_tests PRIVATE
+        ../common/include)
+    target_compile_options(localflow_accessibility_text_policy_tests PRIVATE
+        -Wall -Wextra -Wpedantic)
+    if(LOCALFLOW_STRICT_WARNINGS)
+        target_compile_options(localflow_accessibility_text_policy_tests PRIVATE
+            -Werror)
+    endif()
+    add_test(NAME localflow.accessibility_text_policy
+        COMMAND localflow_accessibility_text_policy_tests)
+
     add_executable(localflow_linux_platform_tests tests/LinuxPlatformTests.cpp)
     target_compile_features(localflow_linux_platform_tests PRIVATE cxx_std_17)
     set_target_properties(localflow_linux_platform_tests PROPERTIES
