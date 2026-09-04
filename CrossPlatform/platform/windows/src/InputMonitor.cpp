@@ -41,6 +41,36 @@ bool is_mouse_down(const WPARAM message) noexcept {
 
 }  // namespace
 
+detail::MouseInputDecision detail::classify_mouse_input(
+    const InputMonitorOptions& options,
+    const WPARAM message,
+    const MSLLHOOKSTRUCT& event) noexcept {
+    MouseInputDecision decision;
+    constexpr ULONG_PTR injectedFlags =
+        LLMHF_INJECTED | LLMHF_LOWER_IL_INJECTED;
+    if (options.ignore_injected_events && (event.flags & injectedFlags) != 0) {
+        return decision;
+    }
+    const auto button = button_for_message(message, event);
+    if (!button.has_value()) {
+        return decision;
+    }
+    const bool down = is_mouse_down(message);
+    const bool up = message == WM_LBUTTONUP || message == WM_RBUTTONUP
+        || message == WM_MBUTTONUP || message == WM_XBUTTONUP;
+    if (!down && !up) {
+        return decision;
+    }
+
+    decision.trigger = mouse_trigger(*button);
+    decision.configured = std::find(
+        options.triggers.begin(), options.triggers.end(), decision.trigger)
+        != options.triggers.end();
+    decision.pressed = down;
+    decision.consume = decision.configured && options.consume_mouse_trigger_events;
+    return decision;
+}
+
 struct GlobalInputMonitor::DispatchState {
     explicit DispatchState(Callback value) : callback(std::move(value)) {}
 
@@ -216,7 +246,10 @@ LRESULT CALLBACK GlobalInputMonitor::keyboard_hook(
 LRESULT CALLBACK GlobalInputMonitor::mouse_hook(
     const int code, const WPARAM message, const LPARAM data) noexcept {
     if (code >= HC_ACTION && g_monitor != nullptr) {
-        g_monitor->process_mouse(message, *reinterpret_cast<const MSLLHOOKSTRUCT*>(data));
+        if (g_monitor->process_mouse(
+                message, *reinterpret_cast<const MSLLHOOKSTRUCT*>(data))) {
+            return 1;
+        }
     }
     return CallNextHookEx(nullptr, code, message, data);
 }
@@ -247,24 +280,18 @@ void GlobalInputMonitor::process_keyboard(
     }
 }
 
-void GlobalInputMonitor::process_mouse(
+bool GlobalInputMonitor::process_mouse(
     const WPARAM message, const MSLLHOOKSTRUCT& event) noexcept {
-    if (options_.ignore_injected_events && (event.flags & LLMHF_INJECTED) != 0) {
-        return;
+    const auto decision = detail::classify_mouse_input(options_, message, event);
+    if (!decision.configured) {
+        return false;
     }
-    const auto button = button_for_message(message, event);
-    if (!button.has_value()) {
-        return;
-    }
-    const Trigger trigger = mouse_trigger(*button);
-    if (!configured(trigger)) {
-        return;
-    }
-    if (is_mouse_down(message)) {
-        process_down(trigger);
+    if (decision.pressed) {
+        process_down(decision.trigger);
     } else {
-        process_up(trigger);
+        process_up(decision.trigger);
     }
+    return decision.consume;
 }
 
 void GlobalInputMonitor::process_down(const Trigger trigger) noexcept {

@@ -8,8 +8,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QClipboard>
-#include <QDir>
-#include <QFile>
+#include <QDesktopServices>
 #include <QFutureWatcher>
 #include <QFuture>
 #include <QJsonArray>
@@ -17,13 +16,13 @@
 #include <QJsonObject>
 #include <QMenu>
 #include <QMetaObject>
-#include <QSaveFile>
 #include <QSettings>
-#include <QStandardPaths>
 #include <QStyle>
+#include <QSysInfo>
 #include <QSystemTrayIcon>
 #include <QThreadPool>
 #include <QTimer>
+#include <QUrlQuery>
 #include <QtConcurrentRun>
 
 #include <algorithm>
@@ -49,60 +48,6 @@ using localflow::core::PipelineCompletion;
 using localflow::core::PolishContext;
 using localflow::core::ReplacementEngine;
 using localflow::core::Utterance;
-
-QString learnedTermsPath() {
-    const QString directory = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
-    QDir().mkpath(directory);
-    return directory + QStringLiteral("/learned-terminology.json");
-}
-
-std::vector<LearnedTerm> loadLearnedTerms() {
-    QFile file(learnedTermsPath());
-    if (!file.open(QIODevice::ReadOnly)) return {};
-    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
-    if (!document.isArray()) return {};
-    std::vector<LearnedTerm> terms;
-    for (const auto& entry : document.array()) {
-        const QJsonObject object = entry.toObject();
-        LearnedTerm term;
-        term.id = object.value(QStringLiteral("id")).toString().toStdString();
-        term.canonical = object.value(QStringLiteral("canonical")).toString().toStdString();
-        for (const auto& alias : object.value(QStringLiteral("aliases")).toArray()) {
-            term.aliases.push_back(alias.toString().toStdString());
-        }
-        term.use_count = std::uint32_t(qMax(0, object.value(QStringLiteral("useCount")).toInt(1)));
-        term.created_at_ms = qint64(object.value(QStringLiteral("createdAtMs")).toDouble());
-        term.last_used_at_ms = qint64(object.value(QStringLiteral("lastUsedAtMs")).toDouble());
-        const QString app = object.value(QStringLiteral("sourceAppId")).toString();
-        if (!app.isEmpty()) term.source_app_id = app.toStdString();
-        terms.push_back(std::move(term));
-    }
-    return LearnedTerminologyBank::sanitized(terms);
-}
-
-bool saveLearnedTerms(const LearnedTerminologyBank& bank) {
-    QJsonArray array;
-    for (const auto& term : bank.terms()) {
-        QJsonArray aliases;
-        for (const auto& alias : term.aliases) aliases.append(QString::fromStdString(alias));
-        QJsonObject object{
-            {QStringLiteral("id"), QString::fromStdString(term.id)},
-            {QStringLiteral("canonical"), QString::fromStdString(term.canonical)},
-            {QStringLiteral("aliases"), aliases},
-            {QStringLiteral("useCount"), int(term.use_count)},
-            {QStringLiteral("createdAtMs"), double(term.created_at_ms)},
-            {QStringLiteral("lastUsedAtMs"), double(term.last_used_at_ms)},
-        };
-        if (term.source_app_id) {
-            object.insert(QStringLiteral("sourceAppId"), QString::fromStdString(*term.source_app_id));
-        }
-        array.append(object);
-    }
-    QSaveFile output(learnedTermsPath());
-    if (!output.open(QIODevice::WriteOnly)) return false;
-    if (output.write(QJsonDocument(array).toJson(QJsonDocument::Compact)) < 0) return false;
-    return output.commit();
-}
 
 PersonalDictionary loadDictionary(bool spokenPunctuation) {
     PersonalDictionary dictionary;
@@ -137,7 +82,7 @@ bool casualApplication(std::string value) {
 struct PipelineSettings {
     bool polishEnabled = true;
     QString polishTone;
-    int polishTimeoutMs = 1500;
+    int polishTimeoutMs = 3000;
     int polishMaxCharacters = 700;
     bool screenTerminology = true;
     PersonalDictionary dictionary;
@@ -289,6 +234,8 @@ private:
 struct PipelineJobResult {
     DictationPipelineResult pipeline;
     QString detail;
+    std::vector<LearnedTerm> learnedTerms;
+    std::uint64_t learnedTermsRevision{0};
 };
 
 QString completionMessage(PipelineCompletion completion) {
@@ -310,10 +257,13 @@ struct AppController::PressContext {
 };
 
 struct AppController::RuntimeState {
-    RuntimeState(const QString& asrPath, const QString& polishPath)
+    RuntimeState(
+        const QString& asrPath,
+        const QString& polishPath,
+        std::vector<LearnedTerm> initialLearnedTerms)
         : transcriber({asrPath.toStdString(), -1, {}}),
           polishWorker(polishPath),
-          learned(loadLearnedTerms()) {
+          learned(std::move(initialLearnedTerms)) {
         pipelinePool.setMaxThreadCount(1);
         pipelinePool.setExpiryTimeout(-1);
         prewarmPool.setMaxThreadCount(1);
@@ -333,23 +283,77 @@ struct AppController::RuntimeState {
 };
 
 AppController::AppController(QObject* parent)
-    : QObject(parent), settings_(this), models_(this) {
-    runtime_ = std::make_unique<RuntimeState>(models_.asrModelPath(), models_.polishModelPath());
+    : QObject(parent), settings_(this), models_(this), learnedTerms_(this), updates_(this) {
+    runtime_ = std::make_unique<RuntimeState>(
+        models_.asrModelPath(), models_.polishModelPath(), learnedTerms_.terms());
+    refreshCapabilities();
+    refreshMicrophones();
     connect(&models_, &ModelManager::modelsReady, this, [this] {
-        if (!listening_) startListening();
+        refreshCapabilities();
+    });
+    lastNotifiedUpdateKey_ = QSettings().value(
+        QStringLiteral("updates/lastNotifiedVersion")).toString();
+    connect(&updates_, &UpdateManager::changed, this, [this] {
+        rebuildTrayMenu();
+        if (!silentUpdateCheckInFlight_ || updates_.busy()) return;
+        silentUpdateCheckInFlight_ = false;
+        const QString version = updates_.availableVersion();
+        const QString notificationKey = version.isEmpty()
+            ? QStringLiteral("unknown-after-%1").arg(QApplication::applicationVersion())
+            : version;
+        if (!updates_.updateAvailable() ||
+            notificationKey == lastNotifiedUpdateKey_ || tray_ == nullptr) {
+            return;
+        }
+        tray_->showMessage(
+            QStringLiteral("LocalFlow update available"),
+            version.isEmpty()
+                ? QStringLiteral("A new version is ready. Click to review and update.")
+                : QStringLiteral("Version %1 is ready. Click to review and update.").arg(version),
+            QSystemTrayIcon::Information,
+            10'000);
+        lastNotifiedUpdateKey_ = notificationKey;
+        QSettings().setValue(
+            QStringLiteral("updates/lastNotifiedVersion"), notificationKey);
+    });
+    connect(&learnedTerms_, &LearnedTermModel::termsChanged, this, [this] {
+        ++learnedTermsRevision_;
+        if (runtime_->watcher != nullptr) {
+            pendingLearnedTermsSync_ = true;
+            return;
+        }
+        synchronizeLearnedTerms();
     });
 
     const auto restart = [this] { restartListening(); };
     connect(&settings_, &SettingsModel::hotkeyChanged, this, restart);
+    connect(&settings_, &SettingsModel::mouseTriggerChanged, this, restart);
     connect(&settings_, &SettingsModel::microphoneIdChanged, this, restart);
     connect(&settings_, &SettingsModel::keepMicWarmChanged, this, restart);
     connect(&settings_, &SettingsModel::duckAudioChanged, this, restart);
     connect(&settings_, &SettingsModel::screenTerminologyEnabledChanged, this, restart);
     connect(&settings_, &SettingsModel::clipboardRestoreDelayMsChanged, this, restart);
+    connect(&settings_, &SettingsModel::holdThresholdMsChanged, this, restart);
+    connect(&settings_, &SettingsModel::insertionMethodChanged, this, restart);
     connect(&settings_, &SettingsModel::historyLimitChanged, this, [this] {
         auto values = history_.stringList();
         while (values.size() > settings_.historyLimit()) values.removeLast();
         history_.setStringList(values);
+    });
+
+    // Match the macOS edition's update discovery without interrupting startup
+    // or turning an offline connection into a user-facing error.
+    auto* updateTimer = new QTimer(this);
+    updateTimer->setInterval(24 * 60 * 60 * 1000);
+    const auto checkSilently = [this] {
+        if (updates_.busy() || updates_.updateAvailable()) return;
+        silentUpdateCheckInFlight_ = true;
+        updates_.checkForUpdatesSilently();
+    };
+    connect(updateTimer, &QTimer::timeout, this, checkSilently);
+    QTimer::singleShot(30'000, this, [checkSilently, updateTimer] {
+        checkSilently();
+        updateTimer->start();
     });
 }
 
@@ -371,9 +375,46 @@ QString AppController::statusText() const {
     return QStringLiteral("Ready — hold your push-to-talk key");
 }
 
+QString AppController::diagnosticsReport() const {
+    QStringList lines{
+        QStringLiteral("LocalFlow diagnostics"),
+        QStringLiteral("Version: %1").arg(QApplication::applicationVersion()),
+        QStringLiteral("Operating system: %1").arg(QSysInfo::prettyProductName()),
+        QStringLiteral("Architecture: %1").arg(QSysInfo::currentCpuArchitecture()),
+        QStringLiteral("Models ready: %1").arg(models_.ready() ? QStringLiteral("yes")
+                                                               : QStringLiteral("no")),
+        QStringLiteral("Platform ready: %1").arg(platformReady_ ? QStringLiteral("yes")
+                                                                 : QStringLiteral("no")),
+        QStringLiteral("Polishing enabled: %1").arg(settings_.polishEnabled()
+                                                         ? QStringLiteral("yes")
+                                                         : QStringLiteral("no")),
+        QStringLiteral("Screen terminology enabled: %1").arg(
+            settings_.screenTerminologyEnabled() ? QStringLiteral("yes")
+                                                  : QStringLiteral("no")),
+        QStringLiteral("Insertion mode: %1").arg(settings_.insertionMethod()),
+        QStringLiteral("Shortcut: %1").arg(settings_.hotkey()),
+        QStringLiteral("Mouse trigger: %1").arg(settings_.mouseTrigger()),
+        QString(),
+        QStringLiteral("Capabilities:"),
+    };
+    for (const auto& item : capabilities_) {
+        const auto capability = item.toMap();
+        lines.append(QStringLiteral("- %1: %2 — %3")
+                         .arg(capability.value(QStringLiteral("label")).toString(),
+                              capability.value(QStringLiteral("state")).toString(),
+                              capability.value(QStringLiteral("detail")).toString()));
+    }
+    lines.append(QString());
+    lines.append(QStringLiteral(
+        "This report contains configuration and capability status only. It does not include dictated text, screen text, screenshots, audio, history, file paths, usernames, or device identifiers."));
+    return lines.join(QLatin1Char('\n'));
+}
+
 void AppController::installTray() {
     if (tray_ != nullptr) return;
     tray_ = new QSystemTrayIcon(this);
+    connect(tray_, &QSystemTrayIcon::messageClicked,
+            this, &AppController::showSettings);
     const auto icon = QApplication::style()->standardIcon(QStyle::SP_MediaVolume);
     tray_->setIcon(icon);
     tray_->setToolTip(QStringLiteral("LocalFlow — fully local dictation"));
@@ -395,10 +436,33 @@ void AppController::rebuildTrayMenu() {
     auto* toggle = trayMenu_->addAction(listening_ ? QStringLiteral("Stop Listening")
                                                    : QStringLiteral("Start Listening"));
     connect(toggle, &QAction::triggered, this, &AppController::toggleListening);
+    if (state_ == QStringLiteral("recording")) {
+        auto* cancel = trayMenu_->addAction(QStringLiteral("Cancel Dictation"));
+        connect(cancel, &QAction::triggered, this, &AppController::cancelDictation);
+    }
+    if (!attentionText_.isEmpty()) {
+        trayMenu_->addSeparator();
+        auto* attention = trayMenu_->addAction(attentionText_.left(120));
+        attention->setEnabled(false);
+        if (!recoveryTranscript_.isEmpty()) {
+            auto* copyRecovery = trayMenu_->addAction(QStringLiteral("Copy Recovered Transcript"));
+            connect(copyRecovery, &QAction::triggered, this, &AppController::copyRecoveryTranscript);
+        }
+        auto* dismiss = trayMenu_->addAction(QStringLiteral("Dismiss Message"));
+        connect(dismiss, &QAction::triggered, this, &AppController::dismissAttention);
+    }
     auto* settingsAction = trayMenu_->addAction(QStringLiteral("Settings…"));
     connect(settingsAction, &QAction::triggered, this, &AppController::showSettings);
     auto* updateAction = trayMenu_->addAction(QStringLiteral("Check for Updates…"));
     connect(updateAction, &QAction::triggered, this, &AppController::checkForUpdates);
+    if (updates_.updateAvailable()) {
+        auto* installUpdate = trayMenu_->addAction(updates_.readyToInstall()
+            ? QStringLiteral("Install Available Update…")
+            : QStringLiteral("Download Available Update…"));
+        connect(installUpdate, &QAction::triggered, this, [this] {
+            showSettings();
+        });
+    }
     auto* diagnosticsAction = trayMenu_->addAction(QStringLiteral("Diagnostics…"));
     connect(diagnosticsAction, &QAction::triggered, this, &AppController::openDiagnostics);
     trayMenu_->addSeparator();
@@ -413,31 +477,47 @@ void AppController::hideSettings() { emit settingsDismissed(); }
 PlatformConfiguration AppController::platformConfiguration() const {
     return {
         settings_.hotkey().toStdString(),
+        settings_.mouseTrigger().toStdString(),
         settings_.microphoneId().toStdString(),
         settings_.keepMicWarm(),
         settings_.duckAudio(),
         settings_.screenTerminologyEnabled(),
         settings_.clipboardRestoreDelayMs(),
+        settings_.holdThresholdMs(),
+        settings_.insertionMethod().toStdString(),
     };
 }
 
 void AppController::startListening() {
     if (listening_) return;
+    if (runtime_->watcher != nullptr) {
+        startAfterPipeline_ = true;
+        capabilitySummary_ = QStringLiteral("Finishing the previous dictation before listening again…");
+        emit capabilitySummaryChanged();
+        return;
+    }
     if (!models_.ready()) {
         showOnboarding();
         return;
     }
+    refreshCapabilities();
+    if (!platformReady_) {
+        showOnboarding();
+        return;
+    }
+    startAfterPipeline_ = false;
+    const std::uint64_t generation = ++listeningGeneration_;
     std::string error;
     const bool started = runtime_->platform.start(
         platformConfiguration(),
-        [this](PlatformEvent event) {
-            QMetaObject::invokeMethod(this, [this, event = std::move(event)]() mutable {
+        [this, generation](PlatformEvent event) {
+            QMetaObject::invokeMethod(this, [this, generation, event = std::move(event)]() mutable {
+                if (generation != listeningGeneration_) return;
                 handlePlatformEvent(std::move(event));
             }, Qt::QueuedConnection);
         },
         &error);
-    capabilitySummary_ = QString::fromStdString(runtime_->platform.capabilitySummary());
-    emit capabilitySummaryChanged();
+    refreshCapabilities();
     if (!started) {
         listening_ = false;
         state_ = QStringLiteral("error");
@@ -462,9 +542,12 @@ void AppController::startListening() {
 
 void AppController::stopListening() {
     if (!runtime_) return;
+    ++listeningGeneration_;
+    startAfterPipeline_ = false;
     runtime_->cancelPipeline.store(true);
     runtime_->platform.stop();
     pressContexts_.clear();
+    activePressSession_.reset();
     if (listening_) {
         listening_ = false;
         emit listeningChanged();
@@ -484,6 +567,11 @@ void AppController::toggleListening() {
     else startListening();
 }
 
+void AppController::cancelDictation() {
+    if (!listening_ || state_ != QStringLiteral("recording")) return;
+    runtime_->platform.cancelCurrentSession();
+}
+
 void AppController::setState(QString state, double inputLevel) {
     const bool stateDidChange = state_ != state;
     const bool levelDidChange = inputLevel_ != inputLevel;
@@ -498,50 +586,101 @@ void AppController::handlePlatformEvent(PlatformEvent event) {
     if (!listening_) return;
     switch (event.kind) {
     case PlatformEventKind::began:
-        if (state_ != QStringLiteral("idle")) return;
+        if (state_ != QStringLiteral("idle") || activePressSession_.has_value()) {
+            // A began event outside the idle admission state indicates a stale
+            // or duplicate native edge. Fail closed and cancel its quarantined
+            // recording without disturbing an in-flight pipeline.
+            runtime_->platform.setAcceptingInput(false);
+            runtime_->platform.discardSession(event.sessionId);
+            runtime_->platform.cancelCurrentSession();
+            return;
+        }
+        activePressSession_ = event.sessionId;
         pressContexts_[event.sessionId] = {std::move(event.targetAppId), std::move(event.screenTerms)};
         setState(QStringLiteral("recording"));
         break;
     case PlatformEventKind::level:
-        if (state_ == QStringLiteral("recording")) setState(state_, event.inputLevel);
+        if (state_ == QStringLiteral("recording") && activePressSession_ == event.sessionId) {
+            setState(state_, event.inputLevel);
+        }
         break;
-    case PlatformEventKind::cancelled:
+    case PlatformEventKind::cancelled: {
         runtime_->platform.discardSession(event.sessionId);
         pressContexts_.erase(event.sessionId);
+        if (activePressSession_ != event.sessionId) return;
+        activePressSession_.reset();
+        runtime_->platform.setAcceptingInput(true);
         setState(QStringLiteral("idle"));
         break;
+    }
+    case PlatformEventKind::rejected:
+        runtime_->platform.discardSession(event.sessionId);
+        recoveryTranscript_.clear();
+        capabilitySummary_ = QString::fromStdString(event.message);
+        attentionText_ = capabilitySummary_;
+        emit capabilitySummaryChanged();
+        emit attentionChanged();
+        setState(QStringLiteral("error"));
+        break;
     case PlatformEventKind::ended: {
+        const bool ownsActivePress = activePressSession_ == event.sessionId;
         const auto context = pressContexts_.find(event.sessionId);
-        if (context == pressContexts_.end()) {
+        if (!ownsActivePress || context == pressContexts_.end()) {
             runtime_->platform.discardSession(event.sessionId);
-            setState(QStringLiteral("idle"));
+            pressContexts_.erase(event.sessionId);
+            if (ownsActivePress) activePressSession_.reset();
+            // A missing context is recoverable only when no other recording or
+            // pipeline owns the controller state.
+            if (listening_ && !activePressSession_.has_value() &&
+                runtime_->watcher == nullptr &&
+                state_ != QStringLiteral("processing") &&
+                state_ != QStringLiteral("error")) {
+                runtime_->platform.setAcceptingInput(true);
+                setState(QStringLiteral("idle"));
+            }
             return;
         }
+        activePressSession_.reset();
         PressContext captured = std::move(context->second);
         pressContexts_.erase(context);
         if (event.samples.size() < std::size_t(event.sampleRate * 0.15)) {
             runtime_->platform.discardSession(event.sessionId);
+            runtime_->platform.setAcceptingInput(true);
             setState(QStringLiteral("idle"));
             return;
         }
-        runtime_->platform.setAcceptingInput(false);
         setState(QStringLiteral("processing"));
         runPipeline(std::move(event), std::move(captured));
         break;
     }
     case PlatformEventKind::error:
+        ++listeningGeneration_;
+        startAfterPipeline_ = false;
+        runtime_->cancelPipeline.store(true);
         runtime_->platform.stop();
+        pressContexts_.clear();
+        activePressSession_.reset();
         listening_ = false;
         capabilitySummary_ = QString::fromStdString(event.message);
+        attentionText_ = capabilitySummary_;
         emit listeningChanged();
         emit capabilitySummaryChanged();
+        emit attentionChanged();
         setState(QStringLiteral("error"));
         break;
     }
 }
 
 void AppController::runPipeline(PlatformEvent event, PressContext context) {
-    if (runtime_->watcher != nullptr) return;
+    if (runtime_->watcher != nullptr) {
+        runtime_->platform.discardSession(event.sessionId);
+        capabilitySummary_ = QStringLiteral("The previous dictation is still finishing. Please try again.");
+        emit capabilitySummaryChanged();
+        attentionText_ = capabilitySummary_;
+        emit attentionChanged();
+        setState(QStringLiteral("error"));
+        return;
+    }
     runtime_->cancelPipeline.store(false);
     PipelineSettings settings;
     settings.polishEnabled = settings_.polishEnabled();
@@ -554,12 +693,29 @@ void AppController::runPipeline(PlatformEvent event, PressContext context) {
     auto* watcher = new QFutureWatcher<PipelineJobResult>(this);
     runtime_->watcher = watcher;
     const std::uint64_t session = event.sessionId;
-    connect(watcher, &QFutureWatcher<PipelineJobResult>::finished, this, [this, watcher, session] {
+    const std::uint64_t generation = listeningGeneration_;
+    const std::uint64_t learnedTermsRevision = learnedTermsRevision_;
+    connect(watcher, &QFutureWatcher<PipelineJobResult>::finished, this, [this, watcher, session, generation] {
         const PipelineJobResult job = watcher->result();
-        runtime_->watcher = nullptr;
+        if (runtime_->watcher == watcher) runtime_->watcher = nullptr;
         runtime_->platform.discardSession(session);
-        runtime_->platform.setAcceptingInput(true);
         watcher->deleteLater();
+
+        if (job.pipeline.inserted() && job.learnedTermsRevision == learnedTermsRevision_) {
+            if (!learnedTerms_.replaceTermsAndSave(job.learnedTerms)) {
+                synchronizeLearnedTerms();
+            }
+        } else if (pendingLearnedTermsSync_) {
+            synchronizeLearnedTerms();
+        }
+
+        if (generation != listeningGeneration_) {
+            const bool shouldStart = startAfterPipeline_ && !listening_;
+            startAfterPipeline_ = false;
+            if (shouldStart) startListening();
+            return;
+        }
+        if (listening_) runtime_->platform.setAcceptingInput(true);
 
         if (job.pipeline.inserted()) {
             if (settings_.historyLimit() > 0) {
@@ -576,23 +732,25 @@ void AppController::runPipeline(PlatformEvent event, PressContext context) {
             return;
         }
         if (!job.pipeline.output_text.empty()) {
-            QApplication::clipboard()->setText(QString::fromStdString(job.pipeline.output_text));
-            capabilitySummary_ = job.detail + QStringLiteral(" The transcript was copied to your clipboard.");
+            recoveryTranscript_ = QString::fromStdString(job.pipeline.output_text);
+            QApplication::clipboard()->setText(recoveryTranscript_);
+            capabilitySummary_ = job.detail + QStringLiteral(" Your transcript is safe and has been copied.");
         } else {
+            recoveryTranscript_.clear();
             capabilitySummary_ = job.detail;
         }
+        attentionText_ = capabilitySummary_;
         emit capabilitySummaryChanged();
+        emit attentionChanged();
         setState(QStringLiteral("error"));
-        QTimer::singleShot(4000, this, [this] {
-            if (listening_ && state_ == QStringLiteral("error")) setState(QStringLiteral("idle"));
-        });
     });
 
     watcher->setFuture(QtConcurrent::run(&runtime_->pipelinePool, [
         runtime = runtime_.get(),
         event = std::move(event),
         context = std::move(context),
-        settings = std::move(settings)
+        settings = std::move(settings),
+        learnedTermsRevision
     ]() mutable {
         std::lock_guard lock(runtime->pipelineMutex);
         PipelineJobResult job;
@@ -621,7 +779,8 @@ void AppController::runPipeline(PlatformEvent event, PressContext context) {
             };
             request.is_cancelled = [runtime] { return runtime->cancelPipeline.load(); };
             job.pipeline = pipeline.run(request);
-            if (job.pipeline.inserted()) (void)saveLearnedTerms(runtime->learned);
+            job.learnedTerms = runtime->learned.terms();
+            job.learnedTermsRevision = learnedTermsRevision;
             job.detail = completionMessage(job.pipeline.diagnostics.completion);
             if (job.pipeline.diagnostics.completion == PipelineCompletion::insertion_failed
                 && !inserter.error().empty()) {
@@ -638,6 +797,13 @@ void AppController::runPipeline(PlatformEvent event, PressContext context) {
     }));
 }
 
+void AppController::synchronizeLearnedTerms() {
+    if (!runtime_) return;
+    std::lock_guard lock(runtime_->pipelineMutex);
+    runtime_->learned.replace(learnedTerms_.terms());
+    pendingLearnedTermsSync_ = false;
+}
+
 void AppController::clearHistory() { history_.setStringList({}); }
 
 void AppController::copyHistoryItem(int row) {
@@ -645,6 +811,93 @@ void AppController::copyHistoryItem(int row) {
     if (row >= 0 && row < values.size()) QApplication::clipboard()->setText(values.at(row));
 }
 
-void AppController::checkForUpdates() { emit updateCheckRequested(); }
-void AppController::openDiagnostics() { emit settingsRequested(); }
+void AppController::copyRecoveryTranscript() {
+    if (!recoveryTranscript_.isEmpty()) QApplication::clipboard()->setText(recoveryTranscript_);
+}
+
+void AppController::dismissAttention() {
+    if (attentionText_.isEmpty() && recoveryTranscript_.isEmpty()) return;
+    attentionText_.clear();
+    recoveryTranscript_.clear();
+    emit attentionChanged();
+    if (state_ == QStringLiteral("error")) {
+        if (listening_) runtime_->platform.setAcceptingInput(true);
+        setState(QStringLiteral("idle"));
+    }
+    rebuildTrayMenu();
+}
+
+void AppController::refreshMicrophones() {
+    QVariantList values;
+    bool selectedWasFound = settings_.microphoneId().isEmpty();
+    values.append(QVariantMap{
+        {QStringLiteral("id"), QString()},
+        {QStringLiteral("name"), QStringLiteral("System default")},
+    });
+    for (const auto& device : runtime_->platform.microphones()) {
+        if (device.id.empty()) continue;
+        if (QString::fromStdString(device.id) == settings_.microphoneId()) selectedWasFound = true;
+        values.append(QVariantMap{
+            {QStringLiteral("id"), QString::fromStdString(device.id)},
+            {QStringLiteral("name"), QString::fromStdString(device.name)},
+        });
+    }
+    if (!selectedWasFound) {
+        values.append(QVariantMap{
+            {QStringLiteral("id"), settings_.microphoneId()},
+            {QStringLiteral("name"), QStringLiteral("Selected microphone (disconnected — using default)")},
+        });
+    }
+    microphones_ = std::move(values);
+    emit microphonesChanged();
+}
+
+void AppController::refreshCapabilities() {
+    runtime_->platform.refreshCapabilities();
+    QVariantList values;
+    for (const auto& capability : runtime_->platform.capabilities()) {
+        values.append(QVariantMap{
+            {QStringLiteral("id"), QString::fromStdString(capability.id)},
+            {QStringLiteral("label"), QString::fromStdString(capability.label)},
+            {QStringLiteral("state"), QString::fromStdString(capability.state)},
+            {QStringLiteral("detail"), QString::fromStdString(capability.detail)},
+            {QStringLiteral("remediation"), QString::fromStdString(capability.remediation)},
+            {QStringLiteral("required"), capability.required},
+        });
+    }
+    capabilities_ = std::move(values);
+    platformReady_ = runtime_->platform.readyForDictation();
+    capabilitySummary_ = QString::fromStdString(runtime_->platform.capabilitySummary());
+    emit capabilitySummaryChanged();
+}
+
+void AppController::checkForUpdates() {
+    silentUpdateCheckInFlight_ = false;
+    updates_.checkForUpdates();
+    showSettings();
+}
+void AppController::copyDiagnostics() {
+    QApplication::clipboard()->setText(diagnosticsReport());
+}
+
+void AppController::openIssue() {
+    QUrl url(QStringLiteral("https://github.com/yonif8/LocalFlow/issues/new"));
+    QUrlQuery query;
+    query.addQueryItem(QStringLiteral("title"), QStringLiteral("LocalFlow issue"));
+    query.addQueryItem(QStringLiteral("body"),
+                       QStringLiteral("Please describe what happened above this report.\n\n") +
+                           diagnosticsReport());
+    url.setQuery(query);
+    if (!QDesktopServices::openUrl(url)) {
+        attentionText_ = QStringLiteral(
+            "The LocalFlow issue page could not be opened. Copy the diagnostics report and open github.com/yonif8/LocalFlow/issues in your browser.");
+        emit attentionChanged();
+        setState(QStringLiteral("error"));
+    }
+}
+
+void AppController::openDiagnostics() {
+    refreshCapabilities();
+    emit diagnosticsRequested();
+}
 void AppController::quit() { QApplication::quit(); }

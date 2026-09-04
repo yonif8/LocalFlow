@@ -5,6 +5,7 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <utility>
 
@@ -37,6 +38,49 @@ std::uint64_t nowMs() {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
 }
+
+// Xlib reports passive-grab conflicts asynchronously through a process-global
+// error handler. Without a scoped trap, an ordinary BadAccess (another app
+// already owns the shortcut) reaches Xlib's default handler and terminates the
+// process. Serialize our short request/sync windows and restore the host's
+// handler immediately afterwards.
+std::mutex xErrorTrapMutex;
+thread_local Display* trappedDisplay = nullptr;
+thread_local int trappedError = Success;
+std::atomic<XErrorHandler> fallbackXErrorHandler{nullptr};
+
+int captureXError(Display* display, XErrorEvent* event) noexcept {
+    if (display == trappedDisplay) {
+        if (trappedError == Success) {
+            trappedError = event->error_code;
+        }
+        return 0;
+    }
+    const auto fallback = fallbackXErrorHandler.load();
+    return fallback != nullptr ? fallback(display, event) : 0;
+}
+
+template <typename Operation>
+int withXErrorTrap(Display* display, Operation&& operation) noexcept {
+    std::lock_guard<std::mutex> lock(xErrorTrapMutex);
+    trappedDisplay = display;
+    trappedError = Success;
+    const auto previous = XSetErrorHandler(&captureXError);
+    fallbackXErrorHandler.store(previous);
+    operation();
+    XSync(display, False);
+    XSetErrorHandler(previous);
+    fallbackXErrorHandler.store(nullptr);
+    trappedDisplay = nullptr;
+    return std::exchange(trappedError, Success);
+}
+
+// PlatformBridge intentionally uses one native backend for the keyboard and a
+// second for an optional mouse button. Only one of those X clients may own the
+// temporary AnyModifier Escape grab. Coordinating it in-process avoids a
+// guaranteed BadAccess when both physical triggers overlap.
+std::mutex escapeOwnerMutex;
+const void* escapeOwner = nullptr;
 
 class X11ShortcutBackend final : public GlobalShortcutBackend {
 public:
@@ -102,19 +146,48 @@ public:
             Mod2Mask,
             LockMask | Mod2Mask,
         };
-        for (const auto locks : lockVariants) {
-            if (shortcut.kind == ShortcutKind::key) {
-                XGrabKey(
-                    display_, keycode_, modifierMask_ | locks, root_, False,
-                    GrabModeAsync, GrabModeAsync);
-            } else {
-                XGrabButton(
-                    display_, shortcut.mouseButton, modifierMask_ | locks, root_, False,
-                    ButtonPressMask | ButtonReleaseMask,
-                    GrabModeAsync, GrabModeAsync, None, None);
+        const int grabError = withXErrorTrap(display_, [&] {
+            for (const auto locks : lockVariants) {
+                if (shortcut.kind == ShortcutKind::key) {
+                    XGrabKey(
+                        display_, keycode_, modifierMask_ | locks, root_, False,
+                        GrabModeAsync, GrabModeAsync);
+                } else {
+                    XGrabButton(
+                        display_, shortcut.mouseButton, modifierMask_ | locks, root_, False,
+                        ButtonPressMask | ButtonReleaseMask,
+                        GrabModeAsync, GrabModeAsync, None, None);
+                }
             }
+        });
+        if (grabError != Success) {
+            // Some lock variants may have succeeded before X11 reported the
+            // conflicting one, so roll the entire set back on this connection.
+            (void)withXErrorTrap(display_, [&] {
+                for (const auto locks : lockVariants) {
+                    if (shortcut.kind == ShortcutKind::key) {
+                        XUngrabKey(display_, keycode_, modifierMask_ | locks, root_);
+                    } else {
+                        XUngrabButton(
+                            display_, shortcut.mouseButton,
+                            modifierMask_ | locks, root_);
+                    }
+                }
+            });
+            char description[256]{};
+            XGetErrorText(display_, grabError, description, int(sizeof(description)));
+            const std::string detail = description[0] == '\0'
+                ? std::string("X11 error ") + std::to_string(grabError)
+                : std::string(description);
+            cleanupDisplay();
+            return Status::failure(
+                grabError == BadAccess ? ErrorCode::busy : ErrorCode::io_error,
+                "LocalFlow could not reserve the selected X11 shortcut (" +
+                    detail + ").",
+                grabError == BadAccess
+                    ? "Choose a different shortcut or close the application already using it."
+                    : "Try restarting LocalFlow in the current graphical session.");
         }
-        XSync(display_, False);
 
         Bool detectable = False;
         (void)XkbSetDetectableAutoRepeat(display_, True, &detectable);
@@ -144,36 +217,55 @@ public:
             Mod2Mask,
             LockMask | Mod2Mask,
         };
-        for (const auto locks : lockVariants) {
-            if (shortcut_.kind == ShortcutKind::key) {
-                XUngrabKey(display_, keycode_, modifierMask_ | locks, root_);
-            } else {
-                XUngrabButton(display_, shortcut_.mouseButton, modifierMask_ | locks, root_);
+        (void)withXErrorTrap(display_, [&] {
+            for (const auto locks : lockVariants) {
+                if (shortcut_.kind == ShortcutKind::key) {
+                    XUngrabKey(display_, keycode_, modifierMask_ | locks, root_);
+                } else {
+                    XUngrabButton(
+                        display_, shortcut_.mouseButton,
+                        modifierMask_ | locks, root_);
+                }
             }
-        }
-        XSync(display_, False);
+        });
         cleanupDisplay();
     }
 
 private:
-    void setEscapeGrabbed(bool grab) noexcept {
+    bool setEscapeGrabbed(bool grab) noexcept {
         if (escapeKeycode_ == 0 ||
             (shortcut_.kind == ShortcutKind::key && escapeKeycode_ == keycode_) ||
             escapeGrabbed_ == grab) {
-            return;
+            return escapeGrabbed_ == grab;
         }
+        std::lock_guard<std::mutex> ownerLock(escapeOwnerMutex);
         if (grab) {
+            if (escapeOwner != nullptr && escapeOwner != this) {
+                return false;
+            }
             // Escape is intercepted only for the duration of an active hold.
             // AnyModifier also catches it while the PTT chord's modifiers are
             // still physically down.
-            XGrabKey(
-                display_, escapeKeycode_, AnyModifier, root_, False,
-                GrabModeAsync, GrabModeAsync);
+            const int error = withXErrorTrap(display_, [&] {
+                XGrabKey(
+                    display_, escapeKeycode_, AnyModifier, root_, False,
+                    GrabModeAsync, GrabModeAsync);
+            });
+            if (error != Success) {
+                return false;
+            }
+            escapeOwner = this;
+            escapeGrabbed_ = true;
         } else {
-            XUngrabKey(display_, escapeKeycode_, AnyModifier, root_);
+            if (escapeOwner == this) {
+                (void)withXErrorTrap(display_, [&] {
+                    XUngrabKey(display_, escapeKeycode_, AnyModifier, root_);
+                });
+                escapeOwner = nullptr;
+            }
+            escapeGrabbed_ = false;
         }
-        XSync(display_, False);
-        escapeGrabbed_ = grab;
+        return true;
     }
 
     void eventLoop() noexcept {

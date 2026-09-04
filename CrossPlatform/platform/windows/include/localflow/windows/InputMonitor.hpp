@@ -4,7 +4,7 @@
 
 #include "localflow/windows/PttStateMachine.hpp"
 
-#include <Windows.h>
+#include <windows.h>
 
 #include <atomic>
 #include <chrono>
@@ -60,14 +60,39 @@ struct InputMonitorOptions {
     std::vector<Trigger> triggers{keyboard_trigger(VK_F8)};
     std::uint32_t cancel_virtual_key{VK_ESCAPE};
     bool ignore_injected_events{true};
+    /// Prevent a configured physical mouse trigger from also reaching the
+    /// foreground application (for example, browser Back for XBUTTON1).
+    /// Keyboard shortcuts and unrelated mouse buttons are always observed
+    /// without being consumed.
+    bool consume_mouse_trigger_events{true};
 };
+
+namespace detail {
+
+struct MouseInputDecision {
+    Trigger trigger{};
+    bool configured{false};
+    bool pressed{false};
+    bool consume{false};
+};
+
+/// Pure hook policy kept visible for native adapter tests. Injected events are
+/// ignored when requested, and only configured down/up messages may be
+/// consumed.
+[[nodiscard]] MouseInputDecision classify_mouse_input(
+    const InputMonitorOptions& options,
+    WPARAM message,
+    const MSLLHOOKSTRUCT& event) noexcept;
+
+}  // namespace detail
 
 /// WH_KEYBOARD_LL/WH_MOUSE_LL based global hold-to-talk monitor.
 ///
 /// Hooks live on a dedicated message-loop thread. User callbacks are delivered
 /// on a second thread, ensuring model/microphone startup can never stall the
-/// hook long enough for Windows to silently remove it. This class observes but
-/// never consumes input.
+/// hook long enough for Windows to silently remove it. Keyboard input is only
+/// observed. A configured physical mouse trigger is consumed by default so it
+/// cannot also activate a foreground-app action.
 class GlobalInputMonitor final {
 public:
     using Callback = std::function<void(const PttEvent&)>;
@@ -91,7 +116,8 @@ private:
 
     void hook_main(std::promise<std::error_code> ready);
     void process_keyboard(WPARAM message, const KBDLLHOOKSTRUCT& event) noexcept;
-    void process_mouse(WPARAM message, const MSLLHOOKSTRUCT& event) noexcept;
+    [[nodiscard]] bool process_mouse(
+        WPARAM message, const MSLLHOOKSTRUCT& event) noexcept;
     void process_down(Trigger trigger) noexcept;
     void process_up(Trigger trigger) noexcept;
     void process_cancel(CancelReason reason) noexcept;

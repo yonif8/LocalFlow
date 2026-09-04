@@ -123,4 +123,26 @@ if(LOCALFLOW_WINDOWS_BUILD_TESTS)
         endif()
     endif()
     add_test(NAME localflow.windows.safety_state COMMAND localflow_windows_safety_state_tests)
+
+    if(WIN32)
+        add_executable(localflow_windows_input_policy_tests
+            tests/InputMonitorPolicyTests.cpp)
+        target_compile_features(localflow_windows_input_policy_tests PRIVATE cxx_std_17)
+        target_link_libraries(localflow_windows_input_policy_tests PRIVATE LocalFlow::Windows)
+        if(MSVC)
+            target_compile_options(localflow_windows_input_policy_tests PRIVATE
+                /W4 /permissive- /EHsc /utf-8)
+            if(LOCALFLOW_STRICT_WARNINGS)
+                target_compile_options(localflow_windows_input_policy_tests PRIVATE /WX)
+            endif()
+        else()
+            target_compile_options(localflow_windows_input_policy_tests PRIVATE
+                -Wall -Wextra -Wpedantic)
+            if(LOCALFLOW_STRICT_WARNINGS)
+                target_compile_options(localflow_windows_input_policy_tests PRIVATE -Werror)
+            endif()
+        endif()
+        add_test(NAME localflow.windows.input_policy
+            COMMAND localflow_windows_input_policy_tests)
+    endif()
 endif()
