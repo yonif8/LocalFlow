@@ -19,6 +19,9 @@ shared pipeline rather than duplicate dictation behavior.
   restoration, Ctrl+V insertion, and `KEYEVENTF_UNICODE` fallback.
 - A capture backend interface plus a dependency-free foreground-window GDI
   implementation that produces local BGRA frames for OCR.
+- Fully local `Windows.Media.Ocr` recognition with an asynchronous future API,
+  language selection, bilinear high-DPI downscaling, concurrency limits, hard
+  deadlines/cancellation, and bounded terminology-preserving text cleanup.
 - Platform-neutral PTT transition tests that run on macOS/Linux CI as well as
   Windows.
 
@@ -51,8 +54,8 @@ The app coordinator should keep one `ForegroundWindowIdentity` from the PTT
 press and follow this sequence:
 
 1. On `pressed`, duck output audio and start WASAPI capture. In parallel,
-   submit `IScreenCapture::capture()` to a background worker and OCR its BGRA
-   result locally.
+   submit `IScreenCapture::capture()` to a background worker and pass its BGRA
+   frame to `WindowsMediaOcr::recognize_async()`.
 2. On `released`, stop capture, restore audio immediately, run shared ASR,
    terminology, and polish, then call `ForegroundTextInserter::insert_utf8`.
 3. On `cancelled`, stop capture and restore audio without transcribing or
@@ -62,6 +65,12 @@ press and follow this sequence:
    the wrong conversation.
 5. Queue `AudioChunk` data quickly in its callback. Resample the mono native-rate
    stream to 16 kHz in the shared core so all platforms share one algorithm.
+
+Keep the OCR future from step 1 with the active utterance. At PTT release, use
+its result only if `wait_for(0ms)` says it is ready; screen context is helpful
+but must never delay transcription. The implementation invokes only the local
+Windows Runtime OCR engine. It contains no networking code and neither pixels
+nor recognized text are uploaded.
 
 `ForegroundTextInserter` is synchronous because the transient clipboard must
 remain alive long enough for asynchronous Electron/Chromium paste handlers.
@@ -82,7 +91,7 @@ Call it on the pipeline worker, not the UI thread.
   rich text, and delayed-rendered formats—not only plain text.
 - The GDI capture backend is a reliable baseline for ordinary foreground apps.
   A production Windows 11 build should add a Windows Graphics Capture
-  `IScreenCapture` implementation for GPU/protected surfaces. The shared OCR and
+  `IScreenCapture` implementation for GPU-rendered surfaces. The shared OCR and
   terminology layers do not need to change when that backend is swapped in.
 - `PrintWindow` can be slow for a hung target. Capture must stay on the existing
   PTT background path and must never be awaited at key release, matching the
@@ -94,7 +103,7 @@ Call it on the pipeline worker, not the UI thread.
 ## Remaining Windows application work
 
 This adapter is intentionally below the product shell. A distributable build
-still needs the Qt tray/HUD/settings/onboarding UI, Windows Graphics Capture and
-OCR backend selection, Parakeet/S1 runtime integration, persistent settings and
+still needs the Qt tray/HUD/settings/onboarding UI, Windows Graphics Capture,
+Parakeet/S1 runtime integration, persistent settings and
 logs, signed MSIX/installer packaging, and a signed update channel. Those belong
 to the shared app/release layers rather than this OS adapter.

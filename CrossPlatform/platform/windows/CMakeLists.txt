@@ -7,6 +7,7 @@ option(LOCALFLOW_WINDOWS_BUILD_TESTS "Build Windows adapter tests" ON)
 # The hold-state logic deliberately has no Win32 dependency, allowing its edge
 # cases to run in every CI job rather than only on a Windows runner.
 add_library(localflow_windows_state STATIC
+    src/OcrTextNormalization.cpp
     src/PttStateMachine.cpp
 )
 add_library(LocalFlow::WindowsState ALIAS localflow_windows_state)
@@ -26,6 +27,7 @@ if(WIN32)
         src/SystemAudioDucker.cpp
         src/TextInserter.cpp
         src/WinError.cpp
+        src/WindowsMediaOcr.cpp
     )
     add_library(LocalFlow::Windows ALIAS localflow_windows)
     target_compile_features(localflow_windows PUBLIC cxx_std_17)
@@ -50,6 +52,7 @@ if(WIN32)
             propsys
             user32
             uuid
+            windowsapp
     )
     if(MSVC)
         target_compile_options(localflow_windows PRIVATE /W4 /permissive- /EHsc /utf-8)
@@ -69,4 +72,9 @@ if(LOCALFLOW_WINDOWS_BUILD_TESTS)
     target_compile_features(localflow_windows_state_tests PRIVATE cxx_std_17)
     target_link_libraries(localflow_windows_state_tests PRIVATE LocalFlow::WindowsState)
     add_test(NAME localflow.windows.ptt_state COMMAND localflow_windows_state_tests)
+
+    add_executable(localflow_windows_ocr_text_tests tests/OcrTextNormalizationTests.cpp)
+    target_compile_features(localflow_windows_ocr_text_tests PRIVATE cxx_std_17)
+    target_link_libraries(localflow_windows_ocr_text_tests PRIVATE LocalFlow::WindowsState)
+    add_test(NAME localflow.windows.ocr_text_normalization COMMAND localflow_windows_ocr_text_tests)
 endif()
