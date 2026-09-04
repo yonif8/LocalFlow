@@ -1,6 +1,6 @@
 #include "ModelManager.hpp"
+#include "ModelVerification.hpp"
 
-#include <QCryptographicHash>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
@@ -21,6 +21,16 @@ ModelManager::ModelManager(QObject* parent) : QObject(parent) {
     detailText_ = ready()
         ? QStringLiteral("Speech and polish work entirely on this computer.")
         : QStringLiteral("Download Parakeet and S1-mini once (about 1.2 GB total). Audio and text are never uploaded.");
+}
+
+ModelManager::~ModelManager() {
+    cancelled_ = true;
+    if (verificationCancellation_) verificationCancellation_->store(true);
+    if (reply_) {
+        disconnect(reply_, nullptr, this, nullptr);
+        reply_->abort();
+    }
+    if (output_.isOpen()) output_.close();
 }
 
 const ModelManager::Spec& ModelManager::asrSpec() {
@@ -54,14 +64,20 @@ QString ModelManager::finalPath(const Spec& spec) const {
     return modelsDirectory() + QLatin1Char('/') + spec.filename;
 }
 
+QString ModelManager::verificationRecordPath(const Spec& spec) const {
+    return finalPath(spec) + QStringLiteral(".verified.json");
+}
+
 QString ModelManager::asrModelPath() const { return finalPath(asrSpec()); }
 QString ModelManager::polishModelPath() const { return finalPath(polishSpec()); }
 
 bool ModelManager::validOnDisk(const Spec& spec) const {
-    const QFileInfo file(finalPath(spec));
-    // Integrity is verified before the atomic rename. Checking the pinned size
-    // here makes startup instant without trusting truncated files.
-    return file.isFile() && file.size() == spec.bytes;
+    return localflow::models::verificationReceiptMatchesFile(
+        finalPath(spec), verificationRecordPath(spec), spec.sha256, spec.bytes);
+}
+
+void ModelManager::removeVerificationRecord(const Spec& spec) const {
+    QFile::remove(verificationRecordPath(spec));
 }
 
 bool ModelManager::ready() const {
@@ -71,8 +87,17 @@ bool ModelManager::ready() const {
 double ModelManager::progress() const {
     const qint64 complete = (validOnDisk(asrSpec()) ? asrSpec().bytes : 0)
         + (validOnDisk(polishSpec()) ? polishSpec().bytes : 0);
-    const qint64 inFlight = active_ ? qMin(active_->bytes, resumedBytes_ + receivedBytes_) : 0;
-    return qBound(0.0, double(complete + inFlight) / double(asrSpec().bytes + polishSpec().bytes), 1.0);
+    const auto partialBytes = [this](const Spec& spec) {
+        if (validOnDisk(spec)) return qint64(0);
+        qint64 bytes = qBound<qint64>(
+            0, QFileInfo(finalPath(spec) + QStringLiteral(".part")).size(), spec.bytes);
+        bytes = qMax(bytes, qBound<qint64>(
+            0, QFileInfo(finalPath(spec)).size(), spec.bytes));
+        if (active_ == &spec) bytes = qMax(bytes, qMin(spec.bytes, resumedBytes_ + receivedBytes_));
+        return bytes;
+    };
+    const qint64 partial = partialBytes(asrSpec()) + partialBytes(polishSpec());
+    return qBound(0.0, double(complete + partial) / double(asrSpec().bytes + polishSpec().bytes), 1.0);
 }
 
 QString ModelManager::humanBytes(qint64 bytes) {
@@ -119,8 +144,19 @@ void ModelManager::start(const Spec& spec) {
     active_ = &spec;
     receivedBytes_ = 0;
     transferFailure_.clear();
+    const QString destination = finalPath(spec);
+    if (const QFileInfo installed(destination);
+        installed.isFile() && installed.size() == spec.bytes) {
+        verifyDownloaded(spec, destination, false);
+        return;
+    }
+    removeVerificationRecord(spec);
     const QString partPath = finalPath(spec) + QStringLiteral(".part");
     resumedBytes_ = QFileInfo(partPath).size();
+    if (resumedBytes_ == spec.bytes) {
+        verifyDownloaded(spec, partPath);
+        return;
+    }
     if (resumedBytes_ < 0 || resumedBytes_ > spec.bytes) {
         QFile stale(partPath);
         if (stale.open(QIODevice::WriteOnly | QIODevice::Truncate)) stale.close();
@@ -218,7 +254,24 @@ void ModelManager::handleFinished() {
     verifyDownloaded(spec, partPath);
 }
 
-void ModelManager::verifyDownloaded(const Spec& spec, const QString& partPath) {
+void ModelManager::verifyDownloaded(
+    const Spec& spec, const QString& candidatePath, bool installAfterVerification) {
+    const QString destination = finalPath(spec);
+    QString verificationPath = candidatePath;
+    if (installAfterVerification) {
+        // Hash the installed path, not the temporary path. This closes the
+        // rename gap: the exact bytes that receive the receipt are the bytes
+        // read by the verifier.
+        removeVerificationRecord(spec);
+        QFile::remove(destination);
+        if (!QFile::rename(candidatePath, destination)) {
+            resetTransfer();
+            return fail(QStringLiteral("Couldn’t install the model"),
+                        QStringLiteral("LocalFlow could not move the downloaded model into place for verification."));
+        }
+        verificationPath = destination;
+    }
+
     verifying_ = true;
     const auto cancellation = std::make_shared<std::atomic_bool>(false);
     verificationCancellation_ = cancellation;
@@ -226,44 +279,75 @@ void ModelManager::verifyDownloaded(const Spec& spec, const QString& partPath) {
     detailText_ = QStringLiteral("Checking the model before LocalFlow uses it.");
     emit changed();
 
-    auto* watcher = new QFutureWatcher<QByteArray>(this);
-    connect(watcher, &QFutureWatcher<QByteArray>::finished, this, [
-        this, watcher, spec, partPath, cancellation
+    auto* watcher = new QFutureWatcher<localflow::models::HashResult>(this);
+    connect(watcher, &QFutureWatcher<localflow::models::HashResult>::finished, this, [
+        this, watcher, spec, verificationPath, cancellation
     ] {
-        const QByteArray digest = watcher->result();
+        const localflow::models::HashResult verification = watcher->result();
         watcher->deleteLater();
         verifying_ = false;
-        if (cancelled_ || cancellation->load()) {
+        if (cancelled_ || cancellation->load() ||
+            verification.status == localflow::models::HashStatus::cancelled) {
             resetTransfer();
             emit changed();
             return;
         }
-        if (digest.toHex() != spec.sha256) {
-            QFile::remove(partPath);
+        if (verification.status == localflow::models::HashStatus::io_error) {
+            removeVerificationRecord(spec);
+            const QString detail = verification.error.isEmpty()
+                ? QStringLiteral("The model could not be read. It was left in place so you can retry.")
+                : verification.error +
+                    QStringLiteral(" The model was left in place so you can retry.");
+            resetTransfer();
+            return fail(QStringLiteral("Couldn’t verify the model"), detail);
+        }
+        if (verification.status == localflow::models::HashStatus::file_changed) {
+            removeVerificationRecord(spec);
+            const QString detail = verification.error.isEmpty()
+                ? QStringLiteral("The model changed while LocalFlow was checking it. It was left in place; please retry.")
+                : verification.error +
+                    QStringLiteral(" It was left in place; please retry.");
+            resetTransfer();
+            return fail(QStringLiteral("Model changed during verification"), detail);
+        }
+        if (verification.digest.toHex() != spec.sha256) {
+            QFile::remove(verificationPath);
+            removeVerificationRecord(spec);
             resetTransfer();
             return fail(QStringLiteral("Model verification failed"), QStringLiteral("The downloaded file was damaged and has been removed. Please retry."));
         }
-        const QString destination = finalPath(spec);
-        QFile::remove(destination);
-        if (!QFile::rename(partPath, destination)) {
+
+        QString stampError;
+        auto currentStamp =
+            localflow::models::captureFileStamp(verificationPath, &stampError);
+        if (!currentStamp || *currentStamp != verification.stamp) {
+            removeVerificationRecord(spec);
             resetTransfer();
-            return fail(QStringLiteral("Couldn’t install the model"), QStringLiteral("LocalFlow could not move the verified model into place."));
+            return fail(
+                QStringLiteral("Model changed during verification"),
+                stampError.isEmpty()
+                    ? QStringLiteral("The verified model changed before it could be installed. It was left in place; please retry.")
+                    : stampError + QStringLiteral(" It was left in place; please retry."));
         }
+
+        const QString destination = finalPath(spec);
+        QString receiptError;
+        if (!localflow::models::writeVerificationReceipt(
+                destination, verificationRecordPath(spec), spec.sha256,
+                *currentStamp, &receiptError)) {
+            resetTransfer();
+            return fail(QStringLiteral("Couldn’t record model verification"),
+                        receiptError.isEmpty()
+                            ? QStringLiteral("The model is intact, but LocalFlow could not save its verification receipt. Check the models folder permissions and retry.")
+                            : receiptError + QStringLiteral(" The model was left in place and will not be used until verification succeeds."));
+        }
+        QFile::remove(destination + QStringLiteral(".part"));
         resetTransfer();
         startNext();
     });
-    watcher->setFuture(QtConcurrent::run([partPath, cancellation] {
-        QFile file(partPath);
-        if (!file.open(QIODevice::ReadOnly)) return QByteArray();
-        QCryptographicHash hash(QCryptographicHash::Sha256);
-        while (!file.atEnd()) {
-            if (cancellation->load()) return QByteArray();
-            const QByteArray chunk = file.read(kReadChunk);
-            if (chunk.isEmpty() && !file.atEnd()) return QByteArray();
-            hash.addData(chunk);
-        }
-        if (cancellation->load()) return QByteArray();
-        return hash.result();
+    watcher->setFuture(QtConcurrent::run([verificationPath, cancellation, expectedBytes = spec.bytes] {
+        return localflow::models::hashFile(
+            verificationPath, expectedBytes, *cancellation, kReadChunk);
     }));
 }
 

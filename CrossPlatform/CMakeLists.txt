@@ -39,7 +39,8 @@ if(LOCALFLOW_BUILD_APP)
 endif()
 
 if(LOCALFLOW_STRICT_WARNINGS)
-    foreach(target localflow_core localflow_asr localflow_polish localflow_desktop localflow_polish_worker)
+    foreach(target localflow_core localflow_asr localflow_polish localflow_desktop localflow_polish_worker
+                   localflow_model_verification_tests localflow_single_instance_tests)
         if(TARGET ${target})
             if(MSVC)
                 target_compile_options(${target} PRIVATE /WX)

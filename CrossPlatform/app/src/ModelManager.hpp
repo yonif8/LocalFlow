@@ -23,6 +23,7 @@ class ModelManager final : public QObject {
 
 public:
     explicit ModelManager(QObject* parent = nullptr);
+    ~ModelManager() override;
 
     bool ready() const;
     bool busy() const { return reply_ != nullptr || verifying_; }
@@ -56,13 +57,15 @@ private:
     static QString humanBytes(qint64 bytes);
 
     QString finalPath(const Spec& spec) const;
+    QString verificationRecordPath(const Spec& spec) const;
     bool validOnDisk(const Spec& spec) const;
+    void removeVerificationRecord(const Spec& spec) const;
     void startNext();
     void start(const Spec& spec);
     void handleMetadata();
     void handleReadyRead();
     void handleFinished();
-    void verifyDownloaded(const Spec& spec, const QString& partPath);
+    void verifyDownloaded(const Spec& spec, const QString& candidatePath, bool installAfterVerification = true);
     void fail(QString summary, QString detail);
     void resetTransfer();
 

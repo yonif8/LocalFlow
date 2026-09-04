@@ -6,10 +6,35 @@ qt_add_executable(localflow_desktop
     src/AppController.cpp
     src/LocalOcr.cpp
     src/ModelManager.cpp
+    src/ModelVerification.cpp
     src/PlatformBridge.cpp
     src/PolishWorkerClient.cpp
     src/SettingsModel.cpp
+    src/SingleInstance.cpp
 )
+
+if(BUILD_TESTING)
+    add_executable(localflow_model_verification_tests
+        src/ModelVerification.cpp
+        tests/ModelVerificationTests.cpp)
+    target_compile_features(localflow_model_verification_tests PRIVATE cxx_std_17)
+    target_include_directories(localflow_model_verification_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(localflow_model_verification_tests PRIVATE Qt6::Core)
+    add_test(NAME localflow_model_verification_tests
+        COMMAND localflow_model_verification_tests)
+
+    add_executable(localflow_single_instance_tests
+        src/SingleInstance.cpp
+        tests/SingleInstanceTests.cpp)
+    target_compile_features(localflow_single_instance_tests PRIVATE cxx_std_17)
+    target_include_directories(localflow_single_instance_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_link_libraries(localflow_single_instance_tests PRIVATE
+        Qt6::Core Qt6::Network)
+    add_test(NAME localflow_single_instance_tests
+        COMMAND localflow_single_instance_tests)
+endif()
 
 add_executable(localflow_polish_worker src/polish_worker_main.cpp)
 set_target_properties(localflow_polish_worker PROPERTIES OUTPUT_NAME "localflow-polish-worker")
