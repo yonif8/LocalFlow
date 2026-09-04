@@ -12,8 +12,8 @@ struct PolishWorkerResult {
     qint64 elapsedMs = 0;
 };
 
-/// Blocking client for the persistent, process-isolated S1 runtime. Use this
-/// only from the dictation worker thread. Isolation prevents NeMo and modern
+/// Blocking client for the persistent, process-isolated S1 runtime. Use each
+/// instance from one owning worker thread. Isolation prevents NeMo and modern
 /// llama.cpp from loading incompatible libggml versions into one process.
 class PolishWorkerClient final {
 public:
@@ -25,7 +25,7 @@ public:
         const QString& tone,
         int timeoutMs,
         int maxOutputTokens = 1024);
-    void prewarm();
+    bool prewarm(QString* error = nullptr);
     void stop();
 
 private:

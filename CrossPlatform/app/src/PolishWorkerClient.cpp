@@ -133,9 +133,8 @@ PolishWorkerResult PolishWorkerClient::polish(
     };
 }
 
-void PolishWorkerClient::prewarm() {
-    QString ignored;
-    ensureStarted(&ignored);
+bool PolishWorkerClient::prewarm(QString* error) {
+    return ensureStarted(error);
 }
 
 void PolishWorkerClient::stop() {

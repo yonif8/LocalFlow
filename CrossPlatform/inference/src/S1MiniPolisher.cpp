@@ -201,6 +201,7 @@ Result<PolishResponse> S1MiniPolisher::polish(const PolishRequest& request) {
     auto batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
     std::string output;
     llama_token sampledToken = 0;
+    bool reachedEnd = false;
     const std::size_t outputLimit = std::min<std::size_t>(
         request.maxOutputTokens,
         std::size_t(contextParameters.n_ctx) - std::size_t(tokenCount) - 1);
@@ -217,7 +218,10 @@ Result<PolishResponse> S1MiniPolisher::polish(const PolishRequest& request) {
         }
 
         sampledToken = llama_sampler_sample(sampler, context, -1);
-        if (llama_vocab_is_eog(vocabulary, sampledToken)) break;
+        if (llama_vocab_is_eog(vocabulary, sampledToken)) {
+            reachedEnd = true;
+            break;
+        }
 
         std::vector<char> piece(256);
         int pieceSize = llama_token_to_piece(
@@ -232,6 +236,11 @@ Result<PolishResponse> S1MiniPolisher::polish(const PolishRequest& request) {
         }
         output.append(piece.data(), static_cast<std::size_t>(pieceSize));
         batch = llama_batch_get_one(&sampledToken, 1);
+    }
+
+    if (!reachedEnd) {
+        return Result<PolishResponse>::failure(
+            "S1-mini output reached its generation limit before completion");
     }
 
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(

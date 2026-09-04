@@ -8,6 +8,9 @@
 #include <QPointer>
 #include <QUrl>
 
+#include <atomic>
+#include <memory>
+
 class ModelManager final : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool ready READ ready NOTIFY changed)
@@ -71,6 +74,8 @@ private:
     qint64 receivedBytes_ = 0;
     bool verifying_ = false;
     bool cancelled_ = false;
+    QString transferFailure_;
+    std::shared_ptr<std::atomic_bool> verificationCancellation_;
     QString statusText_;
     QString detailText_;
 };

@@ -143,6 +143,98 @@ struct PipelineSettings {
     PersonalDictionary dictionary;
 };
 
+// QProcess is thread-affine, so every S1 worker operation lives on this one
+// persistent executor. Prewarming can no longer occupy the dictation executor
+// or make ASR wait behind the worker's startup timeout.
+class PolishExecutor final {
+public:
+    explicit PolishExecutor(const QString& modelPath) : worker_(modelPath) {
+        pool_.setMaxThreadCount(1);
+        pool_.setExpiryTimeout(-1);
+    }
+
+    ~PolishExecutor() { stop(); }
+
+    void prewarm() {
+        State expected = State::cold;
+        if (stopping_.load() || !state_.compare_exchange_strong(expected, State::warming)) return;
+        prewarmFuture_ = QtConcurrent::run(&pool_, [this] {
+            QString error;
+            const bool ready = worker_.prewarm(&error);
+            if (!ready) {
+                std::lock_guard lock(errorMutex_);
+                startupError_ = error;
+            }
+            state_.store(ready ? State::ready : State::failed);
+        });
+    }
+
+    PolishWorkerResult polish(
+        QString text, QString tone, int timeoutMs, int maxOutputTokens = 1024) {
+        if (stopping_.load()) {
+            return {false, {}, QStringLiteral("Polish worker is stopping"), 0};
+        }
+        auto future = QtConcurrent::run(&pool_, [
+            this,
+            text = std::move(text),
+            tone = std::move(tone),
+            timeoutMs,
+            maxOutputTokens
+        ] {
+            State state = state_.load();
+            if (state == State::failed) return failedResult();
+            if (state == State::cold) {
+                QString error;
+                if (!worker_.prewarm(&error)) {
+                    {
+                        std::lock_guard lock(errorMutex_);
+                        startupError_ = error;
+                    }
+                    state_.store(State::failed);
+                    return failedResult();
+                }
+                state_.store(State::ready);
+            }
+            // A warming task is ahead of this task on the same single-threaded
+            // executor, so its state is final by the time this lambda runs.
+            if (state_.load() == State::failed) return failedResult();
+            return worker_.polish(text, tone, timeoutMs, maxOutputTokens);
+        });
+        future.waitForFinished();
+        return future.result();
+    }
+
+    void stop() {
+        if (stopping_.exchange(true)) return;
+        auto future = QtConcurrent::run(&pool_, [this] { worker_.stop(); });
+        future.waitForFinished();
+        pool_.waitForDone();
+    }
+
+private:
+    enum class State { cold, warming, ready, failed };
+
+    PolishWorkerResult failedResult() const {
+        std::lock_guard lock(errorMutex_);
+        return {
+            false,
+            {},
+            startupError_.isEmpty()
+                ? QStringLiteral("Local polish worker could not be prepared")
+                : startupError_,
+            0,
+        };
+    }
+
+    PolishWorkerClient worker_;
+    QThreadPool pool_;
+    QFuture<void> prewarmFuture_;
+    std::atomic<State> state_{State::cold};
+    std::atomic<bool> stopping_{false};
+    mutable std::mutex errorMutex_;
+    QString startupError_;
+};
+
 class CoreTranscriber final : public ITranscriber {
 public:
     explicit CoreTranscriber(localflow::inference::NemoTranscriber& value) : value_(value) {}
@@ -157,7 +249,7 @@ private:
 
 class CorePolisher final : public ITextPolisher {
 public:
-    CorePolisher(PolishWorkerClient& worker, PipelineSettings settings)
+    CorePolisher(PolishExecutor& worker, PipelineSettings settings)
         : worker_(worker), settings_(std::move(settings)) {}
 
     std::string polish(const std::string& text, const PolishContext& context) override {
@@ -177,7 +269,7 @@ public:
         return result.text.toStdString();
     }
 private:
-    PolishWorkerClient& worker_;
+    PolishExecutor& worker_;
     PipelineSettings settings_;
 };
 
@@ -224,16 +316,19 @@ struct AppController::RuntimeState {
           learned(loadLearnedTerms()) {
         pipelinePool.setMaxThreadCount(1);
         pipelinePool.setExpiryTimeout(-1);
+        prewarmPool.setMaxThreadCount(1);
+        prewarmPool.setExpiryTimeout(-1);
     }
 
     PlatformBridge platform;
     localflow::inference::NemoTranscriber transcriber;
-    PolishWorkerClient polishWorker;
+    PolishExecutor polishWorker;
     LearnedTerminologyBank learned;
     std::mutex pipelineMutex;
     std::atomic<bool> cancelPipeline{false};
     QFutureWatcher<PipelineJobResult>* watcher = nullptr;
     QThreadPool pipelinePool;
+    QThreadPool prewarmPool;
     QFuture<void> prewarmFuture;
 };
 
@@ -263,10 +358,9 @@ AppController::~AppController() {
     stopListening();
     if (runtime_->watcher) runtime_->watcher->waitForFinished();
     if (runtime_->prewarmFuture.isRunning()) runtime_->prewarmFuture.waitForFinished();
-    QtConcurrent::run(&runtime_->pipelinePool, [runtime = runtime_.get()] {
-        runtime->polishWorker.stop();
-    }).waitForFinished();
+    runtime_->polishWorker.stop();
     runtime_->pipelinePool.waitForDone();
+    runtime_->prewarmPool.waitForDone();
 }
 
 QString AppController::statusText() const {
@@ -360,11 +454,10 @@ void AppController::startListening() {
     emit listeningChanged();
     rebuildTrayMenu();
 
-    runtime_->prewarmFuture = QtConcurrent::run(&runtime_->pipelinePool, [runtime = runtime_.get()] {
-        std::lock_guard lock(runtime->pipelineMutex);
+    runtime_->prewarmFuture = QtConcurrent::run(&runtime_->prewarmPool, [runtime = runtime_.get()] {
         (void)runtime->transcriber.prepare();
-        runtime->polishWorker.prewarm();
     });
+    if (settings_.polishEnabled()) runtime_->polishWorker.prewarm();
 }
 
 void AppController::stopListening() {

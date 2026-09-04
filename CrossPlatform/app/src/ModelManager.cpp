@@ -94,6 +94,7 @@ void ModelManager::retry() { downloadMissing(); }
 void ModelManager::cancel() {
     cancelled_ = true;
     if (reply_) reply_->abort();
+    if (verificationCancellation_) verificationCancellation_->store(true);
     statusText_ = QStringLiteral("Download paused");
     detailText_ = QStringLiteral("Your progress was saved. Resume whenever you’re ready.");
     emit changed();
@@ -117,6 +118,7 @@ void ModelManager::start(const Spec& spec) {
     QDir().mkpath(modelsDirectory());
     active_ = &spec;
     receivedBytes_ = 0;
+    transferFailure_.clear();
     const QString partPath = finalPath(spec) + QStringLiteral(".part");
     resumedBytes_ = QFileInfo(partPath).size();
     if (resumedBytes_ < 0 || resumedBytes_ > spec.bytes) {
@@ -135,6 +137,7 @@ void ModelManager::start(const Spec& spec) {
     request.setRawHeader("User-Agent", "LocalFlow/" LOCALFLOW_VERSION);
     if (resumedBytes_ > 0) request.setRawHeader("Range", "bytes=" + QByteArray::number(resumedBytes_) + "-");
     reply_ = network_.get(request);
+    reply_->setReadBufferSize(kReadChunk);
     connect(reply_, &QNetworkReply::metaDataChanged, this, &ModelManager::handleMetadata);
     connect(reply_, &QIODevice::readyRead, this, &ModelManager::handleReadyRead);
     connect(reply_, &QNetworkReply::downloadProgress, this, [this](qint64 received, qint64) {
@@ -166,10 +169,17 @@ void ModelManager::handleMetadata() {
 void ModelManager::handleReadyRead() {
     if (!reply_ || !output_.isOpen()) return;
     const QByteArray bytes = reply_->readAll();
-    if (!bytes.isEmpty() && output_.write(bytes) != bytes.size()) {
-        const QString error = output_.errorString();
+    if (bytes.isEmpty() || !transferFailure_.isEmpty()) return;
+    const qint64 currentSize = output_.size();
+    if (!active_ || currentSize < 0 || bytes.size() > active_->bytes - currentSize) {
+        transferFailure_ = QStringLiteral(
+            "The server sent more data than the pinned model size. No excess data was saved.");
         reply_->abort();
-        fail(QStringLiteral("Couldn’t save the model"), error);
+        return;
+    }
+    if (output_.write(bytes) != bytes.size()) {
+        transferFailure_ = output_.errorString();
+        reply_->abort();
     }
 }
 
@@ -190,6 +200,11 @@ void ModelManager::handleFinished() {
         emit changed();
         return;
     }
+    if (!transferFailure_.isEmpty()) {
+        const QString detail = transferFailure_;
+        resetTransfer();
+        return fail(QStringLiteral("Model download was rejected"), detail);
+    }
     if (networkError != QNetworkReply::NoError) {
         resetTransfer();
         return fail(QStringLiteral("Download interrupted"), networkDetail + QStringLiteral(" Your progress is saved."));
@@ -205,15 +220,24 @@ void ModelManager::handleFinished() {
 
 void ModelManager::verifyDownloaded(const Spec& spec, const QString& partPath) {
     verifying_ = true;
+    const auto cancellation = std::make_shared<std::atomic_bool>(false);
+    verificationCancellation_ = cancellation;
     statusText_ = QStringLiteral("Verifying %1…").arg(spec.displayName);
     detailText_ = QStringLiteral("Checking the model before LocalFlow uses it.");
     emit changed();
 
     auto* watcher = new QFutureWatcher<QByteArray>(this);
-    connect(watcher, &QFutureWatcher<QByteArray>::finished, this, [this, watcher, spec, partPath] {
+    connect(watcher, &QFutureWatcher<QByteArray>::finished, this, [
+        this, watcher, spec, partPath, cancellation
+    ] {
         const QByteArray digest = watcher->result();
         watcher->deleteLater();
         verifying_ = false;
+        if (cancelled_ || cancellation->load()) {
+            resetTransfer();
+            emit changed();
+            return;
+        }
         if (digest.toHex() != spec.sha256) {
             QFile::remove(partPath);
             resetTransfer();
@@ -228,11 +252,17 @@ void ModelManager::verifyDownloaded(const Spec& spec, const QString& partPath) {
         resetTransfer();
         startNext();
     });
-    watcher->setFuture(QtConcurrent::run([partPath] {
+    watcher->setFuture(QtConcurrent::run([partPath, cancellation] {
         QFile file(partPath);
         if (!file.open(QIODevice::ReadOnly)) return QByteArray();
         QCryptographicHash hash(QCryptographicHash::Sha256);
-        while (!file.atEnd()) hash.addData(file.read(kReadChunk));
+        while (!file.atEnd()) {
+            if (cancellation->load()) return QByteArray();
+            const QByteArray chunk = file.read(kReadChunk);
+            if (chunk.isEmpty() && !file.atEnd()) return QByteArray();
+            hash.addData(chunk);
+        }
+        if (cancellation->load()) return QByteArray();
         return hash.result();
     }));
 }
@@ -248,4 +278,6 @@ void ModelManager::resetTransfer() {
     active_ = nullptr;
     resumedBytes_ = 0;
     receivedBytes_ = 0;
+    transferFailure_.clear();
+    verificationCancellation_.reset();
 }
