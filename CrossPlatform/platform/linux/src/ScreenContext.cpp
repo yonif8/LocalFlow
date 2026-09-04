@@ -86,6 +86,10 @@ public:
         return portal_->captureFrame();
     }
 
+    void cancelPendingCapture() noexcept override {
+        if (portal_) portal_->close();
+    }
+
 private:
     std::shared_ptr<ScreenshotPortal> portal_;
     std::shared_ptr<FocusedTargetProvider> focusedTargets_;
@@ -148,6 +152,42 @@ Status validateFocusedTarget(
             "Nothing was pasted. Return to the intended field and paste the transcript manually.");
     }
     return Status::success();
+}
+
+Status validateScreenCaptureTarget(
+    const ApplicationInfo& expected,
+    const ApplicationInfo& current) {
+    if (expected.nativeWindowId != 0 || current.nativeWindowId != 0) {
+        const bool exactWindow = expected.nativeWindowId != 0 &&
+                                 current.nativeWindowId == expected.nativeWindowId;
+        const bool exactProcess = expected.processId > 0 &&
+                                  current.processId == expected.processId;
+        if (!exactWindow || !exactProcess) {
+            return Status::failure(
+                ErrorCode::focus_changed,
+                "The active window changed before LocalFlow could capture terminology context.",
+                "Screen terminology was skipped for this dictation.");
+        }
+        return Status::success();
+    }
+    return validateFocusedTarget(expected, current);
+}
+
+Result<ScreenFrame> ScreenContextBackend::captureContextFrame(
+    const ApplicationInfo& expectedTarget) {
+    const auto before = activeApplication();
+    if (!before) return Result<ScreenFrame>::failure(before.status());
+    auto validation = validateScreenCaptureTarget(expectedTarget, before.value());
+    if (!validation.ok()) return Result<ScreenFrame>::failure(std::move(validation));
+
+    auto captured = captureContextFrame();
+    if (!captured) return captured;
+
+    const auto after = activeApplication();
+    if (!after) return Result<ScreenFrame>::failure(after.status());
+    validation = validateScreenCaptureTarget(expectedTarget, after.value());
+    if (!validation.ok()) return Result<ScreenFrame>::failure(std::move(validation));
+    return captured;
 }
 
 std::unique_ptr<ScreenContextBackend> makeScreenContextBackend(

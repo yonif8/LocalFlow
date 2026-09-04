@@ -35,6 +35,10 @@ struct ApplicationInfo {
     std::string applicationId;
     std::string windowTitle;
     std::int64_t processId{-1};
+    // Populated by X11 screen-context snapshots. It is intentionally opaque to
+    // shared code and lets a delayed OCR worker prove that the same native
+    // window is still active before capturing pixels.
+    std::uint64_t nativeWindowId{0};
     std::optional<FocusedAccessibleTarget> focusedTarget;
 };
 
@@ -51,6 +55,12 @@ public:
 // Success means both snapshots identify the exact same focused, editable,
 // non-secure accessible object.
 [[nodiscard]] Status validateFocusedTarget(
+    const ApplicationInfo& expected,
+    const ApplicationInfo& current);
+
+// Validates either an exact native X11 window identity or, where no native
+// identity exists, the exact non-secure AT-SPI field identity.
+[[nodiscard]] Status validateScreenCaptureTarget(
     const ApplicationInfo& expected,
     const ApplicationInfo& current);
 
@@ -74,6 +84,15 @@ public:
     [[nodiscard]] virtual std::string name() const = 0;
     [[nodiscard]] virtual Result<ApplicationInfo> activeApplication() = 0;
     [[nodiscard]] virtual Result<ScreenFrame> captureContextFrame() = 0;
+
+    // Production callers should use this overload so an asynchronous capture
+    // cannot silently switch to a different app/window after push-to-talk.
+    [[nodiscard]] virtual Result<ScreenFrame> captureContextFrame(
+        const ApplicationInfo& expectedTarget);
+
+    // Interrupts an in-flight portal request during listener shutdown. Native
+    // synchronous backends may keep the default no-op implementation.
+    virtual void cancelPendingCapture() noexcept {}
 };
 
 // Boundary for org.freedesktop.portal.Screenshot. The first capture may show

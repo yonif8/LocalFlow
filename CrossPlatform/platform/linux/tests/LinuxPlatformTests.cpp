@@ -541,6 +541,51 @@ void testFocusedTargetValidationIsExactAndFailClosed() {
         ErrorCode::not_configured);
 }
 
+void testScreenCaptureTargetValidationIsExactAndFailClosed() {
+    auto expected = focusedTarget();
+    expected.nativeWindowId = 1001;
+    EXPECT_TRUE(validateScreenCaptureTarget(expected, expected).ok());
+
+    auto changed = expected;
+    changed.nativeWindowId = 1002;
+    EXPECT_EQ(
+        validateScreenCaptureTarget(expected, changed).code,
+        ErrorCode::focus_changed);
+
+    changed = expected;
+    changed.processId = 4243;
+    EXPECT_EQ(
+        validateScreenCaptureTarget(expected, changed).code,
+        ErrorCode::focus_changed);
+
+    changed = expected;
+    changed.nativeWindowId = 0;
+    EXPECT_EQ(
+        validateScreenCaptureTarget(expected, changed).code,
+        ErrorCode::focus_changed);
+}
+
+void testAccessibilityContextRejectsUnprovenAndSecureTargets() {
+    auto secure = focusedTarget(
+        "/org/a11y/atspi/accessible/password",
+        FieldSecurity::secure);
+    auto snapshot = captureVisibleAccessibilityText(secure);
+    EXPECT_TRUE(snapshot.visibleStrings.empty());
+    EXPECT_EQ(snapshot.visitedNodes, std::size_t{0});
+
+    auto unknown = secure;
+    unknown.focusedTarget->security = FieldSecurity::unknown;
+    snapshot = captureVisibleAccessibilityText(unknown);
+    EXPECT_TRUE(snapshot.visibleStrings.empty());
+    EXPECT_EQ(snapshot.visitedNodes, std::size_t{0});
+
+    auto notFocused = focusedTarget();
+    notFocused.focusedTarget->focused = false;
+    snapshot = captureVisibleAccessibilityText(notFocused);
+    EXPECT_TRUE(snapshot.visibleStrings.empty());
+    EXPECT_EQ(snapshot.visitedNodes, std::size_t{0});
+}
+
 void testVerifiedTargetIsPassedToAccessibilityInsertion() {
     const auto expected = focusedTarget();
     auto targets = std::make_shared<FakeFocusedTargets>();
@@ -757,6 +802,32 @@ void testPortalScreenshotCapturesEachContextFrame() {
     EXPECT_EQ(portal->closes, 1);
 }
 
+void testPortalScreenshotRefusesAChangedPressTarget() {
+    const auto expected = focusedTarget();
+    auto changed = expected;
+    changed.focusedTarget->objectPath =
+        "/org/a11y/atspi/accessible/different";
+
+    auto portal = std::make_shared<FakeScreenPortal>();
+    auto targets = std::make_shared<FakeFocusedTargets>();
+    targets->snapshots = {changed};
+    auto context = makeScreenContextBackend(
+        SessionType::wayland, portal, targets);
+    const auto rejectedBeforeCapture =
+        context->captureContextFrame(expected);
+    EXPECT_TRUE(!rejectedBeforeCapture.ok());
+    EXPECT_EQ(rejectedBeforeCapture.status().code, ErrorCode::focus_changed);
+    EXPECT_EQ(portal->frames, 0);
+
+    targets->calls = 0;
+    targets->snapshots = {expected, changed};
+    const auto rejectedAfterCapture =
+        context->captureContextFrame(expected);
+    EXPECT_TRUE(!rejectedAfterCapture.ok());
+    EXPECT_EQ(rejectedAfterCapture.status().code, ErrorCode::focus_changed);
+    EXPECT_EQ(portal->frames, 1);
+}
+
 void testWaylandScreenContextReturnsAtSpiApplicationInfo() {
     auto portal = std::make_shared<FakeScreenPortal>();
     auto targets = std::make_shared<FakeFocusedTargets>();
@@ -827,6 +898,8 @@ int main() {
     testPortalResponseDiagnostics();
     testPortalShortcutTriggerUsesXdgSyntax();
     testFocusedTargetValidationIsExactAndFailClosed();
+    testScreenCaptureTargetValidationIsExactAndFailClosed();
+    testAccessibilityContextRejectsUnprovenAndSecureTargets();
     testVerifiedTargetIsPassedToAccessibilityInsertion();
     testFocusChangeRefusesPasteAndCopiesRecovery();
     testSecureTargetNeverCopiesOrPastes();
@@ -837,6 +910,7 @@ int main() {
     testInsertionPrefersAccessibility();
     testInsertionRestoresClipboardAfterPasteFailure();
     testPortalScreenshotCapturesEachContextFrame();
+    testPortalScreenshotRefusesAChangedPressTarget();
     testWaylandScreenContextReturnsAtSpiApplicationInfo();
     testPortalPasteUsesBalancedControlV();
 

@@ -140,6 +140,77 @@ std::uint8_t channel(unsigned long pixel, unsigned long mask) {
     return static_cast<std::uint8_t>((value * 255UL + maximum / 2UL) / maximum);
 }
 
+ApplicationInfo applicationInfo(Display* display, Window window) {
+    ApplicationInfo info;
+    info.nativeWindowId = static_cast<std::uint64_t>(window);
+    info.windowTitle = stringProperty(display, window, "_NET_WM_NAME");
+    if (info.windowTitle.empty()) {
+        char* title = nullptr;
+        if (XFetchName(display, window, &title) > 0 && title) {
+            info.windowTitle = title;
+            XFree(title);
+        }
+    }
+
+    XClassHint classHint{};
+    if (XGetClassHint(display, window, &classHint) != 0) {
+        if (classHint.res_class) {
+            info.applicationId = classHint.res_class;
+            XFree(classHint.res_class);
+        }
+        if (classHint.res_name) {
+            info.name = classHint.res_name;
+            XFree(classHint.res_name);
+        }
+    }
+    if (info.name.empty()) info.name = info.applicationId;
+    info.processId = integerProperty(display, window, "_NET_WM_PID");
+    return info;
+}
+
+Result<ScreenFrame> captureWindow(Display* display, Window window) {
+    XWindowAttributes attributes{};
+    if (XGetWindowAttributes(display, window, &attributes) == 0 ||
+        attributes.width <= 0 || attributes.height <= 0 ||
+        attributes.map_state != IsViewable) {
+        return Result<ScreenFrame>::failure(Status::failure(
+            ErrorCode::service_unavailable,
+            "The active X11 window is not currently visible."));
+    }
+
+    XImage* image = XGetImage(
+        display, window, 0, 0,
+        static_cast<unsigned int>(attributes.width),
+        static_cast<unsigned int>(attributes.height), AllPlanes, ZPixmap);
+    if (!image) {
+        return Result<ScreenFrame>::failure(Status::failure(
+            ErrorCode::io_error,
+            "X11 could not capture the active window.",
+            "Check that the window is visible and the X server permits capture."));
+    }
+
+    ScreenFrame frame;
+    frame.width = attributes.width;
+    frame.height = attributes.height;
+    frame.bytesPerRow = frame.width * 4;
+    frame.pixelFormat = PixelFormat::bgra8;
+    frame.pixels.resize(static_cast<std::size_t>(frame.bytesPerRow) * frame.height);
+
+    for (int y = 0; y < frame.height; ++y) {
+        auto* destination =
+            frame.pixels.data() + static_cast<std::size_t>(y) * frame.bytesPerRow;
+        for (int x = 0; x < frame.width; ++x) {
+            const auto pixel = XGetPixel(image, x, y);
+            destination[x * 4 + 0] = channel(pixel, image->blue_mask);
+            destination[x * 4 + 1] = channel(pixel, image->green_mask);
+            destination[x * 4 + 2] = channel(pixel, image->red_mask);
+            destination[x * 4 + 3] = 255;
+        }
+    }
+    XDestroyImage(image);
+    return Result<ScreenFrame>::success(std::move(frame));
+}
+
 class X11ScreenContext final : public ScreenContextBackend {
 public:
     std::string name() const override { return "X11 EWMH"; }
@@ -154,32 +225,8 @@ public:
             return Result<ApplicationInfo>::failure(active.status());
         }
 
-        ApplicationInfo info;
-        info.windowTitle = stringProperty(handle.get(), active.value(), "_NET_WM_NAME");
-        if (info.windowTitle.empty()) {
-            char* title = nullptr;
-            if (XFetchName(handle.get(), active.value(), &title) > 0 && title) {
-                info.windowTitle = title;
-                XFree(title);
-            }
-        }
-
-        XClassHint classHint{};
-        if (XGetClassHint(handle.get(), active.value(), &classHint) != 0) {
-            if (classHint.res_class) {
-                info.applicationId = classHint.res_class;
-                XFree(classHint.res_class);
-            }
-            if (classHint.res_name) {
-                info.name = classHint.res_name;
-                XFree(classHint.res_name);
-            }
-        }
-        if (info.name.empty()) {
-            info.name = info.applicationId;
-        }
-        info.processId = integerProperty(handle.get(), active.value(), "_NET_WM_PID");
-        return Result<ApplicationInfo>::success(std::move(info));
+        return Result<ApplicationInfo>::success(
+            applicationInfo(handle.get(), active.value()));
     }
 
     Result<ScreenFrame> captureContextFrame() override {
@@ -192,45 +239,25 @@ public:
             return Result<ScreenFrame>::failure(active.status());
         }
 
-        XWindowAttributes attributes{};
-        if (XGetWindowAttributes(handle.get(), active.value(), &attributes) == 0 ||
-            attributes.width <= 0 || attributes.height <= 0 || attributes.map_state != IsViewable) {
-            return Result<ScreenFrame>::failure(Status::failure(
-                ErrorCode::service_unavailable,
-                "The active X11 window is not currently visible."));
-        }
+        return captureWindow(handle.get(), active.value());
+    }
 
-        XImage* image = XGetImage(
-            handle.get(), active.value(), 0, 0,
-            static_cast<unsigned int>(attributes.width),
-            static_cast<unsigned int>(attributes.height),
-            AllPlanes, ZPixmap);
-        if (!image) {
-            return Result<ScreenFrame>::failure(Status::failure(
-                ErrorCode::io_error,
-                "X11 could not capture the active window.",
-                "Check that the window is visible and the X server permits capture."));
+    Result<ScreenFrame> captureContextFrame(
+        const ApplicationInfo& expectedTarget) override {
+        DisplayHandle handle;
+        if (!handle.get()) {
+            return Result<ScreenFrame>::failure(noDisplay());
         }
+        const auto active = activeWindow(handle.get());
+        if (!active) return Result<ScreenFrame>::failure(active.status());
 
-        ScreenFrame frame;
-        frame.width = attributes.width;
-        frame.height = attributes.height;
-        frame.bytesPerRow = frame.width * 4;
-        frame.pixelFormat = PixelFormat::bgra8;
-        frame.pixels.resize(static_cast<std::size_t>(frame.bytesPerRow) * frame.height);
-
-        for (int y = 0; y < frame.height; ++y) {
-            auto* destination = frame.pixels.data() + static_cast<std::size_t>(y) * frame.bytesPerRow;
-            for (int x = 0; x < frame.width; ++x) {
-                const auto pixel = XGetPixel(image, x, y);
-                destination[x * 4 + 0] = channel(pixel, image->blue_mask);
-                destination[x * 4 + 1] = channel(pixel, image->green_mask);
-                destination[x * 4 + 2] = channel(pixel, image->red_mask);
-                destination[x * 4 + 3] = 255;
-            }
+        const auto current = applicationInfo(handle.get(), active.value());
+        const auto validation =
+            validateScreenCaptureTarget(expectedTarget, current);
+        if (!validation.ok()) {
+            return Result<ScreenFrame>::failure(validation);
         }
-        XDestroyImage(image);
-        return Result<ScreenFrame>::success(std::move(frame));
+        return captureWindow(handle.get(), active.value());
     }
 
 private:
