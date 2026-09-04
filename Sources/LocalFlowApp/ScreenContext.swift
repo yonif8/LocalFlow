@@ -9,6 +9,18 @@ struct ScreenContextSnapshot: Sendable {
     let bundleID: String?
     let visitedElements: Int
     let elapsed: Duration
+
+    func mergingOCR(_ result: ScreenOCRResult) -> ScreenContextSnapshot {
+        var seen = Set<String>()
+        let merged = (result.terms + terms).filter {
+            seen.insert(ScreenTermExtractor.normalized($0)).inserted
+        }
+        return .init(
+            terms: merged,
+            bundleID: bundleID,
+            visitedElements: visitedElements,
+            elapsed: max(elapsed, result.elapsed))
+    }
 }
 
 /// Reads a small, bounded portion of the active window's accessibility tree.

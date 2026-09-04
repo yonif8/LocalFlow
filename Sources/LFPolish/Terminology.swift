@@ -49,7 +49,7 @@ public enum ScreenTermExtractor {
         options: [.caseInsensitive])
     private static let commonCapitalized: Set<String> = [
         "about", "account", "add", "back", "cancel", "close", "configure", "connect", "continue",
-        "copy", "delete", "done", "edit", "file", "find", "general", "help",
+        "chat", "copy", "delete", "done", "edit", "file", "find", "general", "help",
         "home", "learn", "menu", "new", "next", "open", "preferences",
         "remove", "save", "search", "settings", "share", "tools", "view",
         "window", "yes", "no", "today", "tomorrow"

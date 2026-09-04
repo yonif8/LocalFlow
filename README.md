@@ -60,11 +60,13 @@ Permissions window — grant it:
 Then it downloads the speech models (~1.2 GB, one time) and you're set: hold
 **Fn**, talk, release.
 
-Screen-aware terminology is opt-in under **Settings → Dictionary**. It reads a
-small, time-bounded portion of the active window through Accessibility while
-you dictate. Secure fields and sensitive-looking values are ignored; captured
-screen text is never logged or sent anywhere. Learned terms can be reviewed or
-deleted from the same settings page.
+Screen-aware terminology is opt-in under **Settings → Dictionary**. On each
+push-to-talk press it captures the active window and runs Apple Vision OCR
+locally while you speak. Accessibility metadata supplements OCR for details
+such as link URLs. Only likely names and technical tokens are retained, and a
+term is saved after a high-confidence correction. Screen text is never logged
+or sent anywhere; learned terms can be reviewed or deleted in Settings. This
+feature requires macOS Screen Recording permission.
 
 ## Updates
 

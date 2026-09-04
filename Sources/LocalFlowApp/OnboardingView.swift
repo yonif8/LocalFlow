@@ -60,6 +60,10 @@ enum PermissionChecker {
         AXIsProcessTrusted() ? .granted : .notDetermined
     }
 
+    static func screenRecording() -> Status {
+        ScreenOCR.hasPermission ? .granted : .notDetermined
+    }
+
     static func allGranted() -> Bool {
         microphone() == .granted
             && inputMonitoring() == .granted

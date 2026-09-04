@@ -4,6 +4,10 @@ import Testing
 
 @Suite("Screen terminology extraction")
 struct ScreenTermExtractorTests {
+    @Test func excludesGenericChatLabel() {
+        #expect(!ScreenTermExtractor.extract(from: ["Chat"]).contains("Chat"))
+    }
+
     @Test func extractsGenericTechnicalShapesAndNames() {
         let terms = ScreenTermExtractor.extract(from: [
             "Configure PostgreSQL in DataGrip",

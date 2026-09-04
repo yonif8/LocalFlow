@@ -396,6 +396,7 @@ private struct DictionarySettingsTab: View {
     @State private var rules: [ReplacementRule] = AppSettings.loadDictionary().rules
     @State private var spokenPunctuation = AppSettings.spokenPunctuation
     @State private var screenTerminology = AppSettings.screenTerminologyEnabled
+    @State private var screenRecordingStatus = PermissionChecker.screenRecording()
     @State private var learnedTerms: [LearnedTerm] = LearnedTerminologyStore.load()
     @State private var selection: Int?
     @State private var learnedSelection: UUID?
@@ -446,11 +447,28 @@ private struct DictionarySettingsTab: View {
                 Toggle("Learn terminology from the active window", isOn: $screenTerminology)
                     .onChange(of: screenTerminology) { _, value in
                         AppSettings.screenTerminologyEnabled = value
+                        if value, !ScreenOCR.hasPermission {
+                            screenRecordingStatus = ScreenOCR.requestPermission()
+                                ? .granted : .notDetermined
+                        }
                     }
                 Text("""
-                    While you dictate, LocalFlow reads visible text in the active window and uses names and technical terms as a temporary dictionary. High-confidence corrections are remembered for other apps. Password fields are ignored and all processing stays on this Mac.
+                    On each push-to-talk press, LocalFlow reads the active window on this Mac and uses its visible names and technical terms as a temporary dictionary. Accessibility metadata supplements the on-device OCR. High-confidence corrections are remembered for other apps.
                     """)
                     .font(.caption).foregroundStyle(.secondary)
+
+                if screenTerminology && screenRecordingStatus != .granted {
+                    HStack {
+                        Label("Screen Recording permission is required for visible text.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        Button("Open Privacy Settings") {
+                            let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
 
                 if learnedTerms.isEmpty {
                     Text("No terminology learned yet.")
@@ -497,7 +515,10 @@ private struct DictionarySettingsTab: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { learnedTerms = LearnedTerminologyStore.load() }
+        .onAppear {
+            learnedTerms = LearnedTerminologyStore.load()
+            screenRecordingStatus = PermissionChecker.screenRecording()
+        }
         .onDisappear { save() }
     }
 

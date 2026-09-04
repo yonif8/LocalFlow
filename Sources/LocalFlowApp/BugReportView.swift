@@ -29,7 +29,8 @@ enum BugDiagnostics {
 
         Permissions: mic=\(PermissionChecker.microphone().label), \
         input-monitoring=\(PermissionChecker.inputMonitoring().label), \
-        accessibility=\(PermissionChecker.accessibility().label)
+        accessibility=\(PermissionChecker.accessibility().label), \
+        screen-recording=\(PermissionChecker.screenRecording().label)
         Models: parakeet=\(ParakeetTranscriber.isModelDownloaded ? "downloaded" : "missing"), \
         s1-mini=\(PolishModelStore.isModelDownloaded ? "downloaded" : "missing")
         Hotkey: \(HotkeyChoice.load().rawValue), mouse-button=\(AppSettings.mouseButton.map { "\($0 + 1)" } ?? "off"), \

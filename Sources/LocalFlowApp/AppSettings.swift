@@ -104,8 +104,8 @@ enum AppSettings {
         set { defaults.set(newValue, forKey: DefaultsKey.spokenPunctuation) }
     }
 
-    /// Extract visible terminology from the active window and remember only
-    /// high-confidence formatting corrections. Opt-in until field-tested.
+    /// OCR the active window locally and remember only high-confidence
+    /// terminology corrections. Opt-in until field-tested.
     static var screenTerminologyEnabled: Bool {
         get { defaults.object(forKey: DefaultsKey.screenTerminology) as? Bool ?? false }
         set { defaults.set(newValue, forKey: DefaultsKey.screenTerminology) }

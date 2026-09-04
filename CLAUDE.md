@@ -13,8 +13,9 @@ mic (LFCapture: CGEventTap hold-to-talk + AVAudioEngine 16kHz;
   ended/cancelled/stopListening/app-quit; toggle in Settings → Dictation)
 → ASR (LFEngine: **Parakeet TDT v3** via FluidAudio CoreML — verbatim,
   natively punctuated; the only engine since 1.1.0, Granite was removed)
-→ context (optional: bounded active-window AX scan → conservative terminology
-  correction → locally persisted learned spellings; secure fields excluded)
+→ context (optional: active-window Apple Vision OCR as primary + bounded AX
+  metadata scan → conservative terminology correction → locally persisted
+  learned spellings; OCR runs during speech and is never awaited at release)
 → polish (LFPolish: dictionary replacements always; **S1-mini** LLM via
   mlx-swift-lm — fillers/self-corrections/number formatting, FAIL-OPEN with
   hard timeout + plausibility guardrail; output never blocks on the LLM)

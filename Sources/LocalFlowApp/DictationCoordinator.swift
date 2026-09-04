@@ -61,6 +61,8 @@ final class DictationCoordinator {
     private var lastLevelLog = ContinuousClock.now
     private var levelLogPeak: Float = 0
     private var pendingScreenContext: ScreenContextSnapshot?
+    private var screenContextSessionID: UUID?
+    private var screenContextTask: Task<Void, Never>?
     private var errorResetTask: Task<Void, Never>?
     private var didPrepareTranscriber = false
 
@@ -117,6 +119,13 @@ final class DictationCoordinator {
 
     func startListening() {
         guard !isListening else { return }
+
+        // Existing installations may already have screen terminology enabled
+        // from before OCR was introduced. Ask once through macOS rather than
+        // silently leaving those users on metadata-only context.
+        if AppSettings.screenTerminologyEnabled, !ScreenOCR.hasPermission {
+            _ = ScreenOCR.requestPermission()
+        }
 
         // First run with models missing: surface the onboarding window so
         // the user sees download progress instead of a silent multi-minute
@@ -225,6 +234,36 @@ final class DictationCoordinator {
             Self.logger.info("capture began")
             errorResetTask?.cancel()
             if AppSettings.screenTerminologyEnabled {
+                let sessionID = UUID()
+                screenContextSessionID = sessionID
+                screenContextTask?.cancel()
+                let targetApp = NSWorkspace.shared.frontmostApplication
+                if let processID = targetApp?.processIdentifier,
+                   targetApp?.bundleIdentifier != Bundle.main.bundleIdentifier,
+                   ScreenOCR.hasPermission {
+                    screenContextTask = Task { [weak self] in
+                        do {
+                            let result = try await ScreenOCR.capture(processID: processID)
+                            guard let self, self.screenContextSessionID == sessionID else { return }
+                            if let existing = self.pendingScreenContext {
+                                self.pendingScreenContext = existing.mergingOCR(result)
+                            }
+                            Self.logger.info("""
+                                OCR context: \(result.terms.count, privacy: .public) terms from \
+                                \(result.recognizedLines, privacy: .public) lines in \
+                                \(String(describing: result.elapsed), privacy: .public)
+                                """)
+                        } catch {
+                            guard !Task.isCancelled else { return }
+                            Self.logger.info("OCR context unavailable: \(String(describing: error), privacy: .public)")
+                        }
+                    }
+                } else {
+                    screenContextTask = nil
+                    if !ScreenOCR.hasPermission {
+                        Self.logger.info("OCR context unavailable: screen recording permission not granted")
+                    }
+                }
                 let snapshot = ScreenContextCollector.capture()
                 pendingScreenContext = snapshot
                 Self.logger.info("""
@@ -234,6 +273,9 @@ final class DictationCoordinator {
                     """)
             } else {
                 pendingScreenContext = nil
+                screenContextSessionID = nil
+                screenContextTask?.cancel()
+                screenContextTask = nil
             }
             state = .recording
             level = 0
@@ -259,6 +301,9 @@ final class DictationCoordinator {
             level = 0
             HUDController.shared.hide()
             pendingScreenContext = nil
+            screenContextSessionID = nil
+            screenContextTask?.cancel()
+            screenContextTask = nil
 
         case .ended(let utterance):
             Self.logger.info("capture ended (\(utterance.duration, privacy: .public)s); transcribing")
@@ -267,13 +312,12 @@ final class DictationCoordinator {
             SystemAudioDucker.shared.restore()
             state = .processing
             level = 0
-            let screenContext = pendingScreenContext
-            pendingScreenContext = nil
-            await runPipeline(utterance, screenContext: screenContext)
+            let contextSessionID = screenContextSessionID
+            await runPipeline(utterance, contextSessionID: contextSessionID)
         }
     }
 
-    private func runPipeline(_ utterance: Utterance, screenContext: ScreenContextSnapshot? = nil) async {
+    private func runPipeline(_ utterance: Utterance, contextSessionID: UUID? = nil) async {
         // A warm engine finishes in ~110 ms; keep the "processing…" lozenge up
         // for a beat so it reads as a state, not a flicker. (Cold runs take
         // seconds and are unaffected.)
@@ -284,6 +328,14 @@ final class DictationCoordinator {
             // Parakeet output is verbatim WITH native punctuation; it serves
             // as both the polish input and the fail-open fallback.
             let raw = try await transcriber.transcribe(utterance)
+            // OCR started when recording began. Take whatever context is ready
+            // after ASR, but never wait for it on key release.
+            let screenContext = self.screenContextSessionID == contextSessionID
+                ? pendingScreenContext : nil
+            pendingScreenContext = nil
+            screenContextSessionID = nil
+            screenContextTask?.cancel()
+            screenContextTask = nil
             var polishInput = raw
             if AppSettings.screenTerminologyEnabled {
                 let dictionary = AppSettings.loadDictionary()
