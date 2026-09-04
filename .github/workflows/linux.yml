@@ -1,0 +1,286 @@
+name: Linux
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/linux.yml"
+      - "CrossPlatform/**"
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - ".github/workflows/linux.yml"
+      - "CrossPlatform/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+jobs:
+  build-test-package:
+    name: Ubuntu 22.04 x86_64
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      QT_VERSION: 6.8.3
+
+    steps:
+      - name: Check out source
+        # actions/checkout v4.2.2
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - name: Resolve version and release policy
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+              echo "Release tags must look like v1.2.3 or v1.2.3-beta.1." >&2
+              exit 1
+            fi
+            echo "release=true" >>"$GITHUB_OUTPUT"
+            echo "version=${GITHUB_REF_NAME#v}" >>"$GITHUB_OUTPUT"
+          else
+            echo "release=false" >>"$GITHUB_OUTPUT"
+            echo "version=0.0.0+git.${GITHUB_SHA:0:8}" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Initialize isolated build paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "QT_ROOT=${RUNNER_TEMP}/Qt" >>"$GITHUB_ENV"
+          echo "BUILD_DIR=${RUNNER_TEMP}/localflow-linux-build" >>"$GITHUB_ENV"
+          echo "DIST_DIR=${RUNNER_TEMP}/localflow-linux-dist" >>"$GITHUB_ENV"
+
+      - name: Install build and package prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            appstream \
+            build-essential \
+            ca-certificates \
+            cmake \
+            curl \
+            desktop-file-utils \
+            fakeroot \
+            file \
+            gnupg \
+            libatspi2.0-dev \
+            libegl1 \
+            libfuse2 \
+            libgl1 \
+            libpipewire-0.3-dev \
+            libpulse-dev \
+            libx11-dev \
+            libxcb-cursor0 \
+            libxcb-keysyms1 \
+            libxcb-xinerama0 \
+            libxkbcommon-dev \
+            libxkbcommon-x11-0 \
+            libxtst-dev \
+            ninja-build \
+            patchelf \
+            pkg-config \
+            python3-venv \
+            shellcheck \
+            zsync
+
+      - name: Install pinned CMake and Qt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "${RUNNER_TEMP}/aqt-venv"
+          "${RUNNER_TEMP}/aqt-venv/bin/pip" install \
+            "https://files.pythonhosted.org/packages/7f/70/849fa1005fa197fc28a744fd69598ab9da883b737a1ab9461d88721ddd0b/aqtinstall-3.3.0-py3-none-any.whl#sha256=e88dbd87226f276fdd5d05347a44578d390d93a7f176e9476fbda0a7c9635f69" \
+            "https://files.pythonhosted.org/packages/1b/e9/0779f771ac3ccec19900c82479f220d3852d0357cecbeeccaee33ea99434/cmake-3.30.9-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=ebefa425446200df40f67c68877dadf7c338731b5d3b200689a7136129f9085f"
+          "${RUNNER_TEMP}/aqt-venv/bin/aqt" install-qt \
+            linux desktop "$QT_VERSION" linux_gcc_64 \
+            --outputdir "$QT_ROOT" \
+            --modules qtmultimedia qtwaylandcompositor
+          qt_prefix="${QT_ROOT}/${QT_VERSION}/gcc_64"
+          test -x "${qt_prefix}/bin/qmake"
+          echo "${RUNNER_TEMP}/aqt-venv/bin" >>"$GITHUB_PATH"
+          echo "${qt_prefix}/bin" >>"$GITHUB_PATH"
+          echo "CMAKE_PREFIX_PATH=${qt_prefix}" >>"$GITHUB_ENV"
+          echo "QMAKE=${qt_prefix}/bin/qmake" >>"$GITHUB_ENV"
+
+      - name: Fetch checksum-pinned inference runtimes
+        if: steps.release.outputs.release == 'true'
+        shell: bash
+        env:
+          NEMO_RUNTIME_URL: ${{ vars.LINUX_NEMO_RUNTIME_URL }}
+          NEMO_RUNTIME_SHA256: ${{ vars.LINUX_NEMO_RUNTIME_SHA256 }}
+          LLAMA_RUNTIME_URL: ${{ vars.LINUX_LLAMA_RUNTIME_URL }}
+          LLAMA_RUNTIME_SHA256: ${{ vars.LINUX_LLAMA_RUNTIME_SHA256 }}
+        run: |
+          set -euo pipefail
+          for required in NEMO_RUNTIME_URL NEMO_RUNTIME_SHA256 LLAMA_RUNTIME_URL LLAMA_RUNTIME_SHA256; do
+            if [[ -z "${!required:-}" ]]; then
+              echo "Production release is blocked: repository variable ${required} is missing." >&2
+              exit 1
+            fi
+          done
+
+          runtime_root="${RUNNER_TEMP}/localflow-runtimes"
+          mkdir -p "$runtime_root/nemo" "$runtime_root/llama"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+            --output "$runtime_root/nemo.tar" "$NEMO_RUNTIME_URL"
+          printf '%s  %s\n' "$NEMO_RUNTIME_SHA256" "$runtime_root/nemo.tar" | sha256sum --check --status
+          tar -xf "$runtime_root/nemo.tar" -C "$runtime_root/nemo" --strip-components=1
+
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+            --output "$runtime_root/llama.tar" "$LLAMA_RUNTIME_URL"
+          printf '%s  %s\n' "$LLAMA_RUNTIME_SHA256" "$runtime_root/llama.tar" | sha256sum --check --status
+          tar -xf "$runtime_root/llama.tar" -C "$runtime_root/llama" --strip-components=1
+
+          test -f "$runtime_root/nemo/include/nemo_speech/asr.h"
+          test -n "$(find "$runtime_root/nemo/lib" -maxdepth 1 -type f -name '*nemo*speech*asr*' -print -quit)"
+          test -f "$runtime_root/llama/include/llama.h"
+          test -n "$(find "$runtime_root/llama/lib" -maxdepth 1 -type f -name '*llama*' -print -quit)"
+          echo "NEMO_SPEECH_ROOT=$runtime_root/nemo" >>"$GITHUB_ENV"
+          echo "LLAMA_ROOT=$runtime_root/llama" >>"$GITHUB_ENV"
+
+      - name: Configure
+        shell: bash
+        env:
+          IS_RELEASE: ${{ steps.release.outputs.release }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          inference_arguments=(
+            -DLOCALFLOW_ENABLE_NEMO_SPEECH=OFF
+            -DLOCALFLOW_ENABLE_LLAMA=OFF
+          )
+          if [[ "$IS_RELEASE" == "true" ]]; then
+            inference_arguments=(
+              -DLOCALFLOW_ENABLE_NEMO_SPEECH=ON
+              -DLOCALFLOW_ENABLE_LLAMA=ON
+              "-DNEMO_SPEECH_ROOT=${NEMO_SPEECH_ROOT}"
+              "-DLLAMA_ROOT=${LLAMA_ROOT}"
+            )
+          fi
+          cmake -S CrossPlatform -B "$BUILD_DIR" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DBUILD_TESTING=ON \
+            -DLOCALFLOW_BUILD_APP=ON \
+            -DLOCALFLOW_BUILD_CORE_TESTS=ON \
+            -DLOCALFLOW_LINUX_BUILD_TESTS=ON \
+            -DLOCALFLOW_STRICT_WARNINGS=ON \
+            "-DLOCALFLOW_VERSION_STRING=${VERSION}" \
+            "${inference_arguments[@]}"
+
+      - name: Build and test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build "$BUILD_DIR" --parallel 2
+          ctest --test-dir "$BUILD_DIR" --output-on-failure --timeout 120
+
+      - name: Refuse a release with stub inference
+        if: steps.release.outputs.release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache="$BUILD_DIR/CMakeCache.txt"
+          grep -Eq '^NEMO_SPEECH_INCLUDE_DIR:PATH=/.+' "$cache"
+          grep -Eq '^NEMO_SPEECH_ASR_LIBRARY:FILEPATH=/.+' "$cache"
+          grep -Eq '^LLAMA_INCLUDE_DIR:PATH=/.+' "$cache"
+          grep -Eq '^LLAMA_LIBRARY:FILEPATH=/.+' "$cache"
+          if grep -E '^(NEMO_SPEECH_INCLUDE_DIR|NEMO_SPEECH_ASR_LIBRARY|LLAMA_INCLUDE_DIR|LLAMA_LIBRARY).*NOTFOUND' "$cache"; then
+            echo "Production release is blocked because an inference runtime was not linked." >&2
+            exit 1
+          fi
+
+      - name: Import and verify Linux release key
+        if: steps.release.outputs.release == 'true'
+        shell: bash
+        env:
+          PRIVATE_KEY: ${{ secrets.LINUX_GPG_PRIVATE_KEY }}
+          PASSPHRASE: ${{ secrets.LINUX_GPG_PASSPHRASE }}
+          EXPECTED_FINGERPRINT: ${{ secrets.LINUX_GPG_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          for required in PRIVATE_KEY PASSPHRASE EXPECTED_FINGERPRINT; do
+            if [[ -z "${!required:-}" ]]; then
+              echo "Production release is blocked: signing secret ${required} is missing." >&2
+              exit 1
+            fi
+          done
+          signing_home="${RUNNER_TEMP}/localflow-gnupg"
+          mkdir -m 0700 "$signing_home"
+          printf '%s' "$PRIVATE_KEY" | GNUPGHOME="$signing_home" gpg --batch --import
+          expected="$(tr -d '[:space:]' <<<"$EXPECTED_FINGERPRINT" | tr '[:lower:]' '[:upper:]')"
+          actual="$(GNUPGHOME="$signing_home" gpg --batch --with-colons --list-secret-keys "$expected" | awk -F: '$1 == "fpr" { print toupper($10); exit }')"
+          if [[ -z "$actual" || "$actual" != "$expected" ]]; then
+            echo "Imported Linux signing key fingerprint does not match the configured fingerprint." >&2
+            exit 1
+          fi
+          echo "GNUPGHOME=$signing_home" >>"$GITHUB_ENV"
+          echo "LOCALFLOW_GPG_FINGERPRINT=$expected" >>"$GITHUB_ENV"
+
+      - name: Package AppImage and Debian bundle
+        shell: bash
+        env:
+          IS_RELEASE: ${{ steps.release.outputs.release }}
+          VERSION: ${{ steps.release.outputs.version }}
+          LOCALFLOW_GPG_PASSPHRASE: ${{ secrets.LINUX_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          package_arguments=(
+            --build-dir "$BUILD_DIR"
+            --dist-dir "$DIST_DIR"
+            --version "$VERSION"
+          )
+          if [[ "$IS_RELEASE" == "true" ]]; then
+            package_arguments+=(--release)
+          fi
+          CrossPlatform/packaging/linux/package.sh "${package_arguments[@]}"
+
+      - name: Validate packages
+        shell: bash
+        env:
+          IS_RELEASE: ${{ steps.release.outputs.release }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          shellcheck CrossPlatform/packaging/linux/*.sh CrossPlatform/packaging/linux/localflow-autostart
+          CrossPlatform/packaging/linux/smoke-test.sh "$DIST_DIR" "$VERSION"
+          if [[ "$IS_RELEASE" == "true" ]]; then
+            test -s "$DIST_DIR/SHA256SUMS.asc"
+            test ! -e "$DIST_DIR/UNSIGNED-NOT-FOR-DISTRIBUTION.txt"
+            gpg --batch --verify "$DIST_DIR/SHA256SUMS.asc" "$DIST_DIR/SHA256SUMS"
+          else
+            test -s "$DIST_DIR/UNSIGNED-NOT-FOR-DISTRIBUTION.txt"
+            test ! -e "$DIST_DIR/SHA256SUMS.asc"
+          fi
+
+      - name: Upload Linux artifacts
+        # actions/upload-artifact v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: LocalFlow-Linux-${{ steps.release.outputs.version }}-${{ github.sha }}
+          path: ${{ runner.temp }}/localflow-linux-dist/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: ${{ steps.release.outputs.release == 'true' && 30 || 7 }}
+
+      - name: Remove imported signing material
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          signing_home="${RUNNER_TEMP}/localflow-gnupg"
+          if [[ -d "$signing_home" ]]; then
+            rm -rf -- "$signing_home"
+          fi

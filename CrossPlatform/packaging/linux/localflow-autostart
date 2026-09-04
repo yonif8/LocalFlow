@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    echo "Usage: localflow-autostart enable [localflow-executable] | disable | status" >&2
+}
+
+config_root="${XDG_CONFIG_HOME:-${HOME}/.config}"
+entry_path="${config_root}/autostart/com.localflow.LocalFlow.desktop"
+
+desktop_quote() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//\$/\\\$}"
+    value="${value//\`/\\\`}"
+    printf '"%s"' "$value"
+}
+
+resolve_executable() {
+    if [[ $# -gt 0 && -n "$1" ]]; then
+        realpath "$1"
+    elif [[ -n "${APPIMAGE:-}" ]]; then
+        realpath "$APPIMAGE"
+    elif command -v localflow >/dev/null 2>&1; then
+        command -v localflow
+    elif command -v LocalFlow >/dev/null 2>&1; then
+        command -v LocalFlow
+    else
+        echo "LocalFlow executable was not found. Pass its absolute path." >&2
+        return 1
+    fi
+}
+
+case "${1:-}" in
+    enable)
+        executable="$(resolve_executable "${2:-}")"
+        if [[ ! -x "$executable" ]]; then
+            echo "LocalFlow is not executable: $executable" >&2
+            exit 1
+        fi
+        mkdir -p "$(dirname "$entry_path")"
+        quoted_executable="$(desktop_quote "$executable")"
+        temporary="${entry_path}.tmp.$$"
+        trap 'rm -f -- "$temporary"' EXIT
+        {
+            echo '[Desktop Entry]'
+            echo 'Type=Application'
+            echo 'Version=1.0'
+            echo 'Name=LocalFlow'
+            echo 'Comment=Start private, local dictation in the background'
+            printf 'Exec=%s --background\n' "$quoted_executable"
+            printf 'TryExec=%s\n' "$quoted_executable"
+            echo 'Icon=com.localflow.LocalFlow'
+            echo 'Terminal=false'
+            echo 'StartupNotify=false'
+            echo 'X-GNOME-Autostart-enabled=true'
+            echo 'X-KDE-autostart-after=panel'
+        } >"$temporary"
+        chmod 0644 "$temporary"
+        mv -f -- "$temporary" "$entry_path"
+        trap - EXIT
+        echo "LocalFlow will start when you sign in."
+        ;;
+    disable)
+        rm -f -- "$entry_path"
+        echo "LocalFlow will not start automatically."
+        ;;
+    status)
+        if [[ -f "$entry_path" ]]; then
+            echo "enabled"
+            exit 0
+        fi
+        echo "disabled"
+        exit 1
+        ;;
+    *)
+        usage
+        exit 2
+        ;;
+esac
