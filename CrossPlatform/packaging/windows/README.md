@@ -67,9 +67,25 @@ immutable workflow artifacts:
 ```text
 LocalFlow-X.Y.Z-windows-x64-setup.exe
 LocalFlow-X.Y.Z-windows-x64-setup.exe.sha256
-LocalFlow-X.Y.Z-windows-x64-portable.zip
 windows-update.json
 ```
+
+LocalFlow intentionally does not publish a portable ZIP. A portable copy can
+remain stale after the signed installer updates the registered application,
+which makes it too easy to launch an older binary accidentally. The per-user
+installer is the one supported Windows distribution and update identity.
+
+The installer keeps redistribution texts beside the program at
+`share\licenses`. It carries the complete, module-separated Qt 6.8.3
+`LICENSES` directories pinned in the repository and the complete `nemo-speech` and `llama.cpp`
+license/notice directories created by the checksum-pinned runtime bootstrap.
+Staging and installed-layout smoke tests fail when any required notice is
+missing.
+
+`LocalFlow.ico` is a mechanical 256-pixel Windows conversion of the
+canonical `Resources/AppIcon.icns`. `LocalFlow.rc` embeds it in the desktop
+executable and Inno Setup uses the same file for the signed installer, so the
+app, shortcuts, Add/Remove Programs entry, and setup UI keep one brand asset.
 
 The top-level release workflow combines them with the signed macOS and Linux
 artifacts, rejects missing, extra, empty, renamed, or mismatched assets, and

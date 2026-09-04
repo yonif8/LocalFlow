@@ -10,6 +10,9 @@
 #ifndef OutputBaseFilename
   #define OutputBaseFilename "LocalFlow-windows-x64-setup"
 #endif
+#ifndef SetupIconFile
+  #define SetupIconFile "LocalFlow.ico"
+#endif
 
 #define AppName "LocalFlow"
 #define AppPublisher "LocalFlow"
@@ -30,12 +33,13 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-MinVersion=10.0.19041
+MinVersion=10.0.22000
 OutputDir={#OutputDir}
 OutputBaseFilename={#OutputBaseFilename}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile={#SetupIconFile}
 SetupLogging=yes
 CloseApplications=yes
 RestartApplications=no
@@ -55,7 +59,16 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 
 [Icons]
 Name: "{group}\LocalFlow"; Filename: "{app}\{#AppExeRelativePath}"; WorkingDir: "{app}\bin"
-Name: "{userstartup}\LocalFlow"; Filename: "{app}\{#AppExeRelativePath}"; WorkingDir: "{app}\bin"; Tasks: startup
+
+[Registry]
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "LocalFlow"; ValueData: """{app}\{#AppExeRelativePath}"" --background"; Flags: uninsdeletevalue; Tasks: startup
 
 [Run]
 Filename: "{app}\{#AppExeRelativePath}"; Description: "Start LocalFlow"; WorkingDir: "{app}\bin"; Flags: nowait postinstall skipifsilent
+
+[Code]
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'LocalFlow');
+end;

@@ -7,11 +7,19 @@ runtime payload in two formats:
 - `localflow_VERSION_amd64.deb`
 - a small integration bundle for installing or uninstalling the AppImage from
   a user's applications menu
-- `SHA256SUMS` and, for releases, `SHA256SUMS.asc`
+- `SHA256SUMS` and, for releases, `SHA256SUMS.asc` plus the public
+  verification key
 
 The AppImage and Debian package are both made from the same Qt-deployed AppDir.
 Models are not baked into either package; the application downloads pinned,
 checksum-verified models on first run.
+
+Redistribution texts travel with the binaries. In an AppImage mount they are
+under `/usr/share/licenses`; in a Debian installation the identical tree is
+under `/opt/localflow/usr/share/licenses`. The tree contains the complete,
+module-separated Qt 6.8.3 `LICENSES` directories plus dedicated directories for `nemo-speech`,
+`llama.cpp`, `tesseract`, `leptonica`, `tessdata-fast`, `AppImageUpdate`, and
+`AppImageRuntime`. Packaging fails if any expected upstream notice is absent.
 
 ## Local packaging
 
@@ -46,9 +54,12 @@ following are true:
    released.
 2. A secret OpenPGP signing key was imported and its complete fingerprint
    exactly matches the configured fingerprint.
-3. appimagetool created non-empty embedded signature and public-key sections.
-4. The checksum manifest was signed and verifies with the imported key.
-5. The `.zsync` metadata and all package smoke tests passed.
+3. appimagetool created an embedded signature that the pinned AppImage
+   validator cryptographically verifies against the reviewed release-key
+   fingerprint.
+4. The checksum manifest was signed and verifies with that same key.
+5. The AppImage, per-user integration, Debian install layout, real runtimes,
+   QML startup, `.zsync` metadata, and uninstall preservation checks passed.
 
 Required GitHub Actions secrets:
 
@@ -56,7 +67,10 @@ Required GitHub Actions secrets:
 | --- | --- |
 | `LINUX_GPG_PRIVATE_KEY` | ASCII-armored release-only OpenPGP private key |
 | `LINUX_GPG_PASSPHRASE` | Passphrase for that key |
-| `LINUX_GPG_FINGERPRINT` | Full 40-hex-character fingerprint, never a short key ID |
+
+The public identity is not supplied by a mutable CI secret. Its full
+fingerprint is pinned in `release-signing-key.fingerprint`; rotating the key
+requires a reviewed source change as well as replacing the private-key secret.
 
 Inference runtime locations are not repository variables. The bootstrap reads
 the immutable URL, byte size, SHA-256, architecture, and expected archive layout
@@ -85,6 +99,7 @@ release:
 - `LocalFlow-VERSION-Linux-Integration.tar.gz`
 - `SHA256SUMS`
 - `SHA256SUMS.asc`
+- `LocalFlow-Linux-signing-key.asc`
 
 Before making the release public, the publisher must verify `SHA256SUMS.asc`,
 compare the workflow artifact digest, and ensure the signing fingerprint is the
@@ -100,6 +115,7 @@ the Releases page instead; it never overwrites files managed by `dpkg`.
 ## Desktop integration and uninstall
 
 Debian installs a desktop entry, scalable icon, AppStream metadata, and
+the canonical 256×256 LocalFlow icon, plus AppStream metadata and
 `localflow-autostart`. `dpkg --remove localflow` removes program files but never
 walks home directories or deletes user data.
 

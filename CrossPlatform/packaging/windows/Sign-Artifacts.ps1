@@ -120,8 +120,9 @@ try {
             ""
         }
         if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid `
-            -or (Normalize-Fingerprint $actualSignerFingerprint) -ne $expected) {
-            throw "The final signature does not match the expected signing certificate."
+            -or (Normalize-Fingerprint $actualSignerFingerprint) -ne $expected `
+            -or -not $signature.TimeStamperCertificate) {
+            throw "The final signature, signer, or RFC 3161 timestamp is invalid."
         }
     }
 } finally {

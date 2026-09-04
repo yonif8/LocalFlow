@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve the real bundle root both when AppImage invokes this file directly
+# and when a Debian installation reaches it through /usr/bin/localflow.
+app_run="$(readlink -f -- "$0")"
+app_root="$(cd "$(dirname "$app_run")" && pwd)"
+
+# NeMo and the polish worker intentionally use incompatible ggml ABIs. Keep
+# NeMo private to the desktop process; the worker prepends its own directory.
+export APPDIR="${APPDIR:-$app_root}"
+export LD_LIBRARY_PATH="${app_root}/usr/lib/localflow/asr:${app_root}/usr/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+exec "${app_root}/usr/bin/LocalFlow" "$@"

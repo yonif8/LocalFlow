@@ -3,15 +3,51 @@ name: Linux
 on:
   pull_request:
     paths:
-      - ".github/workflows/linux.yml"
+      - ".github/workflows/**"
       - "CrossPlatform/**"
+      - "Package.swift"
+      - "Package.resolved"
+      - "Sources/**"
+      - "Tests/**"
+      - "Fixtures/**"
+      - "docs/FEATURE_PARITY.md"
   push:
     branches: [main]
-    tags: ["v*"]
     paths:
-      - ".github/workflows/linux.yml"
+      - ".github/workflows/**"
       - "CrossPlatform/**"
+      - "Package.swift"
+      - "Package.resolved"
+      - "Sources/**"
+      - "Tests/**"
+      - "Fixtures/**"
+      - "docs/FEATURE_PARITY.md"
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Require production signing"
+        required: true
+        default: false
+        type: boolean
+      version:
+        description: "Release version (X.Y.Z); required for production"
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      release:
+        required: false
+        default: false
+        type: boolean
+      version:
+        required: false
+        default: ""
+        type: string
+    secrets:
+      LINUX_GPG_PRIVATE_KEY:
+        required: false
+      LINUX_GPG_PASSPHRASE:
+        required: false
 
 permissions:
   contents: read
@@ -24,15 +60,18 @@ jobs:
   build-test-package:
     name: Ubuntu 22.04 x86_64
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       QT_VERSION: 6.8.3
+      REQUESTED_RELEASE: ${{ inputs.release }}
+      REQUESTED_VERSION: ${{ inputs.version }}
 
     steps:
       - name: Check out source
         # actions/checkout v4.2.2
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Resolve version and release policy
@@ -40,13 +79,39 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-              echo "Release tags must look like v1.2.3 or v1.2.3-beta.1." >&2
+          requested_release=false
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" || "${GITHUB_EVENT_NAME}" == "workflow_call" ]]; then
+            requested_release="${REQUESTED_RELEASE:-false}"
+          fi
+          is_release=false
+          if [[ "${GITHUB_REF_TYPE}" == "tag" || "$requested_release" == "true" ]]; then
+            is_release=true
+          fi
+          if $is_release; then
+            if [[ "${GITHUB_REF_TYPE}" != "tag" || ! "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "Production Linux builds must run from the exact stable tag vX.Y.Z." >&2
+              exit 1
+            fi
+            release_tag="${GITHUB_REF_NAME}"
+            version="${release_tag#v}"
+            requested_version="${REQUESTED_VERSION#v}"
+            if [[ -n "$requested_version" && "$requested_version" != "$version" ]]; then
+              echo "Requested version $requested_version does not match $release_tag." >&2
+              exit 1
+            fi
+            git show-ref --verify --quiet "refs/tags/$release_tag" || {
+              echo "The checked-out repository does not contain $release_tag." >&2
+              exit 1
+            }
+            checked_out_commit="$(git rev-parse HEAD)"
+            tag_commit="$(git rev-parse "${release_tag}^{commit}")"
+            if [[ "$checked_out_commit" != "$GITHUB_SHA" || "$tag_commit" != "$GITHUB_SHA" ]]; then
+              echo "The Linux release checkout is not the commit selected by $release_tag." >&2
               exit 1
             fi
             echo "release=true" >>"$GITHUB_OUTPUT"
-            echo "version=${GITHUB_REF_NAME#v}" >>"$GITHUB_OUTPUT"
+            echo "version=$version" >>"$GITHUB_OUTPUT"
+            echo "tag=$release_tag" >>"$GITHUB_OUTPUT"
           else
             echo "release=false" >>"$GITHUB_OUTPUT"
             echo "version=0.0.0+git.${GITHUB_SHA:0:8}" >>"$GITHUB_OUTPUT"
@@ -81,6 +146,7 @@ jobs:
             libgl1 \
             libpipewire-0.3-dev \
             libpulse-dev \
+            libtesseract-dev \
             libx11-dev \
             libxcb-cursor0 \
             libxcb-keysyms1 \
@@ -90,9 +156,12 @@ jobs:
             libxtst-dev \
             ninja-build \
             patchelf \
+            pipewire-bin \
             pkg-config \
+            pulseaudio-utils \
             python3-venv \
             shellcheck \
+            xvfb \
             zsync
 
       - name: Install pinned CMake and Qt
@@ -114,41 +183,14 @@ jobs:
           echo "CMAKE_PREFIX_PATH=${qt_prefix}" >>"$GITHUB_ENV"
           echo "QMAKE=${qt_prefix}/bin/qmake" >>"$GITHUB_ENV"
 
-      - name: Fetch checksum-pinned inference runtimes
-        if: steps.release.outputs.release == 'true'
+      - name: Bootstrap checksum-pinned inference runtimes
         shell: bash
-        env:
-          NEMO_RUNTIME_URL: ${{ vars.LINUX_NEMO_RUNTIME_URL }}
-          NEMO_RUNTIME_SHA256: ${{ vars.LINUX_NEMO_RUNTIME_SHA256 }}
-          LLAMA_RUNTIME_URL: ${{ vars.LINUX_LLAMA_RUNTIME_URL }}
-          LLAMA_RUNTIME_SHA256: ${{ vars.LINUX_LLAMA_RUNTIME_SHA256 }}
         run: |
           set -euo pipefail
-          for required in NEMO_RUNTIME_URL NEMO_RUNTIME_SHA256 LLAMA_RUNTIME_URL LLAMA_RUNTIME_SHA256; do
-            if [[ -z "${!required:-}" ]]; then
-              echo "Production release is blocked: repository variable ${required} is missing." >&2
-              exit 1
-            fi
-          done
-
-          runtime_root="${RUNNER_TEMP}/localflow-runtimes"
-          mkdir -p "$runtime_root/nemo" "$runtime_root/llama"
-          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
-            --output "$runtime_root/nemo.tar" "$NEMO_RUNTIME_URL"
-          printf '%s  %s\n' "$NEMO_RUNTIME_SHA256" "$runtime_root/nemo.tar" | sha256sum --check --status
-          tar -xf "$runtime_root/nemo.tar" -C "$runtime_root/nemo" --strip-components=1
-
-          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
-            --output "$runtime_root/llama.tar" "$LLAMA_RUNTIME_URL"
-          printf '%s  %s\n' "$LLAMA_RUNTIME_SHA256" "$runtime_root/llama.tar" | sha256sum --check --status
-          tar -xf "$runtime_root/llama.tar" -C "$runtime_root/llama" --strip-components=1
-
-          test -f "$runtime_root/nemo/include/nemo_speech/asr.h"
-          test -n "$(find "$runtime_root/nemo/lib" -maxdepth 1 -type f -name '*nemo*speech*asr*' -print -quit)"
-          test -f "$runtime_root/llama/include/llama.h"
-          test -n "$(find "$runtime_root/llama/lib" -maxdepth 1 -type f -name '*llama*' -print -quit)"
-          echo "NEMO_SPEECH_ROOT=$runtime_root/nemo" >>"$GITHUB_ENV"
-          echo "LLAMA_ROOT=$runtime_root/llama" >>"$GITHUB_ENV"
+          output="$(CrossPlatform/dependencies/bootstrap-linux.sh \
+            --prefix "${RUNNER_TEMP}/localflow-runtimes" --arch x86_64)"
+          printf '%s\n' "$output"
+          grep -E '^(NEMO_SPEECH_ROOT|LLAMA_ROOT)=/' <<<"$output" >>"$GITHUB_ENV"
 
       - name: Configure
         shell: bash
@@ -157,18 +199,6 @@ jobs:
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
-          inference_arguments=(
-            -DLOCALFLOW_ENABLE_NEMO_SPEECH=OFF
-            -DLOCALFLOW_ENABLE_LLAMA=OFF
-          )
-          if [[ "$IS_RELEASE" == "true" ]]; then
-            inference_arguments=(
-              -DLOCALFLOW_ENABLE_NEMO_SPEECH=ON
-              -DLOCALFLOW_ENABLE_LLAMA=ON
-              "-DNEMO_SPEECH_ROOT=${NEMO_SPEECH_ROOT}"
-              "-DLLAMA_ROOT=${LLAMA_ROOT}"
-            )
-          fi
           cmake -S CrossPlatform -B "$BUILD_DIR" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/usr \
@@ -177,18 +207,65 @@ jobs:
             -DLOCALFLOW_BUILD_CORE_TESTS=ON \
             -DLOCALFLOW_LINUX_BUILD_TESTS=ON \
             -DLOCALFLOW_STRICT_WARNINGS=ON \
-            "-DLOCALFLOW_VERSION_STRING=${VERSION}" \
-            "${inference_arguments[@]}"
+            -DLOCALFLOW_REQUIRE_INFERENCE=ON \
+            -DLOCALFLOW_REQUIRE_OCR=ON \
+            -DLOCALFLOW_ENABLE_NEMO_SPEECH=ON \
+            -DLOCALFLOW_ENABLE_LLAMA=ON \
+            "-DNEMO_SPEECH_ROOT=${NEMO_SPEECH_ROOT}" \
+            "-DLLAMA_ROOT=${LLAMA_ROOT}" \
+            "-DLOCALFLOW_VERSION_STRING=${VERSION}"
 
       - name: Build and test
         shell: bash
         run: |
           set -euo pipefail
           cmake --build "$BUILD_DIR" --parallel 2
-          ctest --test-dir "$BUILD_DIR" --output-on-failure --timeout 120
+          # The upstream NeMo SDK contains an obsolete libstdc++ beside its
+          # import library. It is intentionally excluded from packages. Put
+          # the runner's C++ runtime first for every build-tree executable,
+          # including CTest, without adding any other loader fallback.
+          system_cxx_runtime="$(dirname "$(realpath "$(c++ -print-file-name=libstdc++.so)")")"
+          echo "SYSTEM_CXX_RUNTIME=$system_cxx_runtime" >>"$GITHUB_ENV"
+          env LD_LIBRARY_PATH="$system_cxx_runtime" \
+            ctest --test-dir "$BUILD_DIR" --output-on-failure --timeout 120
+          xvfb-run --auto-servernum env \
+            LD_LIBRARY_PATH="$system_cxx_runtime" QT_FATAL_WARNINGS=1 \
+            "$BUILD_DIR/bin/LocalFlow" --smoke-ui
+
+      - name: Exercise production models with release binaries
+        if: steps.release.outputs.release == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          model_root="${RUNNER_TEMP}/localflow-production-models"
+          mkdir -p "$model_root"
+          asr_model="${model_root}/parakeet-tdt-0.6b-v3.q8_0.gguf"
+          polish_model="${model_root}/s1-mini-q4_k_m.gguf"
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+            --output "$asr_model" \
+            https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3/resolve/541d1f99c6b0c3cd0b11a95167540bb8edefd82b/parakeet-tdt-0.6b-v3.q8_0.gguf
+          [[ "$(stat --format='%s' "$asr_model")" == 713975456 ]]
+          printf '%s  %s\n' \
+            e3880d0aaaaf2c308ea2c35016b2b895c423eb3fda924c1b463d1c19b7f4d32e \
+            "$asr_model" | sha256sum --check --status
+          curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+            --output "$polish_model" \
+            https://huggingface.co/superwhisper/s1-mini-GGUF/resolve/34add00a48a2e5d24e5a4ee5405a99620a3a240c/s1-mini-q4_k_m.gguf
+          [[ "$(stat --format='%s' "$polish_model")" == 484219808 ]]
+          printf '%s  %s\n' \
+            3b41ebe2502cbd03e811d5d16b022f5ab551eda58d62597d152f89535003c634 \
+            "$polish_model" | sha256sum --check --status
+          python3 CrossPlatform/packaging/verify-real-models.py \
+            --asr-test "$BUILD_DIR/inference/localflow_asr_contract_tests" \
+            --asr-runtime "$NEMO_SPEECH_ROOT/lib" \
+            --asr-model "$asr_model" \
+            --wav Fixtures/short_3s.wav \
+            --polish-worker "$BUILD_DIR/bin/localflow-polish-worker" \
+            --polish-runtime "$LLAMA_ROOT/lib" \
+            --polish-model "$polish_model" \
+            --toolchain-runtime "$SYSTEM_CXX_RUNTIME"
 
       - name: Refuse a release with stub inference
-        if: steps.release.outputs.release == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -196,8 +273,7 @@ jobs:
           grep -Eq '^NEMO_SPEECH_INCLUDE_DIR:PATH=/.+' "$cache"
           grep -Eq '^NEMO_SPEECH_ASR_LIBRARY:FILEPATH=/.+' "$cache"
           grep -Eq '^LLAMA_INCLUDE_DIR:PATH=/.+' "$cache"
-          grep -Eq '^LLAMA_LIBRARY:FILEPATH=/.+' "$cache"
-          if grep -E '^(NEMO_SPEECH_INCLUDE_DIR|NEMO_SPEECH_ASR_LIBRARY|LLAMA_INCLUDE_DIR|LLAMA_LIBRARY).*NOTFOUND' "$cache"; then
+          if grep -E '^(NEMO_SPEECH_INCLUDE_DIR|NEMO_SPEECH_ASR_LIBRARY|LLAMA_INCLUDE_DIR).*NOTFOUND' "$cache"; then
             echo "Production release is blocked because an inference runtime was not linked." >&2
             exit 1
           fi
@@ -208,10 +284,9 @@ jobs:
         env:
           PRIVATE_KEY: ${{ secrets.LINUX_GPG_PRIVATE_KEY }}
           PASSPHRASE: ${{ secrets.LINUX_GPG_PASSPHRASE }}
-          EXPECTED_FINGERPRINT: ${{ secrets.LINUX_GPG_FINGERPRINT }}
         run: |
           set -euo pipefail
-          for required in PRIVATE_KEY PASSPHRASE EXPECTED_FINGERPRINT; do
+          for required in PRIVATE_KEY PASSPHRASE; do
             if [[ -z "${!required:-}" ]]; then
               echo "Production release is blocked: signing secret ${required} is missing." >&2
               exit 1
@@ -220,7 +295,13 @@ jobs:
           signing_home="${RUNNER_TEMP}/localflow-gnupg"
           mkdir -m 0700 "$signing_home"
           printf '%s' "$PRIVATE_KEY" | GNUPGHOME="$signing_home" gpg --batch --import
-          expected="$(tr -d '[:space:]' <<<"$EXPECTED_FINGERPRINT" | tr '[:lower:]' '[:upper:]')"
+          expected="$(tr -d '[:space:]' \
+            <CrossPlatform/packaging/linux/release-signing-key.fingerprint \
+            | tr '[:lower:]' '[:upper:]')"
+          if [[ ! "$expected" =~ ^[0-9A-F]{40}$ ]]; then
+            echo "The checked-in Linux release fingerprint is invalid." >&2
+            exit 1
+          fi
           actual="$(GNUPGHOME="$signing_home" gpg --batch --with-colons --list-secret-keys "$expected" | awk -F: '$1 == "fpr" { print toupper($10); exit }')"
           if [[ -z "$actual" || "$actual" != "$expected" ]]; then
             echo "Imported Linux signing key fingerprint does not match the configured fingerprint." >&2
@@ -258,18 +339,60 @@ jobs:
           CrossPlatform/packaging/linux/smoke-test.sh "$DIST_DIR" "$VERSION"
           if [[ "$IS_RELEASE" == "true" ]]; then
             test -s "$DIST_DIR/SHA256SUMS.asc"
+            test -s "$DIST_DIR/LocalFlow-Linux-signing-key.asc"
             test ! -e "$DIST_DIR/UNSIGNED-NOT-FOR-DISTRIBUTION.txt"
+            exported_fingerprint="$(gpg --batch --with-colons --show-keys \
+              "$DIST_DIR/LocalFlow-Linux-signing-key.asc" \
+              | awk -F: '$1 == "fpr" { print toupper($10); exit }')"
+            test "$exported_fingerprint" = "$LOCALFLOW_GPG_FINGERPRINT"
             gpg --batch --verify "$DIST_DIR/SHA256SUMS.asc" "$DIST_DIR/SHA256SUMS"
           else
             test -s "$DIST_DIR/UNSIGNED-NOT-FOR-DISTRIBUTION.txt"
             test ! -e "$DIST_DIR/SHA256SUMS.asc"
+            test ! -e "$DIST_DIR/LocalFlow-Linux-signing-key.asc"
           fi
+
+      - name: Smoke-test Debian install and uninstall
+        shell: bash
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          deb="$DIST_DIR/localflow_${VERSION}_amd64.deb"
+          user_root="$(mktemp -d "${RUNNER_TEMP}/localflow-deb-user.XXXXXX")"
+          trap 'sudo dpkg --purge localflow >/dev/null 2>&1 || true; rm -rf -- "$user_root"' EXIT
+          home_dir="${user_root}/Home With Spaces"
+          config_dir="${user_root}/Config With Spaces"
+          data_dir="${user_root}/Data With Spaces"
+          cache_dir="${user_root}/Cache With Spaces"
+          mkdir -p "$home_dir" "$config_dir/LocalFlow" "$data_dir" "$cache_dir"
+          preserved_settings="${config_dir}/LocalFlow/LocalFlow.conf"
+          printf '%s\n' 'release-smoke-userdata=keep' >"$preserved_settings"
+          sudo dpkg --install "$deb"
+          test "$(dpkg-query -W -f='${Version}' localflow)" = "$VERSION"
+          test "$(readlink /usr/bin/localflow)" = /opt/localflow/AppRun
+          test -x /opt/localflow/usr/bin/LocalFlow
+          test -x /opt/localflow/usr/libexec/localflow/localflow-polish-worker
+          runtime_probe="$(env HOME="$home_dir" XDG_CONFIG_HOME="$config_dir" \
+            XDG_DATA_HOME="$data_dir" XDG_CACHE_HOME="$cache_dir" \
+            /opt/localflow/AppRun --probe-runtime)"
+          grep -Fq '"ready":true' <<<"$runtime_probe"
+          xvfb-run --auto-servernum env HOME="$home_dir" \
+            XDG_CONFIG_HOME="$config_dir" XDG_DATA_HOME="$data_dir" \
+            XDG_CACHE_HOME="$cache_dir" QT_FATAL_WARNINGS=1 \
+            /opt/localflow/AppRun --smoke-ui
+          sudo dpkg --purge localflow
+          test ! -e /usr/bin/localflow
+          test ! -e /opt/localflow
+          test ! -e /usr/share/applications/com.localflow.LocalFlow.desktop
+          ! dpkg-query -W localflow >/dev/null 2>&1
+          grep -Fxq 'release-smoke-userdata=keep' "$preserved_settings"
 
       - name: Upload Linux artifacts
         # actions/upload-artifact v4.6.2
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: LocalFlow-Linux-${{ steps.release.outputs.version }}-${{ github.sha }}
+          name: LocalFlow-${{ steps.release.outputs.version }}-linux-x86_64
           path: ${{ runner.temp }}/localflow-linux-dist/
           if-no-files-found: error
           compression-level: 0

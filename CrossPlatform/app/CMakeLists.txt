@@ -59,6 +59,8 @@ target_link_libraries(localflow_desktop PRIVATE
     LocalFlow::Core LocalFlow::ASR LocalFlow::Platform
 )
 if(WIN32)
+    target_sources(localflow_desktop PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../packaging/windows/LocalFlow.rc")
     target_link_libraries(localflow_desktop PRIVATE crypt32 version wintrust)
     if(TARGET localflow_update_manager_tests)
         target_link_libraries(localflow_update_manager_tests PRIVATE

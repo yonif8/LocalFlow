@@ -6,6 +6,7 @@ config_root="${XDG_CONFIG_HOME:-${HOME}/.config}"
 binary_root="${data_root}/localflow"
 application_root="${data_root}/applications"
 icon_root="${data_root}/icons/hicolor/scalable/apps"
+icon_png_root="${data_root}/icons/hicolor/256x256/apps"
 user_bin="${HOME}/.local/bin"
 installed_image="${binary_root}/LocalFlow.AppImage"
 launcher="${user_bin}/localflow"
@@ -25,6 +26,7 @@ rm -f -- \
     "${config_root}/autostart/com.localflow.LocalFlow.desktop" \
     "${application_root}/com.localflow.LocalFlow.desktop" \
     "${icon_root}/com.localflow.LocalFlow.svg" \
+    "${icon_png_root}/com.localflow.LocalFlow.png" \
     "${user_bin}/localflow-autostart" \
     "$installed_image" \
     "${binary_root}/uninstall.sh"

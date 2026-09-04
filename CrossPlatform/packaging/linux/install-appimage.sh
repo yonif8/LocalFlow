@@ -26,6 +26,7 @@ data_root="${XDG_DATA_HOME:-${HOME}/.local/share}"
 binary_root="${data_root}/localflow"
 application_root="${data_root}/applications"
 icon_root="${data_root}/icons/hicolor/scalable/apps"
+icon_png_root="${data_root}/icons/hicolor/256x256/apps"
 user_bin="${HOME}/.local/bin"
 installed_image="${binary_root}/LocalFlow.AppImage"
 desktop_entry="${application_root}/com.localflow.LocalFlow.desktop"
@@ -41,6 +42,7 @@ fi
 
 for required in \
     "${script_root}/assets/com.localflow.LocalFlow.svg" \
+    "${script_root}/assets/com.localflow.LocalFlow.png" \
     "${script_root}/localflow-autostart" \
     "${script_root}/uninstall-appimage.sh"; do
     if [[ ! -f "$required" ]]; then
@@ -49,10 +51,12 @@ for required in \
     fi
 done
 
-mkdir -p "$binary_root" "$application_root" "$icon_root" "$user_bin"
+mkdir -p "$binary_root" "$application_root" "$icon_root" "$icon_png_root" "$user_bin"
 install -m 0755 "$source_image" "$installed_image"
 install -m 0644 "${script_root}/assets/com.localflow.LocalFlow.svg" \
     "${icon_root}/com.localflow.LocalFlow.svg"
+install -m 0644 "${script_root}/assets/com.localflow.LocalFlow.png" \
+    "${icon_png_root}/com.localflow.LocalFlow.png"
 install -m 0755 "${script_root}/localflow-autostart" "${user_bin}/localflow-autostart"
 install -m 0755 "${script_root}/uninstall-appimage.sh" "${binary_root}/uninstall.sh"
 ln -sfn "$installed_image" "$launcher"

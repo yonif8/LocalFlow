@@ -55,7 +55,7 @@ $manifest = [ordered]@{
     platform = [ordered]@{
         os = "windows"
         architecture = "x86_64"
-        minimumBuild = 19041
+        minimumBuild = 22000
     }
     installer = [ordered]@{
         fileName = $installer.Name
