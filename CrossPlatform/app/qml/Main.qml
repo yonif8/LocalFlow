@@ -16,6 +16,9 @@ QtObject {
             root.settingsWindow.raise()
             root.settingsWindow.requestActivate()
         }
+        function onDiagnosticsRequested() {
+            root.settingsWindow.showPage(6)
+        }
         function onUpdatesRequested() {
             root.settingsWindow.showPage(5)
         }

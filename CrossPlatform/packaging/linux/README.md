@@ -103,14 +103,19 @@ release:
 
 Before making the release public, the publisher must verify `SHA256SUMS.asc`,
 compare the workflow artifact digest, and ensure the signing fingerprint is the
-fingerprint pinned in the application updater. The release must remain draft if
-any Linux artifact is missing. Never substitute an unsigned smoke build.
+reviewed identity pinned in `release-signing-key.fingerprint`. The release must
+remain draft if any Linux artifact is missing. Never substitute an unsigned
+smoke build.
 
 The desktop app's **Check for Updates** action runs a checksum-pinned
 `appimageupdatetool` locally against the embedded zsync information. It reports
-whether an update exists, verifies the signed update, and replaces the installed
-AppImage in place only after a successful delta download. A `.deb` install opens
-the Releases page instead; it never overwrites files managed by `dpkg`.
+whether an update exists. Installation updates a private copy beside the current
+AppImage, where the updater validates the embedded signature and continuity with
+the current release's signing key. Only an updater exit that reports success is
+committed over the installed AppImage with a same-filesystem atomic rename; an
+updater crash, timeout, or validation failure leaves the installed file untouched.
+A `.deb` install opens the Releases page instead; it never overwrites files
+managed by `dpkg`.
 
 ## Desktop integration and uninstall
 
@@ -132,6 +137,8 @@ It installs only into the current user's XDG data directories. Run the copied
 integration. Uninstall preserves settings, dictation history, learned
 terminology, and models by design.
 
-The application settings layer should call `localflow-autostart enable` or
-`localflow-autostart disable` when the Launch at Login toggle changes. Merely
-changing `QSettings` is not sufficient.
+The application settings layer owns the same per-user desktop entry directly
+when the Launch at Login toggle changes, verifies that its `Exec` line still
+points at the current executable, and repairs a stale path when re-enabled.
+`localflow-autostart` provides the equivalent operation for scripts and package
+integration.

@@ -267,7 +267,7 @@ struct AppController::RuntimeState {
         const QString& asrPath,
         const QString& polishPath,
         std::vector<LearnedTerm> initialLearnedTerms)
-        : transcriber({asrPath.toStdString(), -1, {}}),
+        : transcriber({asrPath.toUtf8().toStdString(), -1, {}}),
           polishWorker(polishPath),
           learned(std::move(initialLearnedTerms)) {
         pipelinePool.setMaxThreadCount(1);

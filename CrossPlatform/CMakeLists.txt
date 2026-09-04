@@ -50,10 +50,15 @@ if(LOCALFLOW_STRICT_WARNINGS)
                    localflow_model_verification_tests
                    localflow_single_instance_tests
                    localflow_core_tests
+                   localflow_accessibility_text_policy_tests
                    localflow_linux_platform localflow_linux_platform_tests
+                   localflow_linux_x11_shortcut_policy_tests
+                   localflow_linux_x11_shortcut_tests
                    localflow_linux_qt_clipboard_tests localflow_linux_qdbus_portal_tests
                    localflow_windows localflow_windows_state
-                   localflow_windows_state_tests localflow_windows_ocr_text_tests)
+                   localflow_windows_state_tests localflow_windows_ocr_text_tests
+                   localflow_windows_safety_state_tests
+                   localflow_windows_input_policy_tests)
         if(TARGET ${target})
             if(MSVC)
                 target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8 /WX)

@@ -1,5 +1,8 @@
 #pragma once
 
+#include "ReplacementModel.hpp"
+
+#include <QAbstractItemModel>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -7,9 +10,11 @@
 class SettingsModel final : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool launchAtLogin READ launchAtLogin WRITE setLaunchAtLogin NOTIFY launchAtLoginChanged)
+    Q_PROPERTY(QString launchAtLoginError READ launchAtLoginError NOTIFY launchAtLoginErrorChanged)
     Q_PROPERTY(bool hudEnabled READ hudEnabled WRITE setHudEnabled NOTIFY hudEnabledChanged)
     Q_PROPERTY(int historyLimit READ historyLimit WRITE setHistoryLimit NOTIFY historyLimitChanged)
     Q_PROPERTY(QString hotkey READ hotkey WRITE setHotkey NOTIFY hotkeyChanged)
+    Q_PROPERTY(QString mouseTrigger READ mouseTrigger WRITE setMouseTrigger NOTIFY mouseTriggerChanged)
     Q_PROPERTY(int holdThresholdMs READ holdThresholdMs WRITE setHoldThresholdMs NOTIFY holdThresholdMsChanged)
     Q_PROPERTY(bool keepMicWarm READ keepMicWarm WRITE setKeepMicWarm NOTIFY keepMicWarmChanged)
     Q_PROPERTY(bool duckAudio READ duckAudio WRITE setDuckAudio NOTIFY duckAudioChanged)
@@ -22,14 +27,17 @@ class SettingsModel final : public QObject {
     Q_PROPERTY(bool spokenPunctuationEnabled READ spokenPunctuationEnabled WRITE setSpokenPunctuationEnabled NOTIFY spokenPunctuationEnabledChanged)
     Q_PROPERTY(QString insertionMethod READ insertionMethod WRITE setInsertionMethod NOTIFY insertionMethodChanged)
     Q_PROPERTY(int clipboardRestoreDelayMs READ clipboardRestoreDelayMs WRITE setClipboardRestoreDelayMs NOTIFY clipboardRestoreDelayMsChanged)
+    Q_PROPERTY(QAbstractItemModel* dictionary READ dictionary CONSTANT)
 
 public:
     explicit SettingsModel(QObject* parent = nullptr);
 
     bool launchAtLogin() const;
+    QString launchAtLoginError() const { return launchAtLoginError_; }
     bool hudEnabled() const;
     int historyLimit() const;
     QString hotkey() const;
+    QString mouseTrigger() const;
     int holdThresholdMs() const;
     bool keepMicWarm() const;
     bool duckAudio() const;
@@ -42,12 +50,14 @@ public:
     bool spokenPunctuationEnabled() const;
     QString insertionMethod() const;
     int clipboardRestoreDelayMs() const;
+    QAbstractItemModel* dictionary() { return &dictionary_; }
 
 public slots:
     void setLaunchAtLogin(bool value);
     void setHudEnabled(bool value);
     void setHistoryLimit(int value);
     void setHotkey(const QString& value);
+    void setMouseTrigger(const QString& value);
     void setHoldThresholdMs(int value);
     void setKeepMicWarm(bool value);
     void setDuckAudio(bool value);
@@ -63,9 +73,11 @@ public slots:
 
 signals:
     void launchAtLoginChanged();
+    void launchAtLoginErrorChanged();
     void hudEnabledChanged();
     void historyLimitChanged();
     void hotkeyChanged();
+    void mouseTriggerChanged();
     void holdThresholdMsChanged();
     void keepMicWarmChanged();
     void duckAudioChanged();
@@ -85,4 +97,7 @@ private:
 
     template <typename T>
     bool update(const char* key, const T& next, const T& current);
+
+    ReplacementModel dictionary_;
+    QString launchAtLoginError_;
 };

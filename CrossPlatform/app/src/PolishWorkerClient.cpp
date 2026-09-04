@@ -99,7 +99,14 @@ bool PolishWorkerClient::readLine(QByteArray* line, int timeoutMs, QString* erro
         if (newline >= 0) {
             *line = pendingOutput_.left(newline);
             pendingOutput_.remove(0, newline + 1);
-            return line->size() <= 1024 * 1024;
+            if (line->size() > 1024 * 1024) {
+                if (error) {
+                    *error = QStringLiteral(
+                        "Polish worker response exceeded the safety limit");
+                }
+                return false;
+            }
+            return true;
         }
         const int remaining = qMax(0, timeoutMs - int(timer.elapsed()));
         if (!process_) {
