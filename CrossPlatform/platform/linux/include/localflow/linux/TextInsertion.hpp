@@ -21,9 +21,13 @@ public:
 };
 
 struct ClipboardSnapshot {
-    // MIME type -> exact bytes. Production clipboard implementations should
-    // preserve all offered types, not only text/plain.
+    // MIME type -> exact offered bytes, including zero-length payloads.
     std::map<std::string, std::vector<std::uint8_t>> payloads;
+
+    // QMimeData can expose an image as a semantic QVariant without encoded
+    // MIME bytes. The Qt adapter stores a lossless PNG copy here so that such
+    // images survive the transaction as image data as well.
+    std::vector<std::uint8_t> semanticImagePng;
 };
 
 class Clipboard {
@@ -32,6 +36,9 @@ public:
 
     [[nodiscard]] virtual Result<ClipboardSnapshot> snapshot() = 0;
     virtual Status setText(const std::string& utf8Text) = 0;
+
+    // Must not overwrite a clipboard that the user or another application
+    // replaced after setText(). A skipped restore is a successful outcome.
     virtual Status restore(const ClipboardSnapshot& snapshot) = 0;
 };
 

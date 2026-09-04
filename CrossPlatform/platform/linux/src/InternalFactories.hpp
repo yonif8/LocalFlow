@@ -16,6 +16,7 @@ namespace localflow::platform::linux::detail {
 [[nodiscard]] std::unique_ptr<Clipboard> makeCommandClipboard(
     SessionType session,
     std::string backend);
+[[nodiscard]] std::unique_ptr<Clipboard> makeQtClipboard();
 [[nodiscard]] std::unique_ptr<PasteInjector> makeX11PasteInjector();
 [[nodiscard]] std::unique_ptr<AudioCaptureBackend> makeProcessAudioCapture(
     std::string backend);

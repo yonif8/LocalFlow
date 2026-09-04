@@ -11,6 +11,10 @@
 #define LOCALFLOW_LINUX_WITH_QT_PORTALS 0
 #endif
 
+#ifndef LOCALFLOW_LINUX_WITH_QT_CLIPBOARD
+#define LOCALFLOW_LINUX_WITH_QT_CLIPBOARD 0
+#endif
+
 #if LOCALFLOW_LINUX_WITH_QT_PORTALS
 #include <QDBusConnection>
 #include <QDBusConnectionInterface>
@@ -194,6 +198,7 @@ CapabilityReport CapabilityDetector::detect(const HostProbe& host) const {
                                   host.executableAvailable("wl-paste");
     const bool x11Clipboard = host.executableAvailable("xclip") ||
                               host.executableAvailable("xsel");
+    constexpr bool qtClipboard = LOCALFLOW_LINUX_WITH_QT_CLIPBOARD != 0;
 
     if (report.session.type == SessionType::wayland) {
         report.capabilities.push_back(globalShortcutsPortal
@@ -318,32 +323,44 @@ CapabilityReport CapabilityDetector::detect(const HostProbe& host) const {
               "Install at-spi2-core and enable desktop accessibility."));
 
     if (report.session.type == SessionType::x11) {
-        report.capabilities.push_back(x11Clipboard && xTest
+        report.capabilities.push_back((qtClipboard || x11Clipboard) && xTest
             ? makeCapability(
                   Feature::clipboard_paste,
                   Availability::available,
-                  "X11 clipboard + XTest",
-                  "Clipboard paste is available as the non-accessibility fallback.")
+                  qtClipboard
+                      ? "Qt QClipboard + XTest"
+                      : "X11 command clipboard + XTest",
+                  qtClipboard
+                      ? "All advertised clipboard MIME formats are transactionally restored after paste."
+                      : "Plain-text clipboard paste is available with degraded restoration fidelity.")
             : makeCapability(
                   Feature::clipboard_paste,
                   Availability::unavailable,
                   "X11",
                   "A clipboard provider or safe XTest paste injector is missing.",
-                  "Install xclip (or xsel) and libXtst."));
+                  qtClipboard
+                      ? "Install libXtst."
+                      : "Install xclip (or xsel) and libXtst."));
     } else if (report.session.type == SessionType::wayland) {
-        report.capabilities.push_back(waylandClipboard && remoteDesktopPortal
+        report.capabilities.push_back((qtClipboard || waylandClipboard) && remoteDesktopPortal
             ? makeCapability(
                   Feature::clipboard_paste,
                   Availability::permission_required,
-                  "Wayland clipboard + RemoteDesktop portal",
-                  "Paste injection requires an explicit compositor-approved session.",
+                  qtClipboard
+                      ? "Qt QClipboard + RemoteDesktop portal"
+                      : "Wayland command clipboard + RemoteDesktop portal",
+                  qtClipboard
+                      ? "All advertised clipboard MIME formats are transactionally restored; paste injection still requires compositor approval."
+                      : "Plain-text clipboard access is degraded; paste injection requires compositor approval.",
                   "Approve keyboard control when LocalFlow asks. No uinput helper is used.")
             : makeCapability(
                   Feature::clipboard_paste,
                   Availability::unavailable,
                   "Wayland",
                   "Wayland clipboard access alone cannot inject Ctrl+V safely.",
-                  "Use AT-SPI insertion, or install wl-clipboard and a desktop that supports the RemoteDesktop portal."));
+                  qtClipboard
+                      ? "Use AT-SPI insertion, or a desktop that supports the RemoteDesktop portal."
+                      : "Use AT-SPI insertion, or install wl-clipboard and a desktop that supports the RemoteDesktop portal."));
     } else {
         report.capabilities.push_back(makeCapability(
             Feature::clipboard_paste,

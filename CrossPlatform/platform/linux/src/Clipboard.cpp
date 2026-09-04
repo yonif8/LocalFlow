@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -31,10 +32,28 @@ public:
     }
 
     Status setText(const std::string& utf8Text) override {
-        return writeText(utf8Text);
+        const auto status = writeText(utf8Text);
+        if (status.ok()) transientText_ = utf8Text;
+        return status;
     }
 
     Status restore(const ClipboardSnapshot& snapshot) override {
+        if (!transientText_.has_value()) {
+            return Status::failure(
+                ErrorCode::not_configured,
+                "No command-clipboard transaction is active.");
+        }
+
+        // Command tools can only compare the visible plain text. If reading
+        // fails or the text changed, prefer preserving a possible user copy
+        // over restoring stale content.
+        const auto current = readText();
+        const bool stillTransient = current.launched && !current.timedOut &&
+                                    current.exitCode == 0 &&
+                                    current.standardOutput == *transientText_;
+        transientText_.reset();
+        if (!stillTransient) return Status::success();
+
         const auto found = snapshot.payloads.find(kPlainTextMime);
         if (found == snapshot.payloads.end()) {
             return Status::failure(
@@ -100,6 +119,7 @@ private:
 
     SessionType session_;
     std::string backend_;
+    std::optional<std::string> transientText_;
 };
 
 }  // namespace

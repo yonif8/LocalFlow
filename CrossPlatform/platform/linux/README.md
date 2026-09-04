@@ -20,11 +20,17 @@ macOS, Windows, and Linux.
   the compositor-provided image URI into a bounded RGBA frame and leaves no
   persistent screen-sharing session behind.
 - AT-SPI2 focused-caret insertion, with bounded accessibility traversal.
-- Clipboard/paste fallback with restoration on both success and failure.
-  X11 uses XTest (or `xdotool` when XTest was not built); Wayland uses an
-  explicitly approved Qt/QDBus RemoteDesktop keyboard session. It sends a
-  balanced Ctrl+V sequence and observes compositor session closure. No root
-  helper, `/dev/uinput`, or `ydotool` path exists.
+- A full-fidelity Qt clipboard transaction that preserves every advertised
+  MIME payload, including text, HTML, URI lists, images, custom binary data,
+  zero-length formats, and an originally empty clipboard. A private random
+  marker makes restoration conditional on LocalFlow's transient clipboard
+  still being current, so a copy made by the user during the paste delay wins.
+  Clipboard calls are safely dispatched to the Qt GUI thread.
+- Clipboard/paste fallback with restoration on both success and failure. X11
+  uses XTest (or `xdotool` when XTest was not built); Wayland uses an explicitly
+  approved Qt/QDBus RemoteDesktop keyboard session. It sends a balanced Ctrl+V
+  sequence and observes compositor session closure. No root helper,
+  `/dev/uinput`, or `ydotool` path exists.
 - PipeWire-first, PulseAudio-second microphone adapters (`pw-record`/`parec`)
   producing normalized float PCM, plus best-effort `wpctl`/`pactl` ducking.
 
@@ -101,21 +107,30 @@ When `dbus-run-session` is available, the test suite also starts an isolated
 mock portal service and exercises the real QDBus wire signatures end to end:
 session creation/binding and both shortcut edges, screenshot URI decoding,
 RemoteDesktop device approval, key press/release ordering, and session close.
+When Qt Gui is available, an offscreen integration test also exercises the real
+`QClipboard` backend from a worker thread: rich MIME and image round trips,
+empty clipboard restoration, and a user-copy race.
 
 Optional native adapters are enabled when their development packages are
 present (`libx11-dev`, `libxtst-dev`, `libatspi2.0-dev`). Wayland portal
-transports additionally use Qt 6 Core, DBus, and Gui. A build without QtDBus
-remains useful for minimal CI and produces explicit not-configured errors.
+transports additionally use Qt 6 Core, DBus, and Gui. Qt Gui supplies the
+production clipboard backend even when QtDBus is absent. A build without Qt
+remains useful for minimal CI and uses a clearly degraded command clipboard.
 
 Runtime packages normally include `xdg-desktop-portal`, the matching GNOME or
-KDE portal backend, PipeWire, `wl-clipboard` on Wayland, and `xclip` or `xsel`
-on X11.
+KDE portal backend, and PipeWire. `wl-clipboard` on Wayland or `xclip`/`xsel`
+on X11 is needed only by a build without the Qt clipboard backend.
 
 ## Remaining platform limitations
 
-- The command clipboard adapter preserves UTF-8 plain text. Release builds
-  should inject the Qt clipboard adapter to preserve every MIME flavor (for
-  example images and rich text) exactly like the macOS clipboard transaction.
+- The production Qt adapter targets the standard clipboard used by Ctrl+V, not
+  X11's separate PRIMARY selection. Clipboard managers or applications may
+  normalize a MIME representation after taking ownership; LocalFlow restores
+  the exact bytes Qt offered when the snapshot was taken.
+- A build without Qt Gui falls back to clipboard commands and preserves only
+  UTF-8 plain text. It skips restoration when the visible text changed, but it
+  cannot distinguish a newer rich-text copy with the same plain text from its
+  own transient value. This degraded adapter is not used in normal packages.
 - Device selection currently exposes the stable system-default device. Native
   PipeWire device enumeration can replace it without changing the core API.
 - Wayland deliberately has no universal foreground-window identity API. AT-SPI

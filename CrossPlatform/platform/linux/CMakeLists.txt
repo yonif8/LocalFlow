@@ -13,6 +13,7 @@ add_library(localflow_linux_platform STATIC
     src/PortalSupport.cpp
     src/Process.cpp
     src/QDbusPortals.cpp
+    src/QtClipboard.cpp
     src/ScreenContext.cpp
     src/TextInsertion.cpp
     src/X11GlobalShortcut.cpp
@@ -40,15 +41,32 @@ target_link_libraries(localflow_linux_platform PRIVATE
 )
 
 # The desktop build supplies Qt, while the standalone capability/test build is
-# still useful on minimal systems. When QtDBus and QtGui are present the
-# factories construct the real XDG portal transports automatically.
-find_package(Qt6 6.4 QUIET COMPONENTS Core DBus Gui)
-if(TARGET Qt6::Core AND TARGET Qt6::DBus AND TARGET Qt6::Gui)
+# still useful on minimal systems. QtGui enables the full-fidelity clipboard;
+# QtDBus additionally enables the XDG portal transports.
+find_package(Qt6 6.4 QUIET COMPONENTS Core Gui)
+if(TARGET Qt6::Core AND TARGET Qt6::Gui)
+    set(LOCALFLOW_LINUX_QT_CLIPBOARD TRUE)
+    target_compile_definitions(localflow_linux_platform PRIVATE
+        LOCALFLOW_LINUX_WITH_QT_CLIPBOARD=1)
+    target_link_libraries(localflow_linux_platform PRIVATE
+        Qt6::Core Qt6::Gui)
+else()
+    set(LOCALFLOW_LINUX_QT_CLIPBOARD FALSE)
+    target_compile_definitions(localflow_linux_platform PRIVATE
+        LOCALFLOW_LINUX_WITH_QT_CLIPBOARD=0)
+    message(STATUS
+        "Qt6 Gui not found: clipboard preservation is limited to plain text")
+endif()
+
+if(LOCALFLOW_LINUX_QT_CLIPBOARD)
+    find_package(Qt6 6.4 QUIET COMPONENTS DBus)
+endif()
+if(LOCALFLOW_LINUX_QT_CLIPBOARD AND TARGET Qt6::DBus)
     set(LOCALFLOW_LINUX_QT_PORTALS TRUE)
     target_compile_definitions(localflow_linux_platform PRIVATE
         LOCALFLOW_LINUX_WITH_QT_PORTALS=1)
     target_link_libraries(localflow_linux_platform PRIVATE
-        Qt6::Core Qt6::DBus Qt6::Gui)
+        Qt6::DBus)
     set_target_properties(localflow_linux_platform PROPERTIES
         AUTOMOC ON
         # GCC exposes a legacy `linux` macro to moc even though C++17 mode
@@ -59,7 +77,7 @@ else()
     target_compile_definitions(localflow_linux_platform PRIVATE
         LOCALFLOW_LINUX_WITH_QT_PORTALS=0)
     message(STATUS
-        "Qt6 DBus/Gui not found: Wayland portal transports will report not configured")
+        "Qt6 DBus not found: Wayland portal transports will report not configured")
 endif()
 
 # Native integrations are optional at build time. The library still builds and
@@ -98,6 +116,25 @@ if(LOCALFLOW_LINUX_BUILD_TESTS)
     target_include_directories(localflow_linux_platform_tests PRIVATE src)
     target_link_libraries(localflow_linux_platform_tests PRIVATE localflow_linux_platform)
     add_test(NAME localflow_linux_platform_tests COMMAND localflow_linux_platform_tests)
+
+    if(LOCALFLOW_LINUX_QT_CLIPBOARD)
+        add_executable(localflow_linux_qt_clipboard_tests
+            tests/QtClipboardIntegrationTests.cpp)
+        set_target_properties(localflow_linux_qt_clipboard_tests PROPERTIES
+            CXX_STANDARD 17
+            CXX_STANDARD_REQUIRED YES
+            CXX_EXTENSIONS NO)
+        target_compile_options(localflow_linux_qt_clipboard_tests PRIVATE
+            -Wall -Wextra -Wpedantic)
+        target_link_libraries(localflow_linux_qt_clipboard_tests PRIVATE
+            localflow_linux_platform Qt6::Core Qt6::Gui)
+        add_test(
+            NAME localflow_linux_qt_clipboard_tests
+            COMMAND $<TARGET_FILE:localflow_linux_qt_clipboard_tests>)
+        set_tests_properties(localflow_linux_qt_clipboard_tests PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            TIMEOUT 15)
+    endif()
 
     find_program(LOCALFLOW_DBUS_RUN_SESSION dbus-run-session)
     if(LOCALFLOW_LINUX_QT_PORTALS AND LOCALFLOW_DBUS_RUN_SESSION)

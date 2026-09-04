@@ -207,6 +207,9 @@ std::unique_ptr<Clipboard> makeSystemClipboard(const CapabilityReport& report) {
             Feature::clipboard_paste,
             "Clipboard paste support was not detected."));
     }
+    if (auto clipboard = detail::makeQtClipboard()) {
+        return clipboard;
+    }
     return detail::makeCommandClipboard(report.session.type, capability->backend);
 }
 
