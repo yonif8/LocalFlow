@@ -201,7 +201,10 @@ cmp --silent "${script_root}/../../app/assets/LocalFlow.png" \
 desktop-file-validate "$installed_desktop"
 desktop-file-validate "$autostart_entry"
 for entry in "$installed_desktop" "$autostart_entry"; do
-    ! grep -Fq 'TryExec=' "$entry"
+    if grep -Fq 'TryExec=' "$entry"; then
+        echo "Installed desktop entry unexpectedly contains TryExec: $entry" >&2
+        exit 1
+    fi
     grep -Fq 'Exec="' "$entry"
     grep -Fq 'LocalFlow.AppImage' "$entry"
     grep -Fq '\$' "$entry"
