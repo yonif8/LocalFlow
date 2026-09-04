@@ -136,9 +136,22 @@ DictationPipelineResult DictationPipeline::run(const DictationRequest& request) 
     const auto terminology_start = PipelineClock::now();
     if (configuration_.screen_terminology_enabled) {
         try {
+            auto screen_terms = request.press_context.screen_terms;
+            if (request.press_context.screen_terms_if_ready) {
+                try {
+                    auto latest = request.press_context.screen_terms_if_ready();
+                    screen_terms.insert(
+                        screen_terms.end(),
+                        std::make_move_iterator(latest.begin()),
+                        std::make_move_iterator(latest.end()));
+                } catch (...) {
+                    // Screen context is opportunistic. Accessibility/OCR
+                    // failure must never delay or discard the dictation.
+                }
+            }
             auto correction = TerminologyCorrector::correct(
                 result.output_text,
-                request.press_context.screen_terms,
+                screen_terms,
                 learned_terminology_.terms(),
                 protected_terms);
             result.output_text = std::move(correction.text);

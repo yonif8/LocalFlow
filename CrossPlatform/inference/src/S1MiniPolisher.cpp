@@ -5,6 +5,9 @@
 #include <chrono>
 #include <filesystem>
 #include <mutex>
+#include <set>
+#include <sstream>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -25,6 +28,50 @@ std::string trim(std::string value) {
     if (first == std::string::npos) return {};
     const auto last = value.find_last_not_of(" \t\r\n");
     return value.substr(first, last - first + 1);
+}
+
+std::set<std::string> content_words(const std::string& text) {
+    static const std::unordered_set<std::string> numberWords{
+        "zero", "one", "two", "three", "four", "five", "six", "seven",
+        "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
+        "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty",
+        "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+        "hundred", "thousand", "million", "billion", "point", "half", "quarter",
+        "dollar", "dollars", "cents", "euros", "pounds", "percent", "oclock",
+    };
+    std::set<std::string> result;
+    std::string current;
+    bool hasDigit = false;
+    const auto flush = [&] {
+        if (current.size() > 2 && !hasDigit && numberWords.count(current) == 0) {
+            result.insert(current);
+        }
+        current.clear();
+        hasDigit = false;
+    };
+    for (const unsigned char byte : text) {
+        if ((byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z')
+            || (byte >= '0' && byte <= '9') || byte >= 0x80U) {
+            current.push_back(byte >= 'A' && byte <= 'Z' ? char(byte + 32U) : char(byte));
+            hasDigit = hasDigit || (byte >= '0' && byte <= '9');
+        } else {
+            flush();
+        }
+    }
+    flush();
+    return result;
+}
+
+bool looks_like_cleanup(const std::string& input, const std::string& candidate) {
+    if (candidate.size() * 3 < input.size() || candidate.size() > input.size() * 2) {
+        return false;
+    }
+    const auto source = content_words(input);
+    const auto output = content_words(candidate);
+    if (source.empty() || output.empty()) return true;
+    std::size_t overlap = 0;
+    for (const auto& word : output) overlap += source.count(word);
+    return double(overlap) >= 0.6 * double(output.size());
 }
 
 }  // namespace
@@ -143,6 +190,9 @@ Result<PolishResponse> S1MiniPolisher::polish(const PolishRequest& request) {
     }
 
     llama_sampler* sampler = llama_sampler_init_greedy();
+    if (sampler == nullptr) {
+        return Result<PolishResponse>::failure("Could not create the S1-mini sampler");
+    }
     struct SamplerGuard {
         llama_sampler* value;
         ~SamplerGuard() { llama_sampler_free(value); }
@@ -150,7 +200,11 @@ Result<PolishResponse> S1MiniPolisher::polish(const PolishRequest& request) {
 
     auto batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
     std::string output;
-    for (std::size_t generated = 0; generated < request.maxOutputTokens; ++generated) {
+    llama_token sampledToken = 0;
+    const std::size_t outputLimit = std::min<std::size_t>(
+        request.maxOutputTokens,
+        std::size_t(contextParameters.n_ctx) - std::size_t(tokenCount) - 1);
+    for (std::size_t generated = 0; generated < outputLimit; ++generated) {
         if (std::chrono::steady_clock::now() >= deadline) {
             return Result<PolishResponse>::failure("S1-mini polish timed out");
         }
@@ -162,27 +216,37 @@ Result<PolishResponse> S1MiniPolisher::polish(const PolishRequest& request) {
             return Result<PolishResponse>::failure("S1-mini generation failed");
         }
 
-        const llama_token token = llama_sampler_sample(sampler, context, -1);
-        if (llama_vocab_is_eog(vocabulary, token)) break;
+        sampledToken = llama_sampler_sample(sampler, context, -1);
+        if (llama_vocab_is_eog(vocabulary, sampledToken)) break;
 
         std::vector<char> piece(256);
         int pieceSize = llama_token_to_piece(
-            vocabulary, token, piece.data(), static_cast<int32_t>(piece.size()), 0, true);
+            vocabulary, sampledToken, piece.data(), static_cast<int32_t>(piece.size()), 0, true);
         if (pieceSize < 0) {
             piece.resize(static_cast<std::size_t>(-pieceSize));
             pieceSize = llama_token_to_piece(
-                vocabulary, token, piece.data(), static_cast<int32_t>(piece.size()), 0, true);
+                vocabulary, sampledToken, piece.data(), static_cast<int32_t>(piece.size()), 0, true);
         }
         if (pieceSize < 0) {
             return Result<PolishResponse>::failure("Could not decode S1-mini output");
         }
         output.append(piece.data(), static_cast<std::size_t>(pieceSize));
-        batch = llama_batch_get_one(const_cast<llama_token*>(&token), 1);
+        batch = llama_batch_get_one(&sampledToken, 1);
     }
 
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - started);
-    return Result<PolishResponse>::success({trim(std::move(output)), elapsed});
+    output = trim(std::move(output));
+    if (const auto thinking = output.find("</think>"); thinking != std::string::npos) {
+        output = trim(output.substr(thinking + std::string("</think>").size()));
+    }
+    if (output.empty()) {
+        return Result<PolishResponse>::failure("S1-mini returned empty output");
+    }
+    if (!looks_like_cleanup(request.transcript, output)) {
+        return Result<PolishResponse>::failure("S1-mini output was not a plausible transcript cleanup");
+    }
+    return Result<PolishResponse>::success({std::move(output), elapsed});
 #endif
 }
 

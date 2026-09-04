@@ -16,6 +16,11 @@ namespace localflow::core {
 struct PressTimeContext {
     std::vector<std::string> screen_terms;
     std::optional<std::string> target_app_id;
+
+    // Called after ASR, immediately before terminology correction, so press-
+    // time OCR can run concurrently with recording and transcription. It must
+    // never wait: return the latest completed snapshot or an empty vector.
+    std::function<std::vector<std::string>()> screen_terms_if_ready;
 };
 
 struct DictationRequest {
@@ -119,4 +124,3 @@ private:
 };
 
 }  // namespace localflow::core
-
