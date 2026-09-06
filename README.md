@@ -9,13 +9,15 @@ bug reports are sent only when you choose to submit them.
 - Hold-to-talk with configurable keyboard and supported mouse triggers.
 - Parakeet TDT v3 speech recognition and optional S1-mini polishing.
 - Optional screen terminology and a bounded, editable local terminology bank.
+- Long dictations process in the background at natural pauses, aiming for a
+  roughly two-second wait after release. [Behavior and measurements](docs/INCREMENTAL_DICTATION.md).
 - Tray/menu bar controls, recording HUD, settings, and session history.
 - Signed update verification, with installation appropriate to each platform.
 
 ## Downloads and validation status
 
 [Download LocalFlow](https://github.com/yonif8/LocalFlow/releases/latest).
-Version 1.3.0 has public packages for all three platforms. Windows and Linux
+Stable releases have packages for all three platforms. Windows and Linux
 passed automated builds, real-model inference, signing checks, and installer
 smoke tests. **Hands-on Windows/Linux testing is still pending.** Availability
 does not mean every desktop/app combination has been certified.

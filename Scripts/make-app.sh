@@ -1,8 +1,10 @@
 #!/bin/bash
 # make-app.sh — build LocalFlow in release mode and assemble dist/LocalFlow.app.
 #
-# Works with Command Line Tools only (no Xcode required).
-# Usage: Scripts/make-app.sh [--version X.Y.Z] [--scratch-path <dir>]
+# Use full Xcode for release Metal tooling (set DEVELOPER_DIR explicitly).
+# Usage: Scripts/make-app.sh [--version X.Y.Z] [--scratch-path <dir>] [--output-dir <dir>]
+# Diagnostic builds should use --output-dir dist/diagnostics.noindex to avoid
+# registering extra build/backup applications in Spotlight.
 #
 #   --version X.Y.Z   Release build: stamps CFBundleShortVersionString/
 #                     CFBundleVersion and embeds the Sparkle feed URL +
@@ -27,6 +29,7 @@ VERSION="1.0.0-dev"
 RELEASE=0
 SCRATCH_DIR="$REPO_ROOT/.build"
 SCRATCH_ARGS=()
+OUTPUT_DIR="$REPO_ROOT/dist"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version)
@@ -34,6 +37,8 @@ while [[ $# -gt 0 ]]; do
         --scratch-path)
             SCRATCH_DIR="${2:?--scratch-path requires a value}"
             SCRATCH_ARGS=(--scratch-path "$2"); shift 2 ;;
+        --output-dir)
+            OUTPUT_DIR="${2:?--output-dir requires a directory}"; shift 2 ;;
         *)
             echo "error: unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -61,7 +66,7 @@ BUILD_NUM=$((10#$V_MAJ * 10000 + 10#$V_MIN * 100 + 10#$V_PAT))
 
 APP_NAME="LocalFlow"
 BUNDLE_ID="com.localflow.app"
-DIST="$REPO_ROOT/dist"
+DIST="$OUTPUT_DIR"
 APP="$DIST/$APP_NAME.app"
 
 # Sparkle update-feed configuration (release builds only).

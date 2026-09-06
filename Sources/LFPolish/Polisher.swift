@@ -98,19 +98,18 @@ public struct LocalPolisher: TextPolisher {
         public var llmEnabled: Bool
         /// Wall-clock budget for the LLM pass; on expiry, fail open.
         public var timeout: TimeInterval
-        /// Inputs longer than this skip the LLM pass instantly (never
-        /// truncates). The bound is LATENCY, not context: the on-device model
-        /// regenerates the whole text and manages roughly two sentences
-        /// inside the 2s budget on an M1 Max — beyond that the pass would
-        /// only burn the full timeout and fail open anyway.
+        /// Inputs longer than this skip the LLM pass (never truncate).
+        /// S1-mini can clean multi-paragraph dictation; the old 700-character
+        /// limit was inherited from the slower Foundation Models backend.
+        /// Keep a finite bound, with a separate deadline for slow devices.
         public var maxInputCharacters: Int
         /// Force a tone instead of inferring it from the target app.
         public var toneOverride: ToneHint?
 
         public init(
             llmEnabled: Bool = true,
-            timeout: TimeInterval = 1.5,
-            maxInputCharacters: Int = 700,
+            timeout: TimeInterval = 3.0,
+            maxInputCharacters: Int = 4000,
             toneOverride: ToneHint? = nil
         ) {
             self.llmEnabled = llmEnabled
@@ -222,6 +221,7 @@ public struct LocalPolisher: TextPolisher {
             return failOpen(.modelUnavailable(reason))
         }
         guard replaced.count <= configuration.maxInputCharacters else {
+            Self.logger.info("polish length limit: characters=\(replaced.count, privacy: .public) limit=\(configuration.maxInputCharacters, privacy: .public)")
             return failOpen(.inputTooLong)
         }
         let trimmedInput = replaced.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -246,7 +246,7 @@ public struct LocalPolisher: TextPolisher {
                 return failOpen(.emptyModelOutput, llmDuration: llmDuration)
             }
             guard Self.looksLikeCleanup(of: replaced, candidate: polishedText) else {
-                Self.logger.warning("model output rejected as implausible: \(polishedText, privacy: .public)")
+                Self.logger.warning("model output rejected as implausible; characters=\(polishedText.count, privacy: .public)")
                 return failOpen(.implausibleOutput, llmDuration: llmDuration)
             }
             Self.logger.info("polish succeeded via on-device model")

@@ -1379,6 +1379,17 @@ void PlatformBridge::cancelCurrentSession() noexcept {
   implementation_->end(true);
 }
 
+PlatformEvent PlatformBridge::snapshot(std::uint64_t sessionId, std::size_t fromSample) const {
+  std::lock_guard lock(implementation_->mutex);
+  PlatformEvent result;
+  result.sessionId = sessionId;
+  result.sampleRate = implementation_->sampleRate;
+  if (!implementation_->recording || implementation_->activeSession != sessionId ||
+      fromSample > implementation_->samples.size()) return result;
+  result.samples.assign(implementation_->samples.begin() + fromSample, implementation_->samples.end());
+  return result;
+}
+
 bool PlatformBridge::insert(std::uint64_t sessionId, const std::string &text,
                             std::string *error) {
   return implementation_->insert(sessionId, text, error);

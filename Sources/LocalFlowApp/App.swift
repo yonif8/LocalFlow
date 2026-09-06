@@ -53,6 +53,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // covers `swift run` during development.
         NSApp.setActivationPolicy(.accessory)
 
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--diagnostic-mode") {
+            // Process-only overrides: never alter the restored app's preferences.
+            UserDefaults.standard.setVolatileDomain([
+                DefaultsKey.screenTerminology: true,
+                DefaultsKey.duckWhileDictating: false,
+                DefaultsKey.keepMicWarm: false
+            ], forName: UserDefaults.argumentDomain)
+        }
+
         setUpStatusItem()
         DictationCoordinator.shared.startListening()
         observeCoordinatorState()
@@ -281,8 +291,8 @@ enum DefaultsKey {
     static let keepMicWarm = "LFKeepMicWarm"                   // default false
     static let duckWhileDictating = "LFDuckWhileDictating"     // default true
     static let holdThreshold = "LFHoldThreshold"               // seconds, default 0.3
-    static let polishTimeout = "LFPolishTimeout"               // seconds, default 1.5
-    static let polishMaxChars = "LFPolishMaxChars"             // default 700
+    static let polishTimeout = "LFPolishTimeout"               // seconds, default 3
+    static let polishMaxChars = "LFPolishMaxChars"             // default 4000
     static let polishTone = "LFPolishTone"                     // "auto" | "casual" | "neutral"
     static let insertMethod = "LFInsertMethod"                 // "auto" | "paste" | "type"
     static let restoreDelayMs = "LFRestoreDelayMs"             // default 300

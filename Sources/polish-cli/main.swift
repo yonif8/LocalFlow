@@ -9,7 +9,8 @@ import LFPolish
 // Reads text from arguments, or from stdin when no text arguments are given.
 
 var llmEnabled = true
-var timeout: TimeInterval = 2.0
+var timeout = LocalPolisher.Configuration().timeout
+var maxCharacters = LocalPolisher.Configuration().maxInputCharacters
 var punctuation = false
 var targetBundleID: String? = nil
 var textParts: [String] = []
@@ -28,6 +29,12 @@ while !args.isEmpty {
         timeout = value
     case "--punctuation":
         punctuation = true
+    case "--max-chars":
+        guard !args.isEmpty, let value = Int(args.removeFirst()), value > 0 else {
+            FileHandle.standardError.write(Data("error: --max-chars needs a positive integer\n".utf8))
+            exit(2)
+        }
+        maxCharacters = value
     case "--target":
         guard !args.isEmpty else {
             FileHandle.standardError.write(Data("error: --target needs a bundle id\n".utf8))
@@ -37,7 +44,7 @@ while !args.isEmpty {
     case "--help", "-h":
         print("""
         usage: polish-cli [--no-llm] [--timeout <seconds>] [--punctuation] \
-        [--target <bundle-id>] [text ...]
+        [--max-chars <count>] [--target <bundle-id>] [text ...]
         Reads text from arguments, or stdin when none are given.
         """)
         exit(0)
@@ -74,7 +81,8 @@ let loadedDictionary = try PersonalDictionary.load(from: dictionaryURL)
 
 let polisher = LocalPolisher(
     dictionary: loadedDictionary,
-    configuration: .init(llmEnabled: llmEnabled, timeout: timeout))
+    configuration: .init(llmEnabled: llmEnabled, timeout: timeout,
+                         maxInputCharacters: maxCharacters))
 
 print("dictionary        : \(loadedDictionary.rules.count) rules (JSON at \(dictionaryURL.path))")
 print("spoken punctuation: \(loadedDictionary.spokenPunctuationEnabled ? "on" : "off")")

@@ -65,6 +65,55 @@ final class DictationCoordinator {
     private var screenContextTask: Task<Void, Never>?
     private var errorResetTask: Task<Void, Never>?
     private var didPrepareTranscriber = false
+    private var incremental: IncrementalDictation?
+    private var processedSamples = 0
+    private var segmentStartedAt = ContinuousClock.now
+    private var quietSince: ContinuousClock.Instant?
+    private var dictationTargetBundleID: String?
+    private var segmentBudget = DictationSegmentBudget()
+
+    private func resetSegments() {
+        let old = incremental
+        incremental = nil
+        if let old { Task { await old.cancel() } }
+        processedSamples = 0
+        quietSince = nil
+        segmentStartedAt = .now
+    }
+
+    private func considerSegment(level: Float) async {
+        guard state == .recording, let capture = realCapture else { return }
+        let now = ContinuousClock.now
+        if level > 0.18 { quietSince = nil; return }
+        if quietSince == nil { quietSince = now }
+        guard let quietSince, now - quietSince >= .milliseconds(650),
+              now - segmentStartedAt >= .seconds(segmentBudget.pauseSearchSeconds) else { return }
+        let chunk = capture.snapshot(from: processedSamples)
+        guard chunk.duration >= segmentBudget.pauseSearchSeconds,
+              DictationSegmentBudget.hasQuietTail(chunk.samples, sampleRate: chunk.sampleRate) else { return }
+        if incremental == nil {
+            let target = dictationTargetBundleID
+            let screenContext = pendingScreenContext
+            incremental = IncrementalDictation(transcriber: transcriber, timing: { [weak self] audio, elapsed in
+                await self?.observeSegment(audio: audio, elapsed: elapsed)
+            }) { [weak self] raw in
+                guard let self else { throw CancellationError() }
+                try Task.checkCancellation()
+                return await self.polishRecognized(raw, screenContext: screenContext,
+                                                  targetBundleID: target)
+            }
+        }
+        processedSamples += chunk.samples.count
+        segmentStartedAt = now
+        self.quietSince = nil
+        Self.logger.info("Background chunk: audioSeconds=\(chunk.duration, privacy: .public) sampleOffset=\(self.processedSamples, privacy: .public) pauseSearchSeconds=\(self.segmentBudget.pauseSearchSeconds, privacy: .public)")
+        await incremental?.append(chunk)
+    }
+
+    private func observeSegment(audio: Double, elapsed: Double) {
+        segmentBudget.observe(audioSeconds: audio, processingSeconds: elapsed)
+        Self.logger.info("Background chunk finished: audioSeconds=\(audio, privacy: .public) processingSeconds=\(elapsed, privacy: .public) nextPauseSearchSeconds=\(self.segmentBudget.pauseSearchSeconds, privacy: .public)")
+    }
 
     private init() {
         // One-time move of the legacy model caches (~/Documents/huggingface,
@@ -187,6 +236,7 @@ final class DictationCoordinator {
     }
 
     func stopListening() {
+        resetSegments()
         SystemAudioDucker.shared.restore()
         realCapture?.stop()
         realCapture = nil
@@ -231,6 +281,8 @@ final class DictationCoordinator {
     private func handle(_ event: CaptureEvent) async {
         switch event {
         case .began:
+            resetSegments()
+            dictationTargetBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
             Self.logger.info("capture began")
             errorResetTask?.cancel()
             if AppSettings.screenTerminologyEnabled {
@@ -285,6 +337,7 @@ final class DictationCoordinator {
             HUDController.shared.show()
 
         case .level(let value):
+            await considerSegment(level: value)
             level = max(0, min(1, value))
             // Throttled diagnostics for "meter not moving" reports: peak
             // level once per second while recording.
@@ -296,6 +349,7 @@ final class DictationCoordinator {
             }
 
         case .cancelled:
+            resetSegments()
             SystemAudioDucker.shared.restore()
             state = .idle
             level = 0
@@ -312,31 +366,80 @@ final class DictationCoordinator {
             SystemAudioDucker.shared.restore()
             state = .processing
             level = 0
-            let contextSessionID = screenContextSessionID
-            await runPipeline(utterance, contextSessionID: contextSessionID)
+            await runPipeline(utterance)
         }
     }
 
-    private func runPipeline(_ utterance: Utterance, contextSessionID: UUID? = nil) async {
-        // A warm engine finishes in ~110 ms; keep the "processing…" lozenge up
-        // for a beat so it reads as a state, not a flicker. (Cold runs take
-        // seconds and are unaffected.)
-        let processingShownAt = ContinuousClock.now
-        do {
-            let clock = ContinuousClock()
-            var stageStart = clock.now
-            // Parakeet output is verbatim WITH native punctuation; it serves
-            // as both the polish input and the fail-open fallback.
-            let raw = try await transcriber.transcribe(utterance)
-            Self.logger.info("ASR result: \"\(raw, privacy: .public)\"")
-            // OCR started when recording began. Take whatever context is ready
-            // after ASR, but never wait for it on key release.
-            let screenContext = self.screenContextSessionID == contextSessionID
-                ? pendingScreenContext : nil
+    private func runPipeline(_ utterance: Utterance) async {
+        defer {
+            resetSegments()
             pendingScreenContext = nil
             screenContextSessionID = nil
             screenContextTask?.cancel()
             screenContextTask = nil
+        }
+        // A warm engine finishes in ~110 ms; keep the "processing…" lozenge up
+        // for a beat so it reads as a state, not a flicker. (Cold runs take
+        // seconds and are unaffected.)
+        let processingShownAt = ContinuousClock.now
+        let runID = UUID().uuidString
+        Self.logger.info("Pipeline \(runID, privacy: .public): ASR begin samples=\(utterance.samples.count, privacy: .public) screenTermsEnabled=\(AppSettings.screenTerminologyEnabled, privacy: .public)")
+        do {
+            let clock = ContinuousClock()
+            let stageStart = clock.now
+            let screenContext = pendingScreenContext
+            let text: String
+            if let incremental {
+                let offset = min(processedSamples, utterance.samples.count)
+                let remainder = Utterance(samples: Array(utterance.samples[offset...]),
+                                          sampleRate: utterance.sampleRate)
+                do {
+                    text = try await incremental.finish(remainder)
+                } catch {
+                    try Task.checkCancellation()
+                    Self.logger.warning("Background segment failed; retrying retained complete audio")
+                    let raw = try await transcriber.transcribe(utterance)
+                    text = await polishRecognized(raw, screenContext: screenContext,
+                                                 targetBundleID: dictationTargetBundleID)
+                }
+            } else {
+                let raw = try await transcriber.transcribe(utterance)
+                text = await polishRecognized(raw, screenContext: screenContext,
+                                             targetBundleID: dictationTargetBundleID)
+            }
+            try Task.checkCancellation()
+            let processingDuration = clock.now - stageStart
+            if incremental == nil {
+                let elapsed = Double(processingDuration.components.seconds)
+                    + Double(processingDuration.components.attoseconds) / 1e18
+                if utterance.duration >= 12 { observeSegment(audio: utterance.duration, elapsed: elapsed) }
+            }
+            let insertionStart = clock.now
+            Self.logger.info("Pipeline \(runID, privacy: .public): polish complete; insertion begin characters=\(text.count, privacy: .public)")
+            try await inserter.insert(text)
+            let insertDuration = clock.now - insertionStart
+            Self.logger.info("""
+                stages: release processing \(String(describing: processingDuration), privacy: .public), \
+                insert \(String(describing: insertDuration), privacy: .public)
+                """)
+            appendHistory(text)
+            Self.logger.info("Pipeline \(runID, privacy: .public): complete")
+            let elapsed = ContinuousClock.now - processingShownAt
+            if elapsed < .milliseconds(350) {
+                try? await Task.sleep(for: .milliseconds(350) - elapsed)
+            }
+            state = .idle
+            HUDController.shared.hide()
+        } catch {
+            Self.logger.error("Pipeline \(runID, privacy: .public): failed domain=\((error as NSError).domain, privacy: .public) code=\((error as NSError).code, privacy: .public)")
+            surfaceError("Dictation failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func polishRecognized(_ raw: String, screenContext: ScreenContextSnapshot?,
+                                  targetBundleID: String?) async -> String {
+        guard !Task.isCancelled else { return raw }
+        let runID = UUID().uuidString
             var polishInput = raw
             var terminologyMatches: [TerminologyMatch] = []
             if AppSettings.screenTerminologyEnabled {
@@ -351,32 +454,29 @@ final class DictationCoordinator {
                     protectedTerms: dictionary.rules.map(\.written))
                 polishInput = correction.text
                 terminologyMatches = correction.matches
-                LearnedTerminologyStore.learn(
-                    correction.matches, sourceBundleID: screenContext?.bundleID)
+                if state != .recording && !Task.isCancelled && !ProcessInfo.processInfo.arguments.contains("--diagnostic-mode") {
+                    LearnedTerminologyStore.learn(
+                        correction.matches, sourceBundleID: screenContext?.bundleID)
+                }
                 if !correction.matches.isEmpty {
                     let screenCount = correction.matches.filter { $0.source == .screen }.count
                     let learnedCount = correction.matches.count - screenCount
                     Self.logger.info("""
-                        terminology result: \"\(polishInput, privacy: .public)\" \
+                        terminology correction completed \
                         (screen=\(screenCount, privacy: .public), learned=\(learnedCount, privacy: .public))
                         """)
                 }
             }
             let formatted = polishInput
-            // Raw transcript at debug level: when a user reports "that's not
-            // what I said," this attributes the error to ASR vs polish in
-            // seconds instead of a reconstruction hunt.
-            Self.logger.debug("raw transcript: \"\(raw, privacy: .public)\"")
-            let transcribeDuration = clock.now - stageStart
+            // Metadata only; never log dictated words.
+            Self.logger.info("Pipeline \(runID, privacy: .public): terminology complete; polish begin")
 
-            stageStart = clock.now
             // Always runs: dictionary replacements apply even with LLM polish
             // off — the polisher's own llmEnabled config gates the model pass.
-            // S1 works from the RAW transcript (punctuates better than the
-            // pause-based formatter); the formatter output is the fallback.
+            // Parakeet supplies punctuation; S1 cleans up the recognized text.
             let context = PolishContext(
                 targetAppBundleID: screenContext?.bundleID
-                    ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                    ?? targetBundleID
             )
             let polishedText: String
             if let localPolisher = polisher as? LocalPolisher {
@@ -400,33 +500,13 @@ final class DictationCoordinator {
                     protectedTerms: AppSettings.loadDictionary().rules.map(\.written))
                 text = finalCorrection.text
                 if text != polishedText {
-                    Self.logger.info("post-polish terminology restored: \"\(text, privacy: .public)\"")
+                    Self.logger.info("post-polish terminology restored; characters=\(text.count, privacy: .public)")
                 }
             } else {
                 text = polishedText
             }
-            let polishDuration = clock.now - stageStart
 
-            stageStart = clock.now
-            try await inserter.insert(text)
-            let insertDuration = clock.now - stageStart
-            Self.logger.info("""
-                stages: transcribe \(String(describing: transcribeDuration), privacy: .public), \
-                polish \(String(describing: polishDuration), privacy: .public), \
-                insert \(String(describing: insertDuration), privacy: .public)
-                """)
-            appendHistory(text)
-            Self.logger.info("pipeline complete: \"\(text, privacy: .public)\"")
-            let elapsed = ContinuousClock.now - processingShownAt
-            if elapsed < .milliseconds(350) {
-                try? await Task.sleep(for: .milliseconds(350) - elapsed)
-            }
-            state = .idle
-            HUDController.shared.hide()
-        } catch {
-            Self.logger.error("pipeline failed: \(String(describing: error), privacy: .public)")
-            surfaceError("Dictation failed: \(error.localizedDescription)")
-        }
+        return text
     }
 
     private func appendHistory(_ text: String) {

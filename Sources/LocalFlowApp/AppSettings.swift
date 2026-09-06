@@ -76,12 +76,12 @@ enum AppSettings {
     }
 
     static var polishTimeout: Double {
-        get { clamp(defaults.object(forKey: DefaultsKey.polishTimeout) as? Double ?? 1.5, 0.5, 5.0) }
+        get { clamp(defaults.object(forKey: DefaultsKey.polishTimeout) as? Double ?? LocalPolisher.Configuration().timeout, 0.5, 5.0) }
         set { defaults.set(newValue, forKey: DefaultsKey.polishTimeout) }
     }
 
     static var polishMaxChars: Int {
-        get { clamp(defaults.object(forKey: DefaultsKey.polishMaxChars) as? Int ?? 700, 100, 4000) }
+        get { clamp(defaults.object(forKey: DefaultsKey.polishMaxChars) as? Int ?? LocalPolisher.Configuration().maxInputCharacters, 100, 4000) }
         set { defaults.set(newValue, forKey: DefaultsKey.polishMaxChars) }
     }
 

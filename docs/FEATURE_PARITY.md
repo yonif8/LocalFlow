@@ -4,7 +4,7 @@ This is the release contract for LocalFlow on macOS, Windows, and Linux. A row
 may be marked complete only after its behavior and failure modes are exercised
 on the platform's certification matrix.
 
-Current availability: v1.3.0 is public for macOS, Windows, and Linux.
+The stable release channel provides macOS, Windows, and Linux packages.
 Windows/Linux automated production builds, inference, signature verification,
 and installer smoke tests passed. Hands-on certification remains pending.
 As of 2026-09-05 it is deferred at the owner's request until test machines are
@@ -30,6 +30,7 @@ Status meanings:
 | Microphone capture | Device selection, default fallback, warm mode, 16 kHz mono, live level | Existing macOS release | Available; certification pending | Available; certification pending |
 | Audio ducking | Lower output during capture and safely restore it on every exit path | Existing macOS release | Available; certification pending | Available; certification pending |
 | Local ASR | Parakeet TDT v3, automatic punctuation, model progress, no uploaded audio | Existing macOS release | Available; certification pending | Available; certification pending |
+| Incremental long dictation | Measured release-latency target, pause-boundary background ASR/polish, sentence carry, one final insertion | Implemented; real-microphone tests passed | Implemented; certification pending | Implemented; certification pending |
 | Local polish | S1-mini, deterministic prompt, app-aware tone, timeout, guardrails, fail-open | Existing macOS release | Available; certification pending | Available; certification pending |
 | Personal dictionary | Ordered replacements, casing, spoken punctuation and JSON persistence | Existing macOS release | Available; certification pending | Available; certification pending |
 | Screen terminology | Concurrent local OCR plus bounded accessibility metadata | Existing macOS release | Available; certification pending | Available; certification pending |

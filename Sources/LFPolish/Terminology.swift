@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// A canonical spelling learned from a high-confidence screen-context correction.
 public struct LearnedTerm: Codable, Sendable, Equatable, Identifiable {
@@ -314,17 +315,25 @@ public enum TerminologyCorrector {
             let source: TerminologyMatch.Source
         }
         var proposals: [Replacement] = []
+        var oversizedAliases = 0
+        var maximumExpandedWords = 0
         for candidate in candidates {
             let canonicalKey = ScreenTermExtractor.normalized(candidate.canonical)
             guard canonicalKey.count >= 2, !protected.contains(canonicalKey) else { continue }
             let comparisonAliases = candidate.aliases.flatMap { [$0, spokenForm($0)] }
-            let canonicalWordCount = comparisonAliases.map {
-                $0.split(whereSeparator: \.isWhitespace).count
-            }.max() ?? 1
-            let minWords = max(1, canonicalWordCount - 1)
-            let maxWords = min(8, canonicalWordCount + 2)
+            // Bound each alias independently. A long spoken path must not form
+            // an inverted range, or prevent a shorter valid alias from matching.
+            var lengths: Set<Int> = []
+            for alias in comparisonAliases {
+                let count = alias.split(whereSeparator: \.isWhitespace).count
+                maximumExpandedWords = max(maximumExpandedWords, count)
+                let lower = max(1, count - 1)
+                let upper = min(8, count + 2)
+                guard lower <= upper else { oversizedAliases += 1; continue }
+                lengths.formUnion(lower...upper)
+            }
             for start in words.indices {
-                for count in minWords...maxWords where start + count <= words.count {
+                for count in lengths.sorted() where count <= words.count - start {
                     let first = words[start].range
                     let last = words[start + count - 1].range
                     let range = NSRange(
@@ -383,6 +392,7 @@ public enum TerminologyCorrector {
         }
         let normalizedOutput = normalizeStructuredSeparators(
             output as String, anchors: accepted.map(\.canonical))
+        Logger(subsystem: "com.localflow.polish", category: "terminology").info("Correction bounds: candidates=\(candidates.count, privacy: .public) inputWords=\(words.count, privacy: .public) maxExpandedWords=\(maximumExpandedWords, privacy: .public) skippedOversizedAliases=\(oversizedAliases, privacy: .public) matches=\(accepted.count, privacy: .public)")
         return .init(
             text: normalizedOutput,
             matches: accepted.map {

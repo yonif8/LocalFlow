@@ -5,6 +5,7 @@ project(LocalFlowCore LANGUAGES CXX)
 add_library(localflow_core STATIC
     src/audio_resampler.cpp
     src/dictation_pipeline.cpp
+    src/incremental_dictation.cpp
     src/learned_terminology.cpp
     src/replacements.cpp
     src/terminology.cpp

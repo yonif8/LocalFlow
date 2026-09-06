@@ -51,6 +51,7 @@ let package = Package(
             ]
         ),
         .executableTarget(name: "polish-cli", dependencies: ["LFPolish"]),
+        .executableTarget(name: "dictation-bench", dependencies: ["LFEngine", "LFPolish"]),
 
         // Stream E: menu bar app shell (real engine wired in at integration)
         .executableTarget(

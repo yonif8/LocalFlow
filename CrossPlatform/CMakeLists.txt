@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.26)
 
-project(LocalFlowDesktop VERSION 1.3.0 LANGUAGES C CXX)
+project(LocalFlowDesktop VERSION 1.4.5 LANGUAGES C CXX)
 
 include(CTest)
 include(GNUInstallDirs)
@@ -10,7 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-set(LOCALFLOW_VERSION_STRING "1.3.0-beta.1" CACHE STRING "User-visible LocalFlow version")
+set(LOCALFLOW_VERSION_STRING "1.4.5" CACHE STRING "User-visible LocalFlow version")
 option(LOCALFLOW_BUILD_APP "Build the Windows/Linux desktop application" ON)
 option(LOCALFLOW_STRICT_WARNINGS "Treat LocalFlow compiler warnings as errors" OFF)
 option(LOCALFLOW_REQUIRE_INFERENCE "Fail configure unless both pinned inference runtimes are available" OFF)
@@ -62,6 +62,8 @@ if(LOCALFLOW_STRICT_WARNINGS)
                    localflow_model_verification_tests
                    localflow_single_instance_tests
                    localflow_core_tests
+                   localflow_incremental_dictation_tests
+                   localflow_sentence_carry_tests
                    localflow_accessibility_text_policy_tests
                    localflow_linux_platform localflow_linux_platform_tests
                    localflow_linux_x11_shortcut_policy_tests

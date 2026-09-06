@@ -36,6 +36,15 @@ public final class MicRecorder: @unchecked Sendable {
 
     public init() {}
 
+    /// Non-destructive snapshot; recording continues and retains the original
+    /// audio for recovery. Called off the audio callback, only at a boundary.
+    public func snapshot(from offset: Int) -> [Float] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard recording, offset >= 0, offset <= samples.count else { return [] }
+        return Array(samples[offset...])
+    }
+
     /// Install the input tap; if `keepWarm` also start the engine immediately.
     public func prepare(keepWarm: Bool, microphoneUID: String? = nil) throws {
         lock.lock()

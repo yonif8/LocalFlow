@@ -1,8 +1,10 @@
 #include "AppController.hpp"
 
 #include "PolishWorkerClient.hpp"
+#include "SentenceCarry.hpp"
 #include "localflow/core/audio_resampler.hpp"
 #include "localflow/core/dictation_pipeline.hpp"
+#include "localflow/core/incremental_dictation.hpp"
 #include "localflow/inference/NemoTranscriber.hpp"
 
 #include <QAction>
@@ -23,6 +25,7 @@
 #include <QSystemTrayIcon>
 #include <QThreadPool>
 #include <QTimer>
+#include <QDebug>
 #include <QUrlQuery>
 #include <QtConcurrentRun>
 
@@ -89,7 +92,7 @@ struct PipelineSettings {
     bool polishEnabled = true;
     QString polishTone;
     int polishTimeoutMs = 3000;
-    int polishMaxCharacters = 700;
+    int polishMaxCharacters = 4000;
     bool screenTerminology = true;
     PersonalDictionary dictionary;
 };
@@ -237,6 +240,22 @@ private:
     std::string error_;
 };
 
+// Runs the existing replacement/terminology/polish contract on already
+// recognized text. The staging inserter has no OS access; learning stays in
+// the session's private bank until the final real insertion succeeds.
+class RecognizedText final : public ITranscriber {
+public:
+    explicit RecognizedText(std::string value) : value_(std::move(value)) {}
+    std::string transcribe(const Utterance&) override { return value_; }
+private:
+    std::string value_;
+};
+
+class StagingInserter final : public ITextInserter {
+public:
+    void insert(const std::string&) override {}
+};
+
 struct PipelineJobResult {
     DictationPipelineResult pipeline;
     QString detail;
@@ -286,6 +305,60 @@ struct AppController::RuntimeState {
     QThreadPool pipelinePool;
     QThreadPool prewarmPool;
     QFuture<void> prewarmFuture;
+    std::shared_ptr<IncrementalJob> incremental;
+    localflow::core::DictationSegmentBudget segmentBudget;
+    std::chrono::steady_clock::time_point segmentStartedAt{};
+    std::optional<std::chrono::steady_clock::time_point> quietSince;
+};
+
+struct AppController::IncrementalJob {
+    explicit IncrementalJob(std::vector<LearnedTerm> terms) : learned(std::move(terms)) {}
+
+    std::atomic<bool> cancelled{false};
+    std::atomic<double> observedRate{0.503 / 12.0};
+    std::size_t submittedSamples{0}; // UI-thread only; offsets in native samples.
+    PipelineSettings settings;
+    localflow::core::PressTimeContext context;
+    std::uint64_t learnedRevision{0};
+    // These fields are exclusively owned by the serial pipeline executor.
+    localflow::core::IncrementalDictation stream;
+    LearnedTerminologyBank learned;
+    bool failed{false};
+
+    std::string advance(RuntimeState& runtime, const Utterance& audio, bool final) {
+        if (failed) throw std::runtime_error("A background segment needs recovery");
+        CoreTranscriber transcriber(runtime.transcriber);
+        CorePolisher polisher(runtime.polishWorker, settings);
+        const auto isCancelled = [this] { return cancelled.load(); };
+        const auto transcribe = [&](const Utterance& value) { return transcriber.transcribe(value); };
+        const auto transform = [&](const std::string& text) {
+            RecognizedText recognized(text);
+            StagingInserter staging;
+            DictationPipeline pipeline(recognized, ReplacementEngine(settings.dictionary),
+                learned, polisher, staging, {settings.screenTerminology});
+            DictationRequest request;
+            request.press_context = context;
+            request.is_cancelled = isCancelled;
+            auto result = pipeline.run(request);
+            if (!result.inserted()) throw std::runtime_error("Background text processing failed");
+            return result.output_text;
+        };
+        const auto start = std::chrono::steady_clock::now();
+        try {
+            if (final) return stream.finish(audio, transcribe, transform, isCancelled);
+            stream.append(audio, transcribe, transform, localflow::app::holdLastSentence, isCancelled);
+            const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            if (audio.duration_seconds() >= 1) {
+                observedRate.store(std::max(observedRate.load(), seconds / audio.duration_seconds()));
+            }
+            qInfo() << "Background chunk completed: audioSeconds=" << audio.duration_seconds()
+                    << "processingSeconds=" << seconds;
+            return {};
+        } catch (...) {
+            failed = true;
+            throw;
+        }
+    }
 };
 
 AppController::AppController(QObject* parent)
@@ -324,7 +397,7 @@ AppController::AppController(QObject* parent)
     });
     connect(&learnedTerms_, &LearnedTermModel::termsChanged, this, [this] {
         ++learnedTermsRevision_;
-        if (runtime_->watcher != nullptr) {
+        if (runtime_->watcher != nullptr || runtime_->incremental) {
             pendingLearnedTermsSync_ = true;
             return;
         }
@@ -368,8 +441,8 @@ AppController::~AppController() {
     stopListening();
     if (runtime_->watcher) runtime_->watcher->waitForFinished();
     if (runtime_->prewarmFuture.isRunning()) runtime_->prewarmFuture.waitForFinished();
-    runtime_->polishWorker.stop();
     runtime_->pipelinePool.waitForDone();
+    runtime_->polishWorker.stop();
     runtime_->prewarmPool.waitForDone();
 }
 
@@ -558,6 +631,7 @@ void AppController::startListening() {
 
 void AppController::stopListening() {
     if (!runtime_) return;
+    resetSegments();
     ++listeningGeneration_;
     startAfterPipeline_ = false;
     pendingListeningRestart_ = false;
@@ -629,6 +703,76 @@ void AppController::setState(QString state, double inputLevel) {
     if (stateDidChange) rebuildTrayMenu();
 }
 
+void AppController::resetSegments() {
+    if (runtime_->incremental) {
+        runtime_->incremental->cancelled.store(true);
+        runtime_->segmentBudget.processing_seconds_per_audio_second = std::max(
+            runtime_->segmentBudget.processing_seconds_per_audio_second,
+            runtime_->incremental->observedRate.load());
+        runtime_->incremental.reset();
+    }
+    runtime_->quietSince.reset();
+    runtime_->segmentStartedAt = std::chrono::steady_clock::now();
+    if (pendingLearnedTermsSync_ && runtime_->watcher == nullptr) synchronizeLearnedTerms();
+}
+
+void AppController::considerSegment(const PlatformEvent& event) {
+    const auto now = std::chrono::steady_clock::now();
+    if (event.inputLevel > 0.18f) { runtime_->quietSince.reset(); return; }
+    if (!runtime_->quietSince) runtime_->quietSince = now;
+    if (runtime_->incremental) {
+        runtime_->segmentBudget.processing_seconds_per_audio_second = std::max(
+            runtime_->segmentBudget.processing_seconds_per_audio_second,
+            runtime_->incremental->observedRate.load());
+    }
+    const double threshold = runtime_->segmentBudget.pause_search_seconds();
+    if (now - *runtime_->quietSince < std::chrono::milliseconds(650) ||
+        std::chrono::duration<double>(now - runtime_->segmentStartedAt).count() < threshold) return;
+    const auto context = pressContexts_.find(event.sessionId);
+    if (context == pressContexts_.end()) return;
+    auto chunk = runtime_->platform.snapshot(event.sessionId,
+        runtime_->incremental ? runtime_->incremental->submittedSamples : 0);
+    if (chunk.sampleRate == 0 || double(chunk.samples.size()) / chunk.sampleRate < threshold ||
+        !localflow::core::DictationSegmentBudget::has_quiet_tail(chunk.samples, chunk.sampleRate)) return;
+    if (!runtime_->incremental) {
+        auto job = std::make_shared<IncrementalJob>(learnedTerms_.terms());
+        job->settings.polishEnabled = settings_.polishEnabled();
+        job->settings.polishTone = settings_.polishTone();
+        job->settings.polishTimeoutMs = settings_.polishTimeoutMs();
+        job->settings.polishMaxCharacters = settings_.polishMaxCharacters();
+        job->settings.screenTerminology = settings_.screenTerminologyEnabled();
+        job->settings.dictionary = loadDictionary(settings_.spokenPunctuationEnabled());
+        job->context.target_app_id = context->second.targetAppId;
+        job->context.screen_terms_if_ready = [future = context->second.screenTerms] {
+            if (!future.valid() || future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+                return std::vector<std::string>{};
+            return future.get();
+        };
+        job->learnedRevision = learnedTermsRevision_;
+        runtime_->incremental = std::move(job);
+    }
+    auto job = runtime_->incremental;
+    job->submittedSamples += chunk.samples.size();
+    runtime_->segmentStartedAt = now;
+    runtime_->quietSince.reset();
+    qInfo() << "Background chunk queued: samples=" << chunk.samples.size()
+            << "pauseSearchSeconds=" << threshold;
+    (void)QtConcurrent::run(&runtime_->pipelinePool, [runtime = runtime_.get(), job, chunk = std::move(chunk)] {
+        std::lock_guard lock(runtime->pipelineMutex);
+        if (job->cancelled.load() || job->failed) return;
+        try {
+            auto samples = chunk.sampleRate == 16000 ? chunk.samples
+                : localflow::core::resample_mono_to_16khz(chunk.samples, chunk.sampleRate);
+            (void)job->advance(*runtime, {std::move(samples), 16000}, false);
+        } catch (...) {
+            // Keep original PCM in the capture owner. Finish retries the full
+            // recording, rather than inserting the chunks that happened to pass.
+            job->failed = true;
+            qWarning() << "Background chunk needs recovery";
+        }
+    });
+}
+
 void AppController::handlePlatformEvent(PlatformEvent event) {
     if (!listening_) return;
     switch (event.kind) {
@@ -642,6 +786,7 @@ void AppController::handlePlatformEvent(PlatformEvent event) {
             runtime_->platform.cancelCurrentSession();
             return;
         }
+        resetSegments();
         activePressSession_ = event.sessionId;
         pressContexts_[event.sessionId] = {std::move(event.targetAppId), std::move(event.screenTerms)};
         setState(QStringLiteral("recording"));
@@ -649,12 +794,14 @@ void AppController::handlePlatformEvent(PlatformEvent event) {
     case PlatformEventKind::level:
         if (state_ == QStringLiteral("recording") && activePressSession_ == event.sessionId) {
             setState(state_, event.inputLevel);
+            considerSegment(event);
         }
         break;
     case PlatformEventKind::cancelled: {
         runtime_->platform.discardSession(event.sessionId);
         pressContexts_.erase(event.sessionId);
         if (activePressSession_ != event.sessionId) return;
+        resetSegments();
         activePressSession_.reset();
         setState(QStringLiteral("idle"));
         if (!applyPendingListeningRestartIfSafe()) {
@@ -707,6 +854,7 @@ void AppController::handlePlatformEvent(PlatformEvent event) {
         break;
     }
     case PlatformEventKind::error:
+        resetSegments();
         ++listeningGeneration_;
         startAfterPipeline_ = false;
         runtime_->cancelPipeline.store(true);
@@ -744,13 +892,27 @@ void AppController::runPipeline(PlatformEvent event, PressContext context) {
     settings.screenTerminology = settings_.screenTerminologyEnabled();
     settings.dictionary = loadDictionary(settings_.spokenPunctuationEnabled());
 
+    auto incremental = std::exchange(runtime_->incremental, nullptr);
+    const auto releaseStarted = std::chrono::steady_clock::now();
+    const double audioSeconds = event.sampleRate == 0 ? 0 : double(event.samples.size()) / event.sampleRate;
+
     auto* watcher = new QFutureWatcher<PipelineJobResult>(this);
     runtime_->watcher = watcher;
     const std::uint64_t session = event.sessionId;
     const std::uint64_t generation = listeningGeneration_;
-    const std::uint64_t learnedTermsRevision = learnedTermsRevision_;
-    connect(watcher, &QFutureWatcher<PipelineJobResult>::finished, this, [this, watcher, session, generation] {
+    const std::uint64_t learnedTermsRevision = incremental ? incremental->learnedRevision : learnedTermsRevision_;
+    connect(watcher, &QFutureWatcher<PipelineJobResult>::finished, this, [this, watcher, session, generation, incremental, releaseStarted, audioSeconds] {
         const PipelineJobResult job = watcher->result();
+        if (incremental) {
+            runtime_->segmentBudget.processing_seconds_per_audio_second = std::max(
+                runtime_->segmentBudget.processing_seconds_per_audio_second, incremental->observedRate.load());
+        } else if (audioSeconds >= 12 && job.pipeline.inserted()) {
+            runtime_->segmentBudget.observe(audioSeconds,
+                double((job.pipeline.diagnostics.total_elapsed - job.pipeline.diagnostics.insertion.elapsed).count()) / 1e6);
+        }
+        qInfo() << "Dictation finished: releaseSeconds="
+                << std::chrono::duration<double>(std::chrono::steady_clock::now() - releaseStarted).count()
+                << "background=" << bool(incremental) << "inserted=" << job.pipeline.inserted();
         if (runtime_->watcher == watcher) runtime_->watcher = nullptr;
         runtime_->platform.discardSession(session);
         watcher->deleteLater();
@@ -814,11 +976,64 @@ void AppController::runPipeline(PlatformEvent event, PressContext context) {
         event = std::move(event),
         context = std::move(context),
         settings = std::move(settings),
-        learnedTermsRevision
+        learnedTermsRevision,
+        incremental
     ]() mutable {
         std::lock_guard lock(runtime->pipelineMutex);
         PipelineJobResult job;
         try {
+            if (incremental) {
+                const auto cancelled = [&] { return incremental->cancelled.load() || runtime->cancelPipeline.load(); };
+                const auto start = std::chrono::steady_clock::now();
+                bool prepared = false;
+                std::string text;
+                try {
+                    if (cancelled()) throw std::runtime_error("Dictation cancelled");
+                    const auto offset = std::min(incremental->submittedSamples, event.samples.size());
+                    std::vector<float> tail(event.samples.begin() + offset, event.samples.end());
+                    if (event.sampleRate != 16000) tail = localflow::core::resample_mono_to_16khz(tail, event.sampleRate);
+                    text = incremental->advance(*runtime, {std::move(tail), 16000}, true);
+                    prepared = true;
+                } catch (...) {
+                    if (cancelled()) {
+                        job.pipeline.diagnostics.completion = PipelineCompletion::cancelled;
+                        return job;
+                    }
+                    qWarning() << "Retrying retained whole recording after background failure";
+                }
+                if (prepared) {
+                    job.pipeline.output_text = std::move(text);
+                    if (cancelled()) {
+                        job.pipeline.diagnostics.completion = PipelineCompletion::cancelled;
+                    } else if (job.pipeline.output_text.empty()) {
+                        job.pipeline.diagnostics.completion = PipelineCompletion::empty_output;
+                    } else {
+                        CoreInserter inserter(runtime->platform, event.sessionId);
+                        const auto insertionStart = std::chrono::steady_clock::now();
+                        try {
+                            inserter.insert(job.pipeline.output_text);
+                            job.pipeline.diagnostics.completion = PipelineCompletion::inserted;
+                            job.pipeline.diagnostics.insertion.outcome = localflow::core::PipelineStageOutcome::succeeded;
+                        } catch (...) {
+                            job.pipeline.diagnostics.completion = PipelineCompletion::insertion_failed;
+                            job.pipeline.diagnostics.insertion.outcome = localflow::core::PipelineStageOutcome::failed;
+                            job.detail = QString::fromStdString(inserter.error());
+                        }
+                        job.pipeline.diagnostics.insertion.elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - insertionStart);
+                        if (job.pipeline.inserted()) {
+                            // Only commit the private bank after the real insertion.
+                            try { runtime->learned.replace(incremental->learned.terms()); } catch (...) {}
+                        }
+                    }
+                    job.pipeline.diagnostics.total_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - start);
+                    job.learnedTerms = runtime->learned.terms();
+                    job.learnedTermsRevision = learnedTermsRevision;
+                    if (job.detail.isEmpty()) job.detail = completionMessage(job.pipeline.diagnostics.completion);
+                    return job;
+                }
+            }
             std::vector<float> audio = event.sampleRate == 16000
                 ? std::move(event.samples)
                 : localflow::core::resample_mono_to_16khz(event.samples, event.sampleRate);
@@ -863,9 +1078,14 @@ void AppController::runPipeline(PlatformEvent event, PressContext context) {
 
 void AppController::synchronizeLearnedTerms() {
     if (!runtime_) return;
-    std::lock_guard lock(runtime_->pipelineMutex);
-    runtime_->learned.replace(learnedTerms_.terms());
     pendingLearnedTermsSync_ = false;
+    // Queue behind any cancelled background job; never block the capture/UI
+    // thread on inference. Later pipeline work uses this updated bank in order.
+    (void)QtConcurrent::run(&runtime_->pipelinePool,
+        [runtime = runtime_.get(), terms = learnedTerms_.terms()] {
+            std::lock_guard lock(runtime->pipelineMutex);
+            runtime->learned.replace(terms);
+        });
 }
 
 void AppController::clearHistory() { history_.setStringList({}); }

@@ -4,7 +4,7 @@
 #   Scripts/release.sh <version>          e.g. Scripts/release.sh 1.0.0
 #
 # Produces:
-#   dist/LocalFlow.app                    versioned, Sparkle feed embedded
+#   dist/release-build.noindex/LocalFlow.app  versioned, Sparkle feed embedded
 #   dist/LocalFlow-<version>.dmg          drag-to-/Applications disk image
 #   dist/releases/LocalFlow-<version>.dmg archive dir generate_appcast scans
 #   appcast.xml (repo root)               EdDSA-signed update feed
@@ -36,7 +36,7 @@ if (( VERSION_MINOR > 99 || VERSION_PATCH > 99 )); then
     exit 2
 fi
 DIST="$REPO_ROOT/dist"
-APP="$DIST/LocalFlow.app"
+APP="$DIST/release-build.noindex/LocalFlow.app"
 DMG="$DIST/LocalFlow-$VERSION.dmg"
 RELEASES_DIR="$DIST/releases"
 DOWNLOAD_URL_PREFIX="https://github.com/yonif8/LocalFlow/releases/download/v$VERSION/"
@@ -109,7 +109,7 @@ echo "==> Building LocalFlow ${VERSION}…"
 # shared with dev/IDE/other-session builds and its llbuild state has served
 # STALE BINARIES that shipped without the code they claimed to contain.
 "$REPO_ROOT/Scripts/make-app.sh" --version "$VERSION" \
-    --scratch-path "$SCRATCH_DIR"
+    --scratch-path "$SCRATCH_DIR" --output-dir "$DIST/release-build.noindex"
 
 # ---- DMG -----------------------------------------------------------------
 echo "==> Creating ${DMG}…"

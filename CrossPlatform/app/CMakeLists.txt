@@ -25,6 +25,11 @@ qt_add_resources(localflow_desktop "localflow_assets"
 )
 
 if(BUILD_TESTING)
+    add_executable(localflow_sentence_carry_tests tests/SentenceCarryTests.cpp)
+    target_compile_features(localflow_sentence_carry_tests PRIVATE cxx_std_17)
+    target_link_libraries(localflow_sentence_carry_tests PRIVATE Qt6::Core)
+    add_test(NAME localflow_sentence_carry_tests COMMAND localflow_sentence_carry_tests)
+
     add_executable(localflow_learned_term_model_tests
         src/LearnedTermModel.cpp
         src/LearnedTermModelTests.cpp)

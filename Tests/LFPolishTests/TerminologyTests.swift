@@ -80,6 +80,25 @@ struct ScreenTermExtractorTests {
 
 @Suite("Terminology correction")
 struct TerminologyCorrectorTests {
+    @Test func longVisiblePathCannotCrashUnrelatedDictation() {
+        let terms = ScreenTermExtractor.extract(from: ["Alpha/Beta/Gamma/Delta/Example.swift"])
+        #expect(terms.contains("Alpha/Beta/Gamma/Delta/Example.swift"))
+        let result = TerminologyCorrector.correct("hello", screenTerms: terms, learnedTerms: [])
+        #expect(result.text == "hello")
+        #expect(result.matches.isEmpty)
+    }
+
+    @Test func pathLengthBoundariesAndShortUtterancesAreSafe() {
+        for depth in 1...24 {
+            let term = Array(repeating: "Ab", count: depth).joined(separator: "/") + ".swift"
+            for text in ["", "a", "hello there", "send the report on friday"] {
+                let result = TerminologyCorrector.correct(text,
+                    screenTerms: [term], learnedTerms: [LearnedTerm(canonical: term)])
+                #expect(result.text == text)
+            }
+        }
+    }
+
     @Test func restoresVisibleCasingAndWordBoundaries() {
         let result = TerminologyCorrector.correct(
             "configure postgresql in data grip",

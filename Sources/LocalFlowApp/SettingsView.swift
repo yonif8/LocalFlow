@@ -365,7 +365,7 @@ private struct PolishSettingsTab: View {
                     AppSettings.polishTimeout = value
                     apply()
                 }
-                Text("If the model can't finish in time, the unpolished text is inserted.")
+                Text("Longer dictations receive up to twice this budget. If polish times out or exceeds the character limit, the original text is inserted without cleanup.")
                     .font(.caption).foregroundStyle(.secondary)
 
                 LabeledContent("Skip polish beyond:") {

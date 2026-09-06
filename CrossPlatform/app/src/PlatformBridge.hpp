@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <functional>
 #include <future>
 #include <memory>
@@ -63,6 +64,8 @@ public:
     void stop() noexcept;
     void setAcceptingInput(bool accepting) noexcept;
     void cancelCurrentSession() noexcept;
+    // Non-destructive copy of the unprocessed tail; release retains all audio.
+    PlatformEvent snapshot(std::uint64_t sessionId, std::size_t fromSample) const;
     bool insert(std::uint64_t sessionId, const std::string& text, std::string* error);
     void discardSession(std::uint64_t sessionId) noexcept;
     void refreshCapabilities();

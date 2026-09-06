@@ -14,6 +14,10 @@ import LFContracts
 public final class HoldToTalkCaptureEngine: CaptureEngine, @unchecked Sendable {
     public let events: AsyncStream<CaptureEvent>
 
+    public func snapshot(from offset: Int) -> Utterance {
+        Utterance(samples: recorder.snapshot(from: offset), sampleRate: MicRecorder.targetSampleRate)
+    }
+
     private let continuation: AsyncStream<CaptureEvent>.Continuation
     private let config: HotkeyConfig
     private let monitor: EventTapHotkeyMonitor

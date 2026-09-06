@@ -21,3 +21,7 @@ endif()
 
 add_test(NAME localflow_core_tests COMMAND localflow_core_tests)
 
+add_executable(localflow_incremental_dictation_tests incremental_dictation_tests.cpp)
+target_link_libraries(localflow_incremental_dictation_tests PRIVATE LocalFlow::Core)
+target_compile_features(localflow_incremental_dictation_tests PRIVATE cxx_std_17)
+add_test(NAME localflow_incremental_dictation_tests COMMAND localflow_incremental_dictation_tests)

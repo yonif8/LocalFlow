@@ -195,7 +195,7 @@ QString SettingsModel::polishTone() const {
         : QStringLiteral("auto");
 }
 int SettingsModel::polishTimeoutMs() const { return std::clamp(value(Key::PolishTimeoutMs, 3'000), 500, 5'000); }
-int SettingsModel::polishMaxCharacters() const { return std::clamp(value(Key::PolishMaxCharacters, 700), 100, 4'000); }
+int SettingsModel::polishMaxCharacters() const { return std::clamp(value(Key::PolishMaxCharacters, 4'000), 100, 4'000); }
 bool SettingsModel::screenTerminologyEnabled() const { return value(Key::ScreenTerminology, false); }
 bool SettingsModel::spokenPunctuationEnabled() const { return value(Key::SpokenPunctuation, false); }
 QString SettingsModel::insertionMethod() const {

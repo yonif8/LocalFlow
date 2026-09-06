@@ -100,6 +100,7 @@ signals:
 private:
     struct RuntimeState;
     struct PressContext;
+    struct IncrementalJob;
 
     void rebuildTrayMenu();
     void startListening();
@@ -108,6 +109,8 @@ private:
     bool applyPendingListeningRestartIfSafe();
     void handlePlatformEvent(PlatformEvent event);
     void runPipeline(PlatformEvent event, PressContext context);
+    void considerSegment(const PlatformEvent& event);
+    void resetSegments();
     PlatformConfiguration platformConfiguration() const;
     void setState(QString state, double inputLevel = 0.0);
     void synchronizeLearnedTerms();
