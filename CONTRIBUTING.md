@@ -82,3 +82,11 @@ hashes, versions, and licenses belong in the reviewed
 - Run `python3 -m unittest discover -s Tests/ReleaseWorkflowTests -v` when
   changing this orchestration. Build-only changes need no new app version or
   public release. Never rerun publication just to benchmark CI.
+  Cache changes require a cold CI run and a cache-restored run; verify that root
+  targets rebuild and all tests execute, rather than treating a cache hit as success.
+
+Measured on 6 September 2026: the previous [two-pass Mac CI run](https://github.com/yonif8/LocalFlow/actions/runs/34014897045)
+took 16m31s; the [cache-restored single-pass run](https://github.com/yonif8/LocalFlow/actions/runs/34019134286)
+took 9m55s, with all 87 Swift tests passing and 19 new workflow tests passing.
+These are observed timings, not a deadline guarantee. SwiftPM can still rebuild
+dependencies after a restore; a cache hit does not mean zero dependency compilation.
