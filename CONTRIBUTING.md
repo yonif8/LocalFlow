@@ -51,3 +51,28 @@ Windows and Linux CI signing credentials belong only in GitHub Actions secrets;
 macOS local identities follow `Scripts/setup-signing.sh`. Runtime URLs, sizes,
 hashes, versions, and licenses belong in the reviewed
 `CrossPlatform/dependencies/runtime-lock.json`, never mutable CI variables.
+
+## Fast development and release checks
+
+- During iteration, run the affected Swift suites (`swift test --filter …`) or
+  C++ test targets first. Do not build/sign installers for each code edit.
+- Use `bash Scripts/test-macos.sh` for the complete Mac check. It builds the
+  app and executes all tests in **one** release-mode `swift test` plan.
+  Do not precede/follow it with a product-only build:
+  switching plans recompiles dependencies. Windows/Linux lanes remain parallel.
+- `Scripts/macos-toolchain.env` is the single CI Xcode pin. Both Mac workflows
+  use `.github/actions/setup-macos`; local packaging uses the same preflight
+  helper to check the Swift version required by `Package.swift` and the Metal
+  tools before expensive work. A newer local full Xcode is allowed and logged.
+- CI caches dependency downloads only, keyed by platform, toolchain (Swift),
+  and dependency locks. Runtime archive size/hash checks still run on every
+  hit. Never cache signing material, user data, app binaries, or test results.
+  Exact-tag builds, model tests, signatures, and installer checks remain mandatory.
+- `Scripts/release.sh X.Y.Z` invokes the tested packaging path directly; it
+  does not compile again after tests. Keep its isolated `.build-release` scratch
+  tree separate from development/IDE work and never run two packagers together.
+- Build helpers print stage durations; CI also puts them in the run summary.
+  Compare these measurements, not estimates, before claiming a speed improvement.
+- Run `python3 -m unittest discover -s Tests/ReleaseWorkflowTests -v` when
+  changing this orchestration. Build-only changes need no new app version or
+  public release. Never rerun publication just to benchmark CI.

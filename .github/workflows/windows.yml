@@ -199,7 +199,14 @@ jobs:
           arch: win64_msvc2022_64
           cache: true
 
-      - name: Bootstrap checksum-pinned inference runtimes
+      - name: Cache checksum-pinned runtime downloads
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          # Bootstrap rechecks sizes and SHA-256 before using any cached file.
+          path: ${{ runner.temp }}/localflow-runtimes/downloads
+          key: runtime-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('CrossPlatform/dependencies/runtime-lock.json', 'CrossPlatform/dependencies/bootstrap-windows.ps1') }}
+
+      - name: Verify and bootstrap checksum-pinned inference runtimes
         shell: pwsh
         run: |
           $runtimePrefix = Join-Path $env:RUNNER_TEMP "localflow-runtimes"

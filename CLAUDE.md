@@ -36,17 +36,20 @@ Contracts in `Sources/LFContracts` (Utterance/Transcriber/TextPolisher/…).
 
 ## Commands
 
-- macOS build/test: `swift build` / `swift test`. App packaging compiles a
-  Metal library: use full Xcode with its Metal Toolchain installed and set
-  `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` explicitly.
+- macOS iteration: `swift test --filter <suite>`; full check:
+  `bash Scripts/test-macos.sh`. Build app + tests once, then run tests without
+  rebuilding. Do not add a separate product-only build around that command.
+  Local packaging preflights full Xcode + Metal; both CI lanes share the pin in
+  `Scripts/macos-toolchain.env`. See CONTRIBUTING.md's fast-check workflow.
 - Windows/Linux build recipes: `CrossPlatform/README.md` and native workflows.
 - Debug CLIs: `engine-cli <wav>`, `polish-cli`, `capture-cli`, `insert-cli
   --doctor`. Fixtures in `Fixtures/`.
-- Release: `Scripts/release.sh X.Y.Z` → commit `appcast.xml` →
+- Release: `Scripts/release.sh X.Y.Z` (build/test/package once) →
   `Scripts/publish.sh X.Y.Z` (gh CLI at ~/.local/bin/gh, authed as yonif8).
   Sparkle updates macOS; Windows verifies EXE updates with Ed25519; Linux
   AppImage uses signed AppImageUpdate; DEB updates are manual. Version every
-  user-visible application change; documentation-only corrections need no binary release.
+  user-visible application change; docs/build-workflow-only corrections need
+  no binary release. Publish commits the generated appcast itself.
 - Headless app driving: distributed notifications `com.localflow.app.simulate`
   / `.showSettings` / `.checkForUpdates`; env `LOCALFLOW_SIM_WAV=<wav>` feeds
   real audio to Simulate Dictation. Logs: `log show --info --predicate

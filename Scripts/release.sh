@@ -20,6 +20,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+source "$REPO_ROOT/Scripts/lib/macos-build.sh"
 
 VERSION="${1:?usage: Scripts/release.sh <version>   (e.g. 1.0.0)}"
 if (( $# != 1 )); then
@@ -42,6 +43,9 @@ RELEASES_DIR="$DIST/releases"
 DOWNLOAD_URL_PREFIX="https://github.com/yonif8/LocalFlow/releases/download/v$VERSION/"
 PUBLIC_KEY="$REPO_ROOT/Resources/sparkle-public-ed-key.txt"
 SCRATCH_DIR="$REPO_ROOT/.build-release"
+
+# Fail before dependency downloads, compilation, signing, or tag creation.
+lf_macos_preflight local true
 
 command -v curl >/dev/null || { echo "error: curl is required" >&2; exit 1; }
 command -v file >/dev/null || { echo "error: file is required" >&2; exit 1; }
@@ -96,19 +100,12 @@ tar -xf "$ARCHIVE" -C "$TOOLS_ROOT" ./bin/generate_appcast ./bin/sign_update
     exit 1
 }
 
-# ---- Behavior tests ------------------------------------------------------
-echo "==> Resolving pinned Swift dependencies and running release tests…"
-swift package --scratch-path "$SCRATCH_DIR" resolve
-git diff --exit-code -- Package.resolved
-swift test --configuration release --parallel --scratch-path "$SCRATCH_DIR" \
-    --disable-automatic-resolution
-
 # ---- Build ---------------------------------------------------------------
 echo "==> Building LocalFlow ${VERSION}…"
 # Always build releases in an isolated scratch dir: the default .build is
 # shared with dev/IDE/other-session builds and its llbuild state has served
 # STALE BINARIES that shipped without the code they claimed to contain.
-"$REPO_ROOT/Scripts/make-app.sh" --version "$VERSION" \
+lf_timed "Build, test, and assemble" "$REPO_ROOT/Scripts/make-app.sh" --version "$VERSION" --test \
     --scratch-path "$SCRATCH_DIR" --output-dir "$DIST/release-build.noindex"
 
 # ---- DMG -----------------------------------------------------------------

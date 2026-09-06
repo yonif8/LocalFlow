@@ -177,16 +177,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Select the shipping Swift toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
-          developer_dir="/Applications/Xcode_26.3.app/Contents/Developer"
-          test -d "$developer_dir" || {
-            echo "The pinned Xcode 26.3 toolchain is unavailable on this runner." >&2
-            exit 1
-          }
-          sudo xcode-select --switch "$developer_dir"
+      - name: Set up the shared macOS toolchain and dependency cache
+        uses: ./.github/actions/setup-macos
 
       - name: Require exact source and Apple Silicon
         shell: bash
@@ -206,12 +198,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          swift package resolve
-          git diff --exit-code -- Package.resolved
-          swift build --configuration release --product LocalFlowApp \
-            --disable-automatic-resolution
-          swift test --configuration release --parallel \
-            --disable-automatic-resolution
+          bash Scripts/test-macos.sh
+          python3 -m unittest discover -s Tests/ReleaseWorkflowTests -v
           swiftc -typecheck Scripts/verify-sparkle-signature.swift
           git diff --exit-code
 

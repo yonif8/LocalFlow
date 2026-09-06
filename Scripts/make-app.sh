@@ -2,7 +2,8 @@
 # make-app.sh — build LocalFlow in release mode and assemble dist/LocalFlow.app.
 #
 # Use full Xcode for release Metal tooling (set DEVELOPER_DIR explicitly).
-# Usage: Scripts/make-app.sh [--version X.Y.Z] [--scratch-path <dir>] [--output-dir <dir>]
+# Usage: Scripts/make-app.sh [--version X.Y.Z] [--test] [--scratch-path <dir>] [--output-dir <dir>]
+# --test builds app and tests together and runs all tests before packaging.
 # Diagnostic builds should use --output-dir dist/diagnostics.noindex to avoid
 # registering extra build/backup applications in Spotlight.
 #
@@ -18,20 +19,18 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Prefer the Command Line Tools toolchain when present: this repo only needs
-# CLT, and a machine whose xcode-select points at a Xcode.app with an
-# unaccepted license fails `swift build` with an exit-69 license error.
-if [[ -d /Library/Developer/CommandLineTools && -z "${DEVELOPER_DIR:-}" ]]; then
-    export DEVELOPER_DIR=/Library/Developer/CommandLineTools
-fi
+source "$REPO_ROOT/Scripts/lib/macos-build.sh"
 
 VERSION="1.0.0-dev"
 RELEASE=0
+RUN_TESTS=0
 SCRATCH_DIR="$REPO_ROOT/.build"
 SCRATCH_ARGS=()
 OUTPUT_DIR="$REPO_ROOT/dist"
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --test)
+            RUN_TESTS=1; shift ;;
         --version)
             VERSION="${2:?--version requires a value}"; RELEASE=1; shift 2 ;;
         --scratch-path)
@@ -43,6 +42,12 @@ while [[ $# -gt 0 ]]; do
             echo "error: unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+
+if [[ $RELEASE -eq 1 ]]; then
+    lf_macos_preflight local true
+else
+    lf_macos_preflight
+fi
 
 if [[ $RELEASE -eq 1 && ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
     echo "error: release versions must have the exact stable form X.Y.Z (got: $VERSION)" >&2
@@ -87,7 +92,11 @@ BUILD_ARGS=(-c release --product LocalFlowApp)
 if [[ $RELEASE -eq 1 ]]; then
     BUILD_ARGS+=(--disable-automatic-resolution)
 fi
-swift build "${BUILD_ARGS[@]}" ${SCRATCH_ARGS[@]+"${SCRATCH_ARGS[@]}"}
+if [[ $RUN_TESTS -eq 1 ]]; then
+    lf_build_and_test_macos "$SCRATCH_DIR"
+else
+    lf_timed "Build app" swift build "${BUILD_ARGS[@]}" ${SCRATCH_ARGS[@]+"${SCRATCH_ARGS[@]}"}
+fi
 # (not `swift build --show-bin-path` — that trips an Xcode license check on
 # machines with a dormant Xcode.app; the layout below is stable for SwiftPM)
 BIN_PATH="$SCRATCH_DIR/release/LocalFlowApp"

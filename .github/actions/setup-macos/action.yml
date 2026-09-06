@@ -1,0 +1,29 @@
+name: Set up the LocalFlow macOS build
+description: Shared toolchain preflight and dependency-only cache for all Mac lanes
+runs:
+  using: composite
+  steps:
+    - name: Select and validate the shipping Swift toolchain
+      id: toolchain
+      shell: bash
+      run: |
+        set -euo pipefail
+        source Scripts/lib/macos-build.sh
+        lf_macos_preflight ci
+        echo "DEVELOPER_DIR=$DEVELOPER_DIR" >>"$GITHUB_ENV"
+        fingerprint="$(
+          { xcodebuild -version; swift --version; xcrun --sdk macosx --show-sdk-version; } \
+            | shasum -a 256 | awk '{print $1}'
+        )"
+        echo "fingerprint=$fingerprint" >>"$GITHUB_OUTPUT"
+
+    - name: Cache pinned Swift dependency downloads
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        # No application binaries, test results, build database, signing keys,
+        # or user data. Every runner still builds the exact checked-out source.
+        path: |
+          .build/repositories
+          .build/checkouts
+          .build/artifacts
+        key: macos-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.fingerprint }}-${{ hashFiles('Package.swift', 'Package.resolved', 'Scripts/macos-toolchain.env') }}
