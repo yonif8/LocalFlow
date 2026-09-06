@@ -72,7 +72,8 @@ lf_build_and_test_macos() {
     # plan. A separate product-only build changes flags and recompiles modules.
     # Never skip this command on a cache hit: all tests execute on every run.
     lf_timed "Build app and run all tests once" swift test --configuration release \
-        --parallel --scratch-path "$scratch" --disable-automatic-resolution || return
+        --parallel --scratch-path "$scratch" --disable-automatic-resolution \
+        --disable-build-manifest-caching || return
     [[ -x "$scratch/release/LocalFlowApp" ]] || {
         echo "error: the combined build did not produce LocalFlowApp" >&2
         return 1

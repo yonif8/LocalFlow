@@ -311,6 +311,9 @@ jobs:
           hdiutil detach "$mount_dir" >/dev/null
           attached=0
 
+      - name: Exclude app and test products before caching dependencies
+        run: python3 Scripts/prune-macos-build-cache.py
+
   windows:
     needs: validate
     uses: ./.github/workflows/windows.yml

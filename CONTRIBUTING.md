@@ -64,9 +64,15 @@ hashes, versions, and licenses belong in the reviewed
   use `.github/actions/setup-macos`; local packaging uses the same preflight
   helper to check the Swift version required by `Package.swift` and the Metal
   tools before expensive work. A newer local full Xcode is allowed and logged.
-- CI caches dependency downloads only, keyed by platform, toolchain (Swift),
-  and dependency locks. Runtime archive size/hash checks still run on every
-  hit. Never cache signing material, user data, app binaries, or test results.
+- CI caches dependency downloads and compiled Swift dependencies, keyed by
+  platform, toolchain, dependency locks, and build/cache helper versions.
+  `Scripts/prune-macos-build-cache.py` derives all root targets from SwiftPM
+  and removes their products/modules before saving and after restoring a cache.
+  Our app and tests are rebuilt even on a hit. Runtime archive size/hash checks
+  still run on every hit. Never cache signing material, user data, app binaries,
+  or test results. Keep the pruning step in **both** Mac workflows.
+  SwiftPM replans each run so removed root output-file maps are regenerated;
+  do not re-enable build-manifest caching on this path.
   Exact-tag builds, model tests, signatures, and installer checks remain mandatory.
 - `Scripts/release.sh X.Y.Z` invokes the tested packaging path directly; it
   does not compile again after tests. Keep its isolated `.build-release` scratch

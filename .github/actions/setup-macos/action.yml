@@ -27,3 +27,23 @@ runs:
           .build/checkouts
           .build/artifacts
         key: macos-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.fingerprint }}-${{ hashFiles('Package.swift', 'Package.resolved', 'Scripts/macos-toolchain.env') }}
+
+    - name: Cache compiled Swift dependencies
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        # The final workflow step removes EVERY root app/test target and module
+        # before this action's post-job save. No root binary or test result is
+        # restored. SwiftPM must rebuild our code and execute tests on every run.
+        path: |
+          .build/build.db
+          .build/release.yaml
+          .build/workspace-state.json
+          .build/arm64-apple-macosx/release
+        key: macos-compiled-deps-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.fingerprint }}-${{ hashFiles('Package.swift', 'Package.resolved', 'Scripts/macos-toolchain.env', 'Scripts/lib/macos-build.sh', 'Scripts/prune-macos-build-cache.py') }}
+
+    - name: Exclude any restored root build products
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p .build
+        python3 Scripts/prune-macos-build-cache.py

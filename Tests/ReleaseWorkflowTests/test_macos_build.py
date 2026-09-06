@@ -50,6 +50,7 @@ class MacOSBuildTests(unittest.TestCase):
         self.assertNotIn("--skip-build", calls[1])
         self.assertIn("--parallel", calls[1])
         self.assertIn("--disable-automatic-resolution", calls[1])
+        self.assertIn("--disable-build-manifest-caching", calls[1])
         self.assertEqual(result.stdout.count("TIMING:"), 2)
 
     def test_resolution_failure_stops_before_build(self):
