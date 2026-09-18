@@ -18,6 +18,7 @@ constexpr auto MouseTrigger = "dictation/mouseTrigger";
 constexpr auto HoldThresholdMs = "dictation/holdThresholdMs";
 constexpr auto KeepMicWarm = "dictation/keepMicWarm";
 constexpr auto DuckAudio = "dictation/duckAudio";
+constexpr auto DuckLevelPercent = "dictation/duckLevelPercent";
 constexpr auto MicrophoneId = "dictation/microphoneId";
 constexpr auto PolishEnabled = "polish/enabled";
 constexpr auto PolishTone = "polish/tone";
@@ -186,6 +187,7 @@ QString SettingsModel::mouseTrigger() const {
 int SettingsModel::holdThresholdMs() const { return std::clamp(value(Key::HoldThresholdMs, 300), 100, 1'000); }
 bool SettingsModel::keepMicWarm() const { return value(Key::KeepMicWarm, false); }
 bool SettingsModel::duckAudio() const { return value(Key::DuckAudio, true); }
+int SettingsModel::duckLevelPercent() const { return std::clamp(value(Key::DuckLevelPercent, 20), 0, 100); }
 QString SettingsModel::microphoneId() const { return value(Key::MicrophoneId, QString()); }
 bool SettingsModel::polishEnabled() const { return value(Key::PolishEnabled, true); }
 QString SettingsModel::polishTone() const {
@@ -253,6 +255,7 @@ void SettingsModel::setMouseTrigger(const QString& next) {
 void SettingsModel::setHoldThresholdMs(int next) { next = std::clamp(next, 100, 1'000); if (update(Key::HoldThresholdMs, next, holdThresholdMs())) emit holdThresholdMsChanged(); }
 void SettingsModel::setKeepMicWarm(bool next) { if (update(Key::KeepMicWarm, next, keepMicWarm())) emit keepMicWarmChanged(); }
 void SettingsModel::setDuckAudio(bool next) { if (update(Key::DuckAudio, next, duckAudio())) emit duckAudioChanged(); }
+void SettingsModel::setDuckLevelPercent(int next) { next = std::clamp(next, 0, 100); if (update(Key::DuckLevelPercent, next, duckLevelPercent())) emit duckLevelPercentChanged(); }
 void SettingsModel::setMicrophoneId(const QString& next) { if (update(Key::MicrophoneId, next, microphoneId())) emit microphoneIdChanged(); }
 void SettingsModel::setPolishEnabled(bool next) { if (update(Key::PolishEnabled, next, polishEnabled())) emit polishEnabledChanged(); }
 void SettingsModel::setPolishTone(const QString& next) {

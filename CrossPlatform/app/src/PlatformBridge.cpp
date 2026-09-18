@@ -474,7 +474,7 @@ struct PlatformBridge::Implementation {
     }
     auto terms = beginScreenCapture(target);
     if (configuration.duckAudio)
-      (void)ducker.duck();
+      (void)ducker.duck(static_cast<float>(configuration.duckLevelPercent) / 100.0F);
     PlatformEvent began;
     began.kind = PlatformEventKind::began;
     began.sessionId = session;
@@ -909,7 +909,7 @@ struct PlatformBridge::Implementation {
       return;
     }
     if (configuration.duckAudio)
-      (void)ducker->duck(0.2F);
+      (void)ducker->duck(static_cast<float>(configuration.duckLevelPercent) / 100.0F);
     PlatformEvent began;
     began.kind = PlatformEventKind::began;
     began.sessionId = session;

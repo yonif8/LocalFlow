@@ -158,6 +158,7 @@ private struct DictationSettingsTab: View {
     @State private var holdThreshold = AppSettings.holdThreshold
     @State private var keepMicWarm = AppSettings.keepMicWarm
     @State private var duckWhileDictating = AppSettings.duckWhileDictating
+    @State private var duckLevelPercent = Double(AppSettings.duckLevelPercent)
     @State private var microphoneUID = AppSettings.microphoneUID ?? ""
     @State private var microphones: [MicDevice] = MicDevice.available()
 
@@ -215,10 +216,24 @@ private struct DictationSettingsTab: View {
                     .onChange(of: duckWhileDictating) { _, value in
                         AppSettings.duckWhileDictating = value
                     }
+                LabeledContent("Lower to:") {
+                    HStack {
+                        Slider(value: $duckLevelPercent, in: 0...100, step: 5)
+                            .frame(width: 180)
+                        Text(duckLevelPercent == 0 ? "Mute" : "\(Int(duckLevelPercent))%")
+                            .monospacedDigit()
+                            .frame(width: 48, alignment: .trailing)
+                    }
+                }
+                .disabled(!duckWhileDictating)
+                .onChange(of: duckLevelPercent) { _, value in
+                    AppSettings.duckLevelPercent = Int(value)
+                }
                 Text("""
-                    Music and other sound output drops to 20% volume while \
-                    you hold the key, so it doesn't drown out the microphone. \
-                    Your volume comes back the moment you release.
+                    Music and other sound output drops to this volume (0% \
+                    mutes it) while you hold the key, so it doesn't drown out \
+                    the microphone. Quieter audio is never turned up, and your \
+                    volume comes back the moment you release.
                     """)
                     .font(.caption).foregroundStyle(.secondary)
             }

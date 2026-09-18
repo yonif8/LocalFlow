@@ -332,7 +332,8 @@ final class DictationCoordinator {
             state = .recording
             level = 0
             if AppSettings.duckWhileDictating {
-                SystemAudioDucker.shared.duck()
+                SystemAudioDucker.shared.duck(
+                    to: Float32(AppSettings.duckLevelPercent) / 100)
             }
             HUDController.shared.show()
 

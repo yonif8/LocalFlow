@@ -290,6 +290,7 @@ enum DefaultsKey {
     static let hudEnabled = "LFHUDEnabled"                     // default true
     static let keepMicWarm = "LFKeepMicWarm"                   // default false
     static let duckWhileDictating = "LFDuckWhileDictating"     // default true
+    static let duckLevelPercent = "LFDuckLevelPercent"         // 0–100, default 20 (0 = mute)
     static let holdThreshold = "LFHoldThreshold"               // seconds, default 0.3
     static let polishTimeout = "LFPolishTimeout"               // seconds, default 3
     static let polishMaxChars = "LFPolishMaxChars"             // default 4000

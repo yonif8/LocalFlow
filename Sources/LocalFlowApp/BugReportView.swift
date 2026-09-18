@@ -34,7 +34,8 @@ enum BugDiagnostics {
         Models: parakeet=\(ParakeetTranscriber.isModelDownloaded ? "downloaded" : "missing"), \
         s1-mini=\(PolishModelStore.isModelDownloaded ? "downloaded" : "missing")
         Hotkey: \(HotkeyChoice.load().rawValue), mouse-button=\(AppSettings.mouseButton.map { "\($0 + 1)" } ?? "off"), \
-        hold-threshold=\(String(format: "%.2fs", AppSettings.holdThreshold)), mic-warm=\(AppSettings.keepMicWarm)
+        hold-threshold=\(String(format: "%.2fs", AppSettings.holdThreshold)), mic-warm=\(AppSettings.keepMicWarm), \
+        duck=\(AppSettings.duckWhileDictating ? "\(AppSettings.duckLevelPercent)%" : "off")
         Microphone: \(mic)
         Polish: enabled=\(AppSettings.polishEnabled), tone=\(AppSettings.polishTone), \
         timeout=\(String(format: "%.2fs", AppSettings.polishTimeout)), max-chars=\(AppSettings.polishMaxChars), \

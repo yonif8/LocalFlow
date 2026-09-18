@@ -142,6 +142,25 @@ ApplicationWindow {
                     Label { text: "Hold threshold: " + threshold.value + " ms" }
                     Slider { id: threshold; from: 100; to: 1000; stepSize: 50; value: LocalFlowApp.settings.holdThresholdMs; onMoved: LocalFlowApp.settings.holdThresholdMs = value }
                     Switch { text: "Lower other audio while dictating"; checked: LocalFlowApp.settings.duckAudio; onToggled: LocalFlowApp.settings.duckAudio = checked }
+                    Label {
+                        text: "Lower to: " + (duckLevel.value === 0 ? "Mute" : duckLevel.value + "%")
+                        enabled: LocalFlowApp.settings.duckAudio
+                    }
+                    Slider {
+                        id: duckLevel
+                        from: 0; to: 100; stepSize: 5
+                        enabled: LocalFlowApp.settings.duckAudio
+                        value: LocalFlowApp.settings.duckLevelPercent
+                        // Commit on release: each change restarts the native listener.
+                        onPressedChanged: if (!pressed) LocalFlowApp.settings.duckLevelPercent = value
+                        onMoved: if (!pressed) LocalFlowApp.settings.duckLevelPercent = value
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Other sound drops to this volume while you hold the shortcut (0% mutes it). Quieter audio is never turned up, and your volume returns when you release."
+                        wrapMode: Text.WordWrap
+                        opacity: 0.7
+                    }
                     Switch { text: "Keep microphone warm between dictations"; checked: LocalFlowApp.settings.keepMicWarm; onToggled: LocalFlowApp.settings.keepMicWarm = checked }
                     Label { text: "Microphone"; font.bold: true }
                     RowLayout {

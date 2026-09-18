@@ -410,6 +410,7 @@ AppController::AppController(QObject* parent)
     connect(&settings_, &SettingsModel::microphoneIdChanged, this, restart);
     connect(&settings_, &SettingsModel::keepMicWarmChanged, this, restart);
     connect(&settings_, &SettingsModel::duckAudioChanged, this, restart);
+    connect(&settings_, &SettingsModel::duckLevelPercentChanged, this, restart);
     connect(&settings_, &SettingsModel::screenTerminologyEnabledChanged, this, restart);
     connect(&settings_, &SettingsModel::clipboardRestoreDelayMsChanged, this, restart);
     connect(&settings_, &SettingsModel::holdThresholdMsChanged, this, restart);
@@ -564,6 +565,7 @@ PlatformConfiguration AppController::platformConfiguration() const {
         settings_.microphoneId().toStdString(),
         settings_.keepMicWarm(),
         settings_.duckAudio(),
+        settings_.duckLevelPercent(),
         settings_.screenTerminologyEnabled(),
         settings_.clipboardRestoreDelayMs(),
         settings_.holdThresholdMs(),

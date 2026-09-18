@@ -14,6 +14,8 @@ struct PlatformConfiguration {
     std::string microphoneId;
     bool keepMicrophoneWarm{false};
     bool duckAudio{true};
+    /// Absolute output volume while dictating, 0-100; 0 silences output.
+    int duckLevelPercent{20};
     bool screenTerminology{true};
     int clipboardRestoreDelayMs{300};
     int holdThresholdMs{300};

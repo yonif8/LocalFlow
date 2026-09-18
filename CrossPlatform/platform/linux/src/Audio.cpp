@@ -428,7 +428,8 @@ public:
 
         const float appliedLevel = static_cast<float>(
             std::lround(outputLevel * 100.0F)) / 100.0F;
-        if (std::fabs(previous_.level - appliedLevel) <= 0.0001F) {
+        // Never raise the volume: a sink already at or below the level stays put.
+        if (previous_.level <= appliedLevel + 0.0001F) {
             ducked_ = true;
             changed_ = false;
             return Status::success();

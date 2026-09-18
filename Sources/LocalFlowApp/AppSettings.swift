@@ -27,12 +27,18 @@ enum AppSettings {
         set { defaults.set(newValue, forKey: DefaultsKey.keepMicWarm) }
     }
 
-    /// Duck the system's audio output to 20% while push-to-talk records, so
-    /// music doesn't drown out the microphone. Read at event time by
-    /// DictationCoordinator; no pipeline rebuild needed.
+    /// Duck the system's audio output to `duckLevelPercent` while push-to-talk
+    /// records, so music doesn't drown out the microphone. Read at event time
+    /// by DictationCoordinator; no pipeline rebuild needed.
     static var duckWhileDictating: Bool {
         get { defaults.object(forKey: DefaultsKey.duckWhileDictating) as? Bool ?? true }
         set { defaults.set(newValue, forKey: DefaultsKey.duckWhileDictating) }
+    }
+
+    /// Output volume (percent) while dictating; 0 mutes. Never raises volume.
+    static var duckLevelPercent: Int {
+        get { clamp(defaults.object(forKey: DefaultsKey.duckLevelPercent) as? Int ?? 20, 0, 100) }
+        set { defaults.set(clamp(newValue, 0, 100), forKey: DefaultsKey.duckLevelPercent) }
     }
 
     /// Seconds a modifier hold must last before it counts (accidental-tap filter).

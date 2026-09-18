@@ -18,6 +18,7 @@ class SettingsModel final : public QObject {
     Q_PROPERTY(int holdThresholdMs READ holdThresholdMs WRITE setHoldThresholdMs NOTIFY holdThresholdMsChanged)
     Q_PROPERTY(bool keepMicWarm READ keepMicWarm WRITE setKeepMicWarm NOTIFY keepMicWarmChanged)
     Q_PROPERTY(bool duckAudio READ duckAudio WRITE setDuckAudio NOTIFY duckAudioChanged)
+    Q_PROPERTY(int duckLevelPercent READ duckLevelPercent WRITE setDuckLevelPercent NOTIFY duckLevelPercentChanged)
     Q_PROPERTY(QString microphoneId READ microphoneId WRITE setMicrophoneId NOTIFY microphoneIdChanged)
     Q_PROPERTY(bool polishEnabled READ polishEnabled WRITE setPolishEnabled NOTIFY polishEnabledChanged)
     Q_PROPERTY(QString polishTone READ polishTone WRITE setPolishTone NOTIFY polishToneChanged)
@@ -41,6 +42,7 @@ public:
     int holdThresholdMs() const;
     bool keepMicWarm() const;
     bool duckAudio() const;
+    int duckLevelPercent() const;
     QString microphoneId() const;
     bool polishEnabled() const;
     QString polishTone() const;
@@ -61,6 +63,7 @@ public slots:
     void setHoldThresholdMs(int value);
     void setKeepMicWarm(bool value);
     void setDuckAudio(bool value);
+    void setDuckLevelPercent(int value);
     void setMicrophoneId(const QString& value);
     void setPolishEnabled(bool value);
     void setPolishTone(const QString& value);
@@ -81,6 +84,7 @@ signals:
     void holdThresholdMsChanged();
     void keepMicWarmChanged();
     void duckAudioChanged();
+    void duckLevelPercentChanged();
     void microphoneIdChanged();
     void polishEnabledChanged();
     void polishToneChanged();

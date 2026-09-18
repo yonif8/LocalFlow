@@ -59,12 +59,12 @@ SystemAudioDucker::~SystemAudioDucker() {
     (void)restore();
 }
 
-std::error_code SystemAudioDucker::duck(const float scale) {
+std::error_code SystemAudioDucker::duck(const float level) {
     std::lock_guard lock(mutex_);
     if (active_) {
         return {};
     }
-    if (!(scale >= 0.0F && scale <= 1.0F)) {
+    if (!(level >= 0.0F && level <= 1.0F)) {
         return win32_error(ERROR_INVALID_PARAMETER);
     }
 
@@ -98,7 +98,11 @@ std::error_code SystemAudioDucker::duck(const float scale) {
     if (FAILED(result)) {
         return hresult_error(result);
     }
-    const float requested_ducked = std::clamp(original * scale, 0.0F, 1.0F);
+    // Never raise the volume: already quiet enough means nothing to restore.
+    if (original <= level) {
+        return {};
+    }
+    const float requested_ducked = level;
     result = volume->SetMasterVolumeLevelScalar(
         requested_ducked, &kLocalFlowVolumeContext);
     if (FAILED(result)) {

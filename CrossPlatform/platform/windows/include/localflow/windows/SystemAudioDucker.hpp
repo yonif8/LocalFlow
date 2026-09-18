@@ -8,9 +8,10 @@
 
 namespace localflow::windows {
 
-/// Temporarily scales the current default playback endpoint and restores the
-/// exact endpoint/value later, even if the user changes defaults mid-hold.
-/// Mute state is never altered.
+/// Temporarily lowers the current default playback endpoint to an absolute
+/// volume scalar (0 = silent) and restores the exact endpoint/value later,
+/// even if the user changes defaults mid-hold. An endpoint already at or
+/// below the level is left alone. Mute state is never altered.
 class SystemAudioDucker final {
 public:
     SystemAudioDucker() = default;
@@ -19,7 +20,7 @@ public:
     SystemAudioDucker(const SystemAudioDucker&) = delete;
     SystemAudioDucker& operator=(const SystemAudioDucker&) = delete;
 
-    [[nodiscard]] std::error_code duck(float scale = 0.2F);
+    [[nodiscard]] std::error_code duck(float level = 0.2F);
     [[nodiscard]] std::error_code restore() noexcept;
     [[nodiscard]] bool is_ducked() const noexcept;
 

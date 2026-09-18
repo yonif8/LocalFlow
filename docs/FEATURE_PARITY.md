@@ -28,7 +28,7 @@ Status meanings:
 | Hold-to-talk | Press begins capture, release ends it, Escape cancels, accidental taps are ignored | Existing macOS release | Available; certification pending | Available; certification pending |
 | Configurable triggers | Keyboard plus middle/side mouse trigger where the OS exposes it | Existing macOS release | Available; certification pending | Available; certification pending |
 | Microphone capture | Device selection, default fallback, warm mode, 16 kHz mono, live level | Existing macOS release | Available; certification pending | Available; certification pending |
-| Audio ducking | Lower output during capture and safely restore it on every exit path | Existing macOS release | Available; certification pending | Available; certification pending |
+| Audio ducking | Lower output during capture to a user-set absolute level (0–100%, default 20%, 0 mutes; never raises quieter output) and safely restore it on every exit path | Existing macOS release | Available; certification pending | Available; certification pending |
 | Local ASR | Parakeet TDT v3, automatic punctuation, model progress, no uploaded audio | Existing macOS release | Available; certification pending | Available; certification pending |
 | Incremental long dictation | Measured release-latency target, pause-boundary background ASR/polish, sentence carry, one final insertion | Implemented; real-microphone tests passed | Implemented; certification pending | Implemented; certification pending |
 | Local polish | S1-mini, deterministic prompt, app-aware tone, timeout, guardrails, fail-open | Existing macOS release | Available; certification pending | Available; certification pending |
