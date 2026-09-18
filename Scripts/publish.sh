@@ -206,6 +206,9 @@ if newer:
     )
 PY
 origin_url="$(git remote get-url origin 2>/dev/null || true)"
+# An HTTPS username (https://user@github.com/…) only selects the keychain
+# credential; the repository is the same.
+origin_url="$(sed -E 's#^https://[A-Za-z0-9-]+@github\.com/#https://github.com/#' <<<"$origin_url")"
 if [[ "$origin_url" != "https://github.com/$REPO.git" \
     && "$origin_url" != "git@github.com:${REPO}.git" \
     && "$origin_url" != "ssh://git@github.com/${REPO}.git" ]]; then
