@@ -69,9 +69,19 @@ consent. LocalFlow works with those constraints instead of bypassing them.
 
 ## Wayland target safety
 
-At push-to-talk press, `FocusedTargetProvider::snapshotFocusedTarget()` walks a
-maximum of 4,096 accessibility nodes and 40 levels. Individual AT-SPI calls
-have a 400 ms timeout and the tree walk has a 500 ms wall-clock budget. A valid
+At push-to-talk press, `FocusedTargetProvider::snapshotFocusedTarget()` finds
+the top-level window in the ACTIVE state and takes the innermost FOCUSED object
+inside it. Every application keeps its own FOCUSED object, GNOME Shell's stage
+is always FOCUSED, and Chromium marks the web document FOCUSED as well as the
+field inside it, so the first FOCUSED node on the desktop is not the target.
+The innermost node comes from one AT-SPI Collection query where the toolkit
+implements it, otherwise from a walk of at most 4,096 nodes and 40 levels.
+Without an ACTIVE window the whole desktop is searched the same way; an
+ACTIVE window with nothing FOCUSED inside is a safe failure.
+Individual AT-SPI calls have a 400 ms timeout and the search has a 500 ms
+wall-clock budget. A field counts as editable when it exposes EditableText,
+or the EDITABLE state with the Text interface (Chromium's `<textarea>` and
+contenteditable fields); the latter is filled by the clipboard fallback. A valid
 snapshot requires an application PID/id and the focused object's unique AT-SPI
 bus name and object path. Missing or ambiguous identity is a safe failure.
 
