@@ -120,6 +120,12 @@ cp "$BIN_PATH" "$APP/Contents/MacOS/$APP_NAME"
 # product, so generate it from the exact pinned checkout in this scratch tree.
 # Never borrow one from another/debug build: that can package stale kernels.
 METALLIB="$SCRATCH_DIR/release/mlx.metallib"
+# Newer SwiftPM (Xcode 27+) compiles mlx-swift's pinned kernels into its
+# resource bundle in this same scratch tree instead of release/mlx.metallib.
+CMLX_METALLIB="$SCRATCH_DIR/release/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"
+if [[ ! -f "$METALLIB" && -f "$CMLX_METALLIB" ]]; then
+    METALLIB="$CMLX_METALLIB"
+fi
 if [[ ! -f "$METALLIB" && $RELEASE -eq 1 ]]; then
     METALLIB_BUILDER="$SCRATCH_DIR/checkouts/Granite-MLX/Scripts/build_mlx_metallib.sh"
     [[ -x "$METALLIB_BUILDER" ]] || {
