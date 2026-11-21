@@ -14,14 +14,27 @@ std::string join(const std::string& left, const std::string& right) {
 }
 }
 
+double DictationSegmentBudget::processing_seconds_per_audio_second() const noexcept {
+    if (recent_count_ == 0) return calibrated_seconds_per_audio_second;
+    std::array<double, recent_observation_limit> sorted = recent_rates_;
+    std::sort(sorted.begin(), sorted.begin() + std::ptrdiff_t(recent_count_));
+    const std::size_t mid = recent_count_ / 2;
+    const double median = recent_count_ % 2 == 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+    return std::max(calibrated_seconds_per_audio_second, median);
+}
+
 double DictationSegmentBudget::pause_search_seconds() const noexcept {
-    return std::max(1.0, (target_seconds - insertion_seconds - headroom_seconds)
-        / std::max(0.001, processing_seconds_per_audio_second));
+    return std::max(minimum_pause_search_seconds,
+        (target_seconds - insertion_seconds - headroom_seconds)
+            / std::max(0.001, processing_seconds_per_audio_second()));
 }
 
 void DictationSegmentBudget::observe(double audio, double processing) noexcept {
-    if (audio < 1 || !std::isfinite(audio) || !std::isfinite(processing) || processing <= 0) return;
-    processing_seconds_per_audio_second = std::max(processing_seconds_per_audio_second, processing / audio);
+    if (!std::isfinite(audio) || audio < minimum_observed_audio_seconds ||
+        !std::isfinite(processing) || processing <= 0) return;
+    recent_rates_[recent_next_] = processing / audio;
+    recent_next_ = (recent_next_ + 1) % recent_observation_limit;
+    recent_count_ = std::min(recent_count_ + 1, recent_observation_limit);
 }
 
 bool DictationSegmentBudget::has_quiet_tail(const std::vector<float>& samples, unsigned rate) noexcept {

@@ -315,7 +315,15 @@ struct AppController::IncrementalJob {
     explicit IncrementalJob(std::vector<LearnedTerm> terms) : learned(std::move(terms)) {}
 
     std::atomic<bool> cancelled{false};
-    std::atomic<double> observedRate{0.503 / 12.0};
+    // Chunk timings measured on the pipeline executor, drained into the
+    // UI-thread budget, which owns the robust (median, floored) estimate.
+    std::mutex observationMutex;
+    std::vector<std::pair<double, double>> observations;
+    void drainObservations(localflow::core::DictationSegmentBudget& budget) {
+        std::lock_guard lock(observationMutex);
+        for (const auto& [audio, processing] : observations) budget.observe(audio, processing);
+        observations.clear();
+    }
     std::size_t submittedSamples{0}; // UI-thread only; offsets in native samples.
     PipelineSettings settings;
     localflow::core::PressTimeContext context;
@@ -348,8 +356,9 @@ struct AppController::IncrementalJob {
             if (final) return stream.finish(audio, transcribe, transform, isCancelled);
             stream.append(audio, transcribe, transform, localflow::app::holdLastSentence, isCancelled);
             const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-            if (audio.duration_seconds() >= 1) {
-                observedRate.store(std::max(observedRate.load(), seconds / audio.duration_seconds()));
+            {
+                std::lock_guard lock(observationMutex);
+                observations.emplace_back(audio.duration_seconds(), seconds);
             }
             qInfo() << "Background chunk completed: audioSeconds=" << audio.duration_seconds()
                     << "processingSeconds=" << seconds;
@@ -708,9 +717,7 @@ void AppController::setState(QString state, double inputLevel) {
 void AppController::resetSegments() {
     if (runtime_->incremental) {
         runtime_->incremental->cancelled.store(true);
-        runtime_->segmentBudget.processing_seconds_per_audio_second = std::max(
-            runtime_->segmentBudget.processing_seconds_per_audio_second,
-            runtime_->incremental->observedRate.load());
+        runtime_->incremental->drainObservations(runtime_->segmentBudget);
         runtime_->incremental.reset();
     }
     runtime_->quietSince.reset();
@@ -722,11 +729,7 @@ void AppController::considerSegment(const PlatformEvent& event) {
     const auto now = std::chrono::steady_clock::now();
     if (event.inputLevel > 0.18f) { runtime_->quietSince.reset(); return; }
     if (!runtime_->quietSince) runtime_->quietSince = now;
-    if (runtime_->incremental) {
-        runtime_->segmentBudget.processing_seconds_per_audio_second = std::max(
-            runtime_->segmentBudget.processing_seconds_per_audio_second,
-            runtime_->incremental->observedRate.load());
-    }
+    if (runtime_->incremental) runtime_->incremental->drainObservations(runtime_->segmentBudget);
     const double threshold = runtime_->segmentBudget.pause_search_seconds();
     if (now - *runtime_->quietSince < std::chrono::milliseconds(650) ||
         std::chrono::duration<double>(now - runtime_->segmentStartedAt).count() < threshold) return;
@@ -906,8 +909,7 @@ void AppController::runPipeline(PlatformEvent event, PressContext context) {
     connect(watcher, &QFutureWatcher<PipelineJobResult>::finished, this, [this, watcher, session, generation, incremental, releaseStarted, audioSeconds] {
         const PipelineJobResult job = watcher->result();
         if (incremental) {
-            runtime_->segmentBudget.processing_seconds_per_audio_second = std::max(
-                runtime_->segmentBudget.processing_seconds_per_audio_second, incremental->observedRate.load());
+            incremental->drainObservations(runtime_->segmentBudget);
         } else if (audioSeconds >= 12 && job.pipeline.inserted()) {
             runtime_->segmentBudget.observe(audioSeconds,
                 double((job.pipeline.diagnostics.total_elapsed - job.pipeline.diagnostics.insertion.elapsed).count()) / 1e6);

@@ -21,11 +21,26 @@ Insertion previously measured about 0.34 seconds through paste. The initial
 pause-search threshold is `(2 - 0.35 - 0.5) / (0.503 / 12)`, about 27.4 seconds.
 The 0.5-second headroom allows for carry-over text and load variation. This is
 conservative calibration, not a universal audio-to-processing conversion.
-Slower observed processing tightens the threshold for the current app process;
-one fast/silent chunk cannot loosen it. Calibration is not persisted yet.
-Windows/Linux share the C++/Qt implementation and start with the same seed;
-their ONNX/llama runtimes and hardware can be slower, so this is not a claim
-that they reproduce the Mac timings. Runtime feedback tightens their threshold.
+Accuracy outranks the latency aim. Each background chunk is transcribed
+without its neighbours' context, so chunks are never shorter than **20 seconds**;
+on slower hardware the release takes longer rather than fragmenting speech.
+The per-second cost is the median of the last five observations of at least
+12 seconds of audio, never faster than the seed, so the threshold stays within
+20–27.4 seconds. Shorter observations are ignored because fixed per-call
+overhead (polish, its timeout, model dispatch) dominates them. Calibration is
+per app process and not persisted. Windows/Linux share the C++/Qt
+implementation and the same seed, floor and estimator; their ONNX/llama
+runtimes and hardware can be slower, so this is not a claim that they
+reproduce the Mac timings.
+
+**Regression note (1.4.5–1.4.7):** the estimator kept the maximum rate ever
+observed, never reset, and accepted 1-second chunks. One slow run shortened
+the next chunks, whose fixed overhead then measured as "slower" still, until
+the threshold sat at its 1-second floor for the life of the process. Every
+pause then split the dictation, which visibly hurt punctuation, number
+formatting and word accuracy (a 16.6 s fixture split at its pauses lost
+"September 2nd, at 3:30 p.m." and "$12,000" formatting and became seven
+sentence fragments).
 
 ## Operation and safety
 

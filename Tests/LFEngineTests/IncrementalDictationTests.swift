@@ -92,6 +92,41 @@ struct IncrementalDictationTests {
         #expect(budget.pauseSearchSeconds.isFinite)
     }
 
+    /// Regression: 1.4.5–1.4.7 collapsed to 1-second chunks after slow runs.
+    @Test func chunksNeverShrinkBelowAccuracyFloor() {
+        var budget = DictationSegmentBudget()
+        for _ in 0..<10 { budget.observe(audioSeconds: 20, processingSeconds: 60) }
+        #expect(budget.pauseSearchSeconds == DictationSegmentBudget.minimumPauseSearchSeconds)
+    }
+
+    @Test func shortObservationsCannotTightenBudget() {
+        var budget = DictationSegmentBudget()
+        let initial = budget.pauseSearchSeconds
+        // Fixed overhead (e.g. a 3 s polish timeout) on a short chunk.
+        for _ in 0..<10 { budget.observe(audioSeconds: 2, processingSeconds: 3) }
+        #expect(budget.pauseSearchSeconds == initial)
+    }
+
+    @Test func singleSlowOutlierIsForgotten() {
+        var budget = DictationSegmentBudget()
+        let initial = budget.pauseSearchSeconds
+        budget.observe(audioSeconds: 30, processingSeconds: 30) // cold start
+        #expect(budget.pauseSearchSeconds < initial)
+        for _ in 0..<DictationSegmentBudget.recentObservationLimit {
+            budget.observe(audioSeconds: 30, processingSeconds: 0.5)
+        }
+        #expect(budget.pauseSearchSeconds == initial)
+    }
+
+    @Test func sustainedSlowWorkStillTightens() {
+        var budget = DictationSegmentBudget()
+        let initial = budget.pauseSearchSeconds
+        budget.observe(audioSeconds: 30, processingSeconds: 0.5)
+        for _ in 0..<3 { budget.observe(audioSeconds: 30, processingSeconds: 1.5) }
+        #expect(budget.pauseSearchSeconds < initial)
+        #expect(budget.pauseSearchSeconds >= DictationSegmentBudget.minimumPauseSearchSeconds)
+    }
+
     @Test func staleQuietMeterCannotSplitResumedSpeech() {
         #expect(DictationSegmentBudget.hasQuietTail(silence.samples, sampleRate: 16000))
         #expect(!DictationSegmentBudget.hasQuietTail(audio.samples, sampleRate: 16000))

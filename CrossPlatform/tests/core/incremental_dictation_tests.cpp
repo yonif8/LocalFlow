@@ -90,7 +90,23 @@ int main() {
             resumed.insert(resumed.end(), 1600, 0.1f);
             check(!DictationSegmentBudget::has_quiet_tail(resumed, 16000), "resumed speech cut");
         }
-        std::cout << "6 incremental dictation scenarios passed\n";
+        {
+            // Regression: 1.4.5-1.4.7 collapsed to 1-second chunks after slow runs.
+            DictationSegmentBudget floor;
+            for (int i = 0; i < 10; ++i) floor.observe(20, 60);
+            check(floor.pause_search_seconds() == DictationSegmentBudget::minimum_pause_search_seconds,
+                  "chunks shrank below accuracy floor");
+            DictationSegmentBudget shortChunks;
+            const auto initial = shortChunks.pause_search_seconds();
+            for (int i = 0; i < 10; ++i) shortChunks.observe(2, 3);
+            check(shortChunks.pause_search_seconds() == initial, "fixed overhead on short chunk tightened budget");
+            DictationSegmentBudget outlier;
+            outlier.observe(30, 30);
+            check(outlier.pause_search_seconds() < initial, "slow outlier ignored");
+            for (std::size_t i = 0; i < DictationSegmentBudget::recent_observation_limit; ++i) outlier.observe(30, 0.5);
+            check(outlier.pause_search_seconds() == initial, "slow outlier was never forgotten");
+        }
+        std::cout << "7 incremental dictation scenarios passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
