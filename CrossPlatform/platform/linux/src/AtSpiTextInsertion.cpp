@@ -111,15 +111,22 @@ struct SearchBudget {
     }
 };
 
-AccessiblePtr findFocused(
+AccessiblePtr retained(AtspiAccessible* accessible) {
+    return AccessiblePtr(static_cast<AtspiAccessible*>(g_object_ref(accessible)));
+}
+
+// Every application keeps its own FOCUSED object, GNOME Shell's stage is always
+// FOCUSED, and Chromium marks the web document FOCUSED as well as the field inside
+// it. So the first FOCUSED node in a depth-first walk is usually the wrong one.
+// The search therefore goes to the ACTIVE top-level window (desktop -> application
+// -> window) and keeps the innermost FOCUSED node inside it.
+AccessiblePtr findActiveWindow(
     AtspiAccessible* root,
     int depth,
     SearchBudget& budget) {
-    if (!root || depth > kMaximumTreeDepth || !budget.consume()) return {};
-    if (hasState(root, ATSPI_STATE_DEFUNCT)) return {};
-    if (hasState(root, ATSPI_STATE_FOCUSED)) {
-        return AccessiblePtr(static_cast<AtspiAccessible*>(g_object_ref(root)));
-    }
+    if (!root || depth > 2 || !budget.consume()) return {};
+    if (depth > 0 && hasState(root, ATSPI_STATE_ACTIVE)) return retained(root);
+    if (depth == 2) return {};
 
     GError* error = nullptr;
     const int children = atspi_accessible_get_child_count(root, &error);
@@ -134,11 +141,120 @@ AccessiblePtr findFocused(
             clearError(error);
             continue;
         }
-        if (auto focused = findFocused(child.get(), depth + 1, budget)) {
-            return focused;
+        if (auto window = findActiveWindow(child.get(), depth + 1, budget)) {
+            return window;
         }
     }
     return {};
+}
+
+// One Collection call returns every FOCUSED descendant in document order, so the
+// last live match is the innermost one. Chromium and GTK3 implement it.
+AccessiblePtr innermostFocusedByCollection(
+    AtspiAccessible* root,
+    SearchBudget& budget) {
+    if (budget.expired()) return {};
+    std::unique_ptr<AtspiCollection, GObjectUnref<AtspiCollection>> collection(
+        atspi_accessible_get_collection_iface(root));
+    if (!collection) return {};
+
+    ArrayPtr wanted(g_array_new(FALSE, FALSE, sizeof(AtspiStateType)));
+    AtspiStateType focusedState = ATSPI_STATE_FOCUSED;
+    g_array_append_val(wanted.get(), focusedState);
+    StateSetPtr states(atspi_state_set_new(wanted.get()));
+    std::unique_ptr<AtspiMatchRule, GObjectUnref<AtspiMatchRule>> rule(
+        atspi_match_rule_new(
+            states.get(), ATSPI_Collection_MATCH_ALL,
+            nullptr, ATSPI_Collection_MATCH_NONE,
+            nullptr, ATSPI_Collection_MATCH_NONE,
+            nullptr, ATSPI_Collection_MATCH_NONE,
+            FALSE));
+    if (!rule) return {};
+
+    GError* error = nullptr;
+    ArrayPtr matches(atspi_collection_get_matches(
+        collection.get(), rule.get(), ATSPI_Collection_SORT_ORDER_CANONICAL,
+        0, TRUE, &error));
+    if (error) {
+        clearError(error);
+        return {};
+    }
+    AccessiblePtr innermost;
+    for (guint index = 0; matches && index < matches->len; ++index) {
+        AccessiblePtr match(g_array_index(matches.get(), AtspiAccessible*, index));
+        if (budget.expired()) continue;  // keep releasing the remaining matches
+        if (match && !hasState(match.get(), ATSPI_STATE_DEFUNCT)) {
+            innermost = std::move(match);
+        }
+    }
+    return innermost;
+}
+
+// Fallback for toolkits without Collection: children before self, so a FOCUSED
+// container yields to a FOCUSED descendant.
+AccessiblePtr innermostFocusedByWalk(
+    AtspiAccessible* root,
+    int depth,
+    SearchBudget& budget) {
+    if (!root || depth > kMaximumTreeDepth || !budget.consume()) return {};
+    if (hasState(root, ATSPI_STATE_DEFUNCT)) return {};
+
+    GError* error = nullptr;
+    int children = atspi_accessible_get_child_count(root, &error);
+    if (error) {
+        clearError(error);
+        children = 0;
+    }
+    for (int index = 0; index < children && !budget.exhausted; ++index) {
+        AccessiblePtr child(
+            atspi_accessible_get_child_at_index(root, index, &error));
+        if (error) {
+            clearError(error);
+            continue;
+        }
+        if (auto focused = innermostFocusedByWalk(child.get(), depth + 1, budget)) {
+            return focused;
+        }
+    }
+    if (!budget.exhausted && hasState(root, ATSPI_STATE_FOCUSED)) {
+        return retained(root);
+    }
+    return {};
+}
+
+AccessiblePtr innermostFocused(AtspiAccessible* root, SearchBudget& budget) {
+    if (auto focused = innermostFocusedByCollection(root, budget)) return focused;
+    return innermostFocusedByWalk(root, 0, budget);
+}
+
+AccessiblePtr findFocused(AtspiAccessible* root, SearchBudget& budget) {
+    if (!root) return {};
+    // An ACTIVE window with nothing FOCUSED inside is a refusal, never a reason
+    // to pick a FOCUSED field in a background application.
+    if (auto window = findActiveWindow(root, 0, budget)) {
+        return innermostFocused(window.get(), budget);
+    }
+    if (budget.exhausted) return {};
+    // No ACTIVE window reported (some compositors and toolkits): search everything.
+    return innermostFocused(root, budget);
+}
+
+// Interface getters return a new reference; this only asks whether one exists.
+template <typename Interface>
+bool exposes(Interface* interface) {
+    if (!interface) return false;
+    g_object_unref(interface);
+    return true;
+}
+
+// Chromium (Chrome, Electron apps) exposes <textarea> and contenteditable fields
+// as EDITABLE with the Text interface but without EditableText. They are still
+// editable targets: insertAtCaret reports not_editable for them and the
+// coordinator falls back to a revalidated clipboard paste.
+bool isEditableText(AtspiAccessible* accessible) {
+    if (exposes(atspi_accessible_get_editable_text_iface(accessible))) return true;
+    return hasState(accessible, ATSPI_STATE_EDITABLE) &&
+           exposes(atspi_accessible_get_text_iface(accessible));
 }
 
 AccessiblePtr editableObjectForFocus(
@@ -148,7 +264,7 @@ AccessiblePtr editableObjectForFocus(
         static_cast<AtspiAccessible*>(g_object_ref(focused)));
     for (int level = 0; current && level < kMaximumEditableAncestors; ++level) {
         if (budget.expired()) return {};
-        if (atspi_accessible_get_editable_text_iface(current.get()) != nullptr) {
+        if (isEditableText(current.get())) {
             return current;
         }
         GError* error = nullptr;
@@ -288,7 +404,7 @@ struct CapturedTarget {
 Result<CapturedTarget> captureFocusedTarget(
     AtspiAccessible* searchRoot,
     SearchBudget& budget) {
-    auto focused = findFocused(searchRoot, 0, budget);
+    auto focused = findFocused(searchRoot, budget);
     if (!focused) {
         return Result<CapturedTarget>::failure(Status::failure(
             budget.exhausted ? ErrorCode::timed_out : ErrorCode::service_unavailable,
@@ -698,9 +814,13 @@ Status insertCaptured(CapturedTarget& captured, const std::string& utf8Text) {
             "Nothing was inserted. Paste the transcript manually if appropriate.");
     }
 
-    auto* text = atspi_accessible_get_text_iface(captured.editable.get());
-    auto* editableText =
-        atspi_accessible_get_editable_text_iface(captured.editable.get());
+    std::unique_ptr<AtspiText, GObjectUnref<AtspiText>> textInterface(
+        atspi_accessible_get_text_iface(captured.editable.get()));
+    std::unique_ptr<AtspiEditableText, GObjectUnref<AtspiEditableText>>
+        editableTextInterface(
+            atspi_accessible_get_editable_text_iface(captured.editable.get()));
+    auto* text = textInterface.get();
+    auto* editableText = editableTextInterface.get();
     if (!text || !editableText) {
         return Status::failure(
             ErrorCode::not_editable,
