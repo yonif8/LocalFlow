@@ -31,6 +31,22 @@ struct WhatsAppSenderTests {
         #expect(!EditableFocusPolicy.isEditable(role: "AXButton", subrole: nil, selectedTextSettable: false))
     }
 
+    @Test("only a positively non-text focus may route to WhatsApp")
+    func focusClassification() {
+        // The Claude-app bug: lookup failed (Electron tree not built yet).
+        #expect(EditableFocusPolicy.classify(lookupSucceeded: false, role: nil, subrole: nil,
+                                             selectedTextSettable: false, secureInput: false) == .unknown)
+        #expect(EditableFocusPolicy.classify(lookupSucceeded: true, role: nil, subrole: nil,
+                                             selectedTextSettable: false, secureInput: false) == .unknown)
+        #expect(EditableFocusPolicy.classify(lookupSucceeded: true, role: "AXTextArea", subrole: nil,
+                                             selectedTextSettable: true, secureInput: false) == .editable)
+        #expect(EditableFocusPolicy.classify(lookupSucceeded: true, role: "AXWebArea", subrole: nil,
+                                             selectedTextSettable: false, secureInput: false) == .notEditable)
+        // Secure input means a password field has the keyboard, even if AX can't say.
+        #expect(EditableFocusPolicy.classify(lookupSucceeded: false, role: nil, subrole: nil,
+                                             selectedTextSettable: false, secureInput: true) == .editable)
+    }
+
     @Test("reads WhatsApp's staged media count")
     func mediaCount() {
         #expect(WhatsAppMediaCount.parse("\u{200E}1 media item.") == 1)

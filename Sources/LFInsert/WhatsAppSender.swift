@@ -22,10 +22,22 @@ public enum WhatsAppRecipient {
     }
 }
 
-/// Decides whether a focused Accessibility element is somewhere the user can
-/// type. Settability alone is not enough (some web/Electron fields report it
-/// unsettable), so text roles count as editable too. No focus at all, or a
-/// focus that is clearly not a text input, means "nowhere to type".
+/// What we know about the system's keyboard focus.
+public enum FocusState: Equatable, Sendable {
+    /// A text input has focus: dictation must be typed there.
+    case editable
+    /// Accessibility positively reports a focused element that is not a
+    /// text input (a web page, a file list, a button).
+    case notEditable
+    /// Accessibility could not tell (no tree yet, lookup error, timeout).
+    case unknown
+}
+
+/// Decides whether the user is in a text box. Anything that sends data off
+/// the machine (Send to WhatsApp) must act ONLY on `.notEditable`: an app
+/// whose accessibility tree is missing or still building (Electron/Chromium
+/// build it lazily; the Claude app returns -25204/-25212 at first) must
+/// never be mistaken for "no text box".
 public enum EditableFocusPolicy {
     static let textRoles: Set<String> = [
         "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXSecureTextField",
@@ -38,13 +50,60 @@ public enum EditableFocusPolicy {
         return false
     }
 
-    /// Live check of the system's current keyboard focus.
-    @MainActor
-    public static func hasEditableFocus() -> Bool {
-        let info = AXInsertion.focusedElementInfo()
-        return isEditable(role: info.role, subrole: info.subrole,
-                          selectedTextSettable: info.selectedTextSettable)
+    /// Pure classification of one focus lookup.
+    public static func classify(lookupSucceeded: Bool, role: String?, subrole: String?,
+                                selectedTextSettable: Bool, secureInput: Bool) -> FocusState {
+        if secureInput { return .editable }          // a password field owns the keyboard
+        guard lookupSucceeded, role != nil else { return .unknown }
+        return isEditable(role: role, subrole: subrole, selectedTextSettable: selectedTextSettable)
+            ? .editable : .notEditable
     }
+
+    @MainActor
+    static func currentFocus() -> FocusState {
+        let info = AXInsertion.focusedElementInfo()
+        return classify(lookupSucceeded: info.lookupError == nil, role: info.role,
+                        subrole: info.subrole, selectedTextSettable: info.selectedTextSettable,
+                        secureInput: InsertPermissions.secureInputEnabled)
+    }
+
+    /// Asks Chromium/Electron apps to build their accessibility tree
+    /// (`AXManualAccessibility`, Electron's documented switch). Harmless for
+    /// other apps, which reject the attribute.
+    @MainActor
+    public static func enableAccessibilityTree(processID: pid_t) {
+        let app = AXUIElementCreateApplication(processID)
+        AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+    }
+
+    /// Resolves the focus state, giving apps with a lazily built tree up to
+    /// `timeout` to answer. Returns `.unknown` rather than guessing.
+    @MainActor
+    public static func probe(timeout: Duration = .seconds(2)) async -> FocusState {
+        let first = currentFocus()
+        guard first == .unknown, let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        else { return first }
+        enableAccessibilityTree(processID: pid)
+        let app = AXUIElementCreateApplication(pid)
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            // Touching the focused window's subtree makes Chromium deliver it.
+            var window: CFTypeRef?
+            if AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &window) == .success,
+               let window, CFGetTypeID(window) == AXUIElementGetTypeID() {
+                var children: CFTypeRef?
+                AXUIElementCopyAttributeValue(window as! AXUIElement, kAXChildrenAttribute as CFString, &children)
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+            let state = currentFocus()
+            if state != .unknown { return state }
+        }
+        return .unknown
+    }
+
+    /// Back-compat convenience: true only when focus is positively editable.
+    @MainActor
+    public static func hasEditableFocus() -> Bool { currentFocus() == .editable }
 }
 
 /// Reads the item count WhatsApp announces in its media preview

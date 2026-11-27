@@ -52,6 +52,8 @@ final class DictationCoordinator {
     /// the result goes to WhatsApp with the key-down screenshot.
     private(set) var routingToWhatsApp = false
     private var whatsAppScreenshot: Task<Data, Error>?
+    /// Key-down focus check; only `.notEditable` routes to WhatsApp.
+    private var whatsAppFocusProbe: Task<FocusState, Never>?
 
     // Pipeline components — protocol-typed so the orchestrator can rewire.
     // Polisher and inserter are rebuilt from AppSettings via applySettings();
@@ -134,6 +136,7 @@ final class DictationCoordinator {
         self.transcriber = EngineFactory.makeTranscriber()
         self.polisher = Self.makePolisher()
         self.inserter = AdaptiveInserter(configuration: AppSettings.inserterConfiguration)
+        observeAppActivationForFocusProbe()
     }
 
     private static func makePolisher() -> any TextPolisher {
@@ -203,6 +206,13 @@ final class DictationCoordinator {
             if let localPolisher = polisher as? LocalPolisher {
                 Task.detached(priority: .utility) { localPolisher.prewarm() }
             }
+        }
+
+        // Send to WhatsApp needs a readable focus; build the current app's
+        // accessibility tree now rather than at the first key-down.
+        if AppSettings.whatsAppSendEnabled,
+           let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier {
+            EditableFocusPolicy.enableAccessibilityTree(processID: pid)
         }
 
         // Mock capture always runs so "Simulate Dictation" works everywhere.
@@ -426,7 +436,7 @@ final class DictationCoordinator {
             }
             let insertionStart = clock.now
             Self.logger.info("Pipeline \(runID, privacy: .public): polish complete; insertion begin characters=\(text.count, privacy: .public)")
-            if routingToWhatsApp, let screenshot = whatsAppScreenshot {
+            if await resolveWhatsAppRouting(), let screenshot = whatsAppScreenshot {
                 guard await sendToWhatsApp(text, screenshot: screenshot, runID: runID) else { return }
             } else {
                 try await inserter.insert(text)
@@ -565,22 +575,55 @@ final class DictationCoordinator {
 
     // MARK: Send to WhatsApp
 
-    /// Key-down: if nothing editable is focused and the feature is set up,
-    /// route this dictation to WhatsApp and start the screenshot right away
-    /// (it must show the screen as it was when the key went down).
+    /// Key-down: when the feature is set up, start the screenshot (it must
+    /// show the screen as it was at key-down) and a focus probe in parallel.
+    /// The dictation goes to WhatsApp only if the probe POSITIVELY finds no
+    /// text box; an unreadable focus falls back to normal dictation.
     private func beginWhatsAppRoutingIfNeeded() {
         endWhatsAppRouting()
         guard AppSettings.whatsAppSendReady,
-              NSWorkspace.shared.frontmostApplication?.bundleIdentifier != Bundle.main.bundleIdentifier,
-              !EditableFocusPolicy.hasEditableFocus() else { return }
-        routingToWhatsApp = true
+              NSWorkspace.shared.frontmostApplication?.bundleIdentifier != Bundle.main.bundleIdentifier
+        else { return }
         whatsAppScreenshot = Task { try await ScreenSnapshot.captureDisplayPNG() }
-        Self.logger.info("No editable focus: routing this dictation to WhatsApp")
+        whatsAppFocusProbe = Task { @MainActor [weak self] in
+            let state = await EditableFocusPolicy.probe()
+            guard !Task.isCancelled else { return state }
+            self?.routingToWhatsApp = state == .notEditable
+            Self.logger.info("WhatsApp focus probe: \(String(describing: state), privacy: .public)")
+            return state
+        }
+    }
+
+    /// Release: wait for the (bounded) focus probe and decide.
+    private func resolveWhatsAppRouting() async -> Bool {
+        guard let probe = whatsAppFocusProbe else { return false }
+        let state = await probe.value
+        routingToWhatsApp = state == .notEditable
+        if !routingToWhatsApp { whatsAppScreenshot?.cancel() }
+        return routingToWhatsApp
+    }
+
+    /// While the feature is on, ask each app brought to the front to build
+    /// its accessibility tree so the key-down probe can answer at once.
+    private func observeAppActivationForFocusProbe() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { note in
+            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            else { return }
+            let pid = app.processIdentifier
+            MainActor.assumeIsolated {
+                guard AppSettings.whatsAppSendEnabled else { return }
+                EditableFocusPolicy.enableAccessibilityTree(processID: pid)
+            }
+        }
     }
 
     private func endWhatsAppRouting() {
         whatsAppScreenshot?.cancel()
         whatsAppScreenshot = nil
+        whatsAppFocusProbe?.cancel()
+        whatsAppFocusProbe = nil
         routingToWhatsApp = false
     }
 

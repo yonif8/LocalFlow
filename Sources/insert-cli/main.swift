@@ -130,6 +130,8 @@ if options.doctor {
     }
     print("secure keyboard entry:    \(report.secureInputEnabled)")
     print("accessibility granted:    \(report.accessibilityGranted)")
+    // What "Send to WhatsApp" would decide: it sends only on notEditable.
+    print("focus state (probed):     \(await EditableFocusPolicy.probe())")
     exit(0)
 }
 
