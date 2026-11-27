@@ -38,6 +38,7 @@ Status meanings:
 | Text insertion | Direct insertion where reliable, safe paste fallback, Unicode typing fallback | Existing macOS release | Available; certification pending | Available; certification pending |
 | Clipboard safety | Preserve all formats and restore only if no third party changed the clipboard | Existing macOS release | Available; certification pending | Available; certification pending |
 | Recording HUD | Non-activating recording, processing and error status with live level | Existing macOS release | Available; certification pending | Available; certification pending |
+| Send to WhatsApp (opt-in) | Off by default. With no editable field focused, the trigger screenshots the display at key-down, transcribes and polishes as usual, then sends one WhatsApp message (screenshot plus caption) to a user-set number through the installed WhatsApp app without bringing it forward; on any failure nothing partial is sent and the transcript is copied | Implemented; hands-on tested | Not started (macOS-first by owner decision) | Not started (macOS-first by owner decision) |
 | History | Session-only, configurable 0–50 items, copy and clear | Existing macOS release | Available; certification pending | Available; certification pending |
 | Settings | General, Dictation, Polish, Dictionary, Insertion and About | Existing macOS release | Available; certification pending | Available; certification pending |
 | Onboarding | Capability permissions and resumable model-download progress | Existing macOS release | Available; certification pending | Available; certification pending |
@@ -51,6 +52,11 @@ Status meanings:
   Some GPU-rendered surfaces may provide incomplete or unusable OCR pixels.
 - **Linux Wayland controls:** arbitrary global mouse triggers and conditional
   global Escape interception are unavailable through the current adapter.
+- **Send to WhatsApp:** macOS only for now. It drives the WhatsApp for Mac
+  app through Accessibility, matching English UI labels; other WhatsApp
+  languages fail safely (no message, transcript copied). Windows/Linux need
+  their own WhatsApp-desktop automation and stay off until then; the setting
+  is not shown there.
 - **Linux DEB updates:** open Releases for manual package installation rather
   than replacing package-managed files. AppImage supports in-app updates.
 

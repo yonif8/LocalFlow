@@ -82,11 +82,22 @@ private struct HUDView: View {
                 Image(systemName: "mic.fill")
                     .foregroundStyle(.red)
                 LevelMeter(level: coordinator.level)
+                if coordinator.routingToWhatsApp {
+                    Image(systemName: "paperplane.fill")
+                        .foregroundStyle(.green)
+                        .help("Sending to WhatsApp")
+                }
             case .processing:
                 ProgressView()
                     .controlSize(.small)
-                Text("processing…")
+                Text(coordinator.routingToWhatsApp ? "sending…" : "processing…")
                     .foregroundStyle(.secondary)
+            case .done(let message):
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Text(message)
+                    .lineLimit(2)
+                    .font(.caption)
             case .error(let message):
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.yellow)

@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import AVFoundation
 import ServiceManagement
+import LFInsert
 import LFPolish
 
 /// Settings window in the native System-Settings idiom: an
@@ -161,6 +162,10 @@ private struct DictationSettingsTab: View {
     @State private var duckLevelPercent = Double(AppSettings.duckLevelPercent)
     @State private var microphoneUID = AppSettings.microphoneUID ?? ""
     @State private var microphones: [MicDevice] = MicDevice.available()
+    @State private var whatsAppEnabled = AppSettings.whatsAppSendEnabled
+    @State private var whatsAppRecipient = AppSettings.whatsAppRecipient
+    @State private var whatsAppTestStatus: String?
+    @State private var isSendingWhatsAppTest = false
 
     var body: some View {
         Form {
@@ -234,6 +239,57 @@ private struct DictationSettingsTab: View {
                     mutes it) while you hold the key, so it doesn't drown out \
                     the microphone. Quieter audio is never turned up, and your \
                     volume comes back the moment you release.
+                    """)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Send to WhatsApp") {
+                Toggle("Send to WhatsApp when no text field is selected", isOn: $whatsAppEnabled)
+                    .onChange(of: whatsAppEnabled) { _, value in
+                        AppSettings.whatsAppSendEnabled = value
+                        if value, !ScreenOCR.hasPermission { ScreenOCR.requestPermission() }
+                    }
+                TextField("WhatsApp number:", text: $whatsAppRecipient, prompt: Text("+61 412 345 678"))
+                    .disabled(!whatsAppEnabled)
+                    .onChange(of: whatsAppRecipient) { _, value in
+                        AppSettings.whatsAppRecipient = value
+                        whatsAppTestStatus = nil
+                    }
+                if whatsAppEnabled, !whatsAppRecipient.isEmpty,
+                   WhatsAppRecipient.normalize(whatsAppRecipient) == nil {
+                    Text("Enter the full number with country code, e.g. +61 412 345 678.")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                if whatsAppEnabled, !WhatsAppSender.isInstalled {
+                    Text("WhatsApp for Mac isn't installed. Get it from the App Store and sign in.")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                if whatsAppEnabled, !ScreenOCR.hasPermission {
+                    Text("Needs Screen Recording permission for the screenshot (System Settings → Privacy & Security).")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                HStack {
+                    Button(isSendingWhatsAppTest ? "Sending…" : "Send test message") {
+                        isSendingWhatsAppTest = true
+                        whatsAppTestStatus = nil
+                        Task {
+                            whatsAppTestStatus = await DictationCoordinator.shared.sendWhatsAppTest()
+                            isSendingWhatsAppTest = false
+                        }
+                    }
+                    .disabled(!whatsAppEnabled || isSendingWhatsAppTest
+                              || WhatsAppRecipient.normalize(whatsAppRecipient) == nil)
+                    if let whatsAppTestStatus {
+                        Text(whatsAppTestStatus).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Text("""
+                    Hold your push-to-talk key while no text box is selected: \
+                    LocalFlow screenshots your screen when you press, then sends \
+                    the screenshot with your words as its caption to this number \
+                    using the WhatsApp app, in the background. You can use your \
+                    own number to send notes to yourself. If sending fails, your \
+                    text is copied to the clipboard.
                     """)
                     .font(.caption).foregroundStyle(.secondary)
             }

@@ -74,6 +74,27 @@ enum AppSettings {
         }
     }
 
+    // MARK: Send to WhatsApp
+
+    /// When the hotkey is pressed with no editable text field focused, send
+    /// the dictation plus a whole-display screenshot to `whatsAppRecipient`
+    /// via the installed WhatsApp app instead of inserting it. Opt-in.
+    static var whatsAppSendEnabled: Bool {
+        get { defaults.object(forKey: DefaultsKey.whatsAppSendEnabled) as? Bool ?? false }
+        set { defaults.set(newValue, forKey: DefaultsKey.whatsAppSendEnabled) }
+    }
+
+    /// Recipient phone number as the user typed it (normalized at send time).
+    static var whatsAppRecipient: String {
+        get { defaults.string(forKey: DefaultsKey.whatsAppRecipient) ?? "" }
+        set { defaults.set(newValue, forKey: DefaultsKey.whatsAppRecipient) }
+    }
+
+    /// True when the feature is on and has a usable number.
+    static var whatsAppSendReady: Bool {
+        whatsAppSendEnabled && WhatsAppRecipient.normalize(whatsAppRecipient) != nil
+    }
+
     // MARK: Polish
 
     static var polishEnabled: Bool {

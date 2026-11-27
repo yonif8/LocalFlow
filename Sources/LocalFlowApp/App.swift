@@ -301,6 +301,8 @@ enum DefaultsKey {
     static let spokenPunctuation = "LFSpokenPunctuation"       // default false
     static let screenTerminology = "LFScreenTerminology"       // default false
     static let microphoneUID = "LFMicrophoneUID"               // absent = system default
+    static let whatsAppSendEnabled = "LFWhatsAppSendEnabled"   // default false
+    static let whatsAppRecipient = "LFWhatsAppRecipient"       // phone number as typed
         /// JSON-encoded `HotkeyConfig`-shaped value ({"key": "fn" | "rightCommand" | "rightOption"}).
     /// LFCapture can read this at startup; the local mirror enum lives in
     /// SettingsView.swift and is bridged to LFCapture.HotkeyKey in

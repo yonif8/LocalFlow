@@ -34,6 +34,7 @@ final class DictationCoordinator {
         case idle
         case recording
         case processing
+        case done(String)
         case error(String)
     }
 
@@ -47,6 +48,10 @@ final class DictationCoordinator {
     private(set) var history: [Transcript] = []
     /// Why real hotkey capture isn't running (shown in the menu), nil if it is.
     private(set) var captureLimitation: String?
+    /// This press had no editable field focused and "Send to WhatsApp" is on:
+    /// the result goes to WhatsApp with the key-down screenshot.
+    private(set) var routingToWhatsApp = false
+    private var whatsAppScreenshot: Task<Data, Error>?
 
     // Pipeline components — protocol-typed so the orchestrator can rewire.
     // Polisher and inserter are rebuilt from AppSettings via applySettings();
@@ -162,6 +167,7 @@ final class DictationCoordinator {
         case .idle: return isListening ? "waveform" : "waveform.slash"
         case .recording: return "mic.fill"
         case .processing: return "waveform"
+        case .done: return isListening ? "waveform" : "waveform.slash"
         case .error: return "mic.badge.xmark"
         }
     }
@@ -285,6 +291,7 @@ final class DictationCoordinator {
             dictationTargetBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
             Self.logger.info("capture began")
             errorResetTask?.cancel()
+            beginWhatsAppRoutingIfNeeded()
             if AppSettings.screenTerminologyEnabled {
                 let sessionID = UUID()
                 screenContextSessionID = sessionID
@@ -351,6 +358,7 @@ final class DictationCoordinator {
 
         case .cancelled:
             resetSegments()
+            endWhatsAppRouting()
             SystemAudioDucker.shared.restore()
             state = .idle
             level = 0
@@ -374,6 +382,7 @@ final class DictationCoordinator {
     private func runPipeline(_ utterance: Utterance) async {
         defer {
             resetSegments()
+            endWhatsAppRouting()
             pendingScreenContext = nil
             screenContextSessionID = nil
             screenContextTask?.cancel()
@@ -417,7 +426,11 @@ final class DictationCoordinator {
             }
             let insertionStart = clock.now
             Self.logger.info("Pipeline \(runID, privacy: .public): polish complete; insertion begin characters=\(text.count, privacy: .public)")
-            try await inserter.insert(text)
+            if routingToWhatsApp, let screenshot = whatsAppScreenshot {
+                guard await sendToWhatsApp(text, screenshot: screenshot, runID: runID) else { return }
+            } else {
+                try await inserter.insert(text)
+            }
             let insertDuration = clock.now - insertionStart
             Self.logger.info("""
                 stages: release processing \(String(describing: processingDuration), privacy: .public), \
@@ -429,8 +442,12 @@ final class DictationCoordinator {
             if elapsed < .milliseconds(350) {
                 try? await Task.sleep(for: .milliseconds(350) - elapsed)
             }
-            state = .idle
-            HUDController.shared.hide()
+            if routingToWhatsApp {
+                flash(.done("Sent to WhatsApp"))
+            } else {
+                state = .idle
+                HUDController.shared.hide()
+            }
         } catch {
             Self.logger.error("Pipeline \(runID, privacy: .public): failed domain=\((error as NSError).domain, privacy: .public) code=\((error as NSError).code, privacy: .public)")
             surfaceError("Dictation failed: \(error.localizedDescription)")
@@ -528,16 +545,74 @@ final class DictationCoordinator {
 
     /// Error surfacing: HUD flashes the message, then everything resets.
     private func surfaceError(_ message: String) {
-        state = .error(message)
+        flash(.error(message))
+    }
+
+    /// Shows a terminal HUD state briefly, then returns to idle.
+    private func flash(_ terminal: State) {
+        state = terminal
         HUDController.shared.show()
         errorResetTask?.cancel()
         errorResetTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(2.5))
             guard let self, !Task.isCancelled else { return }
-            if case .error = self.state {
+            if self.state == terminal {
                 self.state = .idle
                 HUDController.shared.hide()
             }
+        }
+    }
+
+    // MARK: Send to WhatsApp
+
+    /// Key-down: if nothing editable is focused and the feature is set up,
+    /// route this dictation to WhatsApp and start the screenshot right away
+    /// (it must show the screen as it was when the key went down).
+    private func beginWhatsAppRoutingIfNeeded() {
+        endWhatsAppRouting()
+        guard AppSettings.whatsAppSendReady,
+              NSWorkspace.shared.frontmostApplication?.bundleIdentifier != Bundle.main.bundleIdentifier,
+              !EditableFocusPolicy.hasEditableFocus() else { return }
+        routingToWhatsApp = true
+        whatsAppScreenshot = Task { try await ScreenSnapshot.captureDisplayPNG() }
+        Self.logger.info("No editable focus: routing this dictation to WhatsApp")
+    }
+
+    private func endWhatsAppRouting() {
+        whatsAppScreenshot?.cancel()
+        whatsAppScreenshot = nil
+        routingToWhatsApp = false
+    }
+
+    /// Sends screenshot + text. On any failure the transcript is copied to the
+    /// clipboard and kept in history so nothing the user said is lost.
+    /// Returns false when it already surfaced an error.
+    private func sendToWhatsApp(_ text: String, screenshot: Task<Data, Error>,
+                                runID: String) async -> Bool {
+        do {
+            let png = try await screenshot.value
+            try await WhatsAppSender().send(png: png, caption: text,
+                                            to: AppSettings.whatsAppRecipient)
+            Self.logger.info("Pipeline \(runID, privacy: .public): sent to WhatsApp characters=\(text.count, privacy: .public)")
+            return true
+        } catch {
+            Self.logger.error("Pipeline \(runID, privacy: .public): WhatsApp send failed: \(String(describing: error), privacy: .public)")
+            copyToClipboard(Transcript(text: text, date: Date()))
+            appendHistory(text)
+            surfaceError("Not sent to WhatsApp. Text copied.")
+            return false
+        }
+    }
+
+    /// Settings → "Send test message": same path as a real dictation.
+    func sendWhatsAppTest() async -> String {
+        do {
+            let png = try await ScreenSnapshot.captureDisplayPNG()
+            try await WhatsAppSender().send(png: png, caption: "LocalFlow test message",
+                                            to: AppSettings.whatsAppRecipient)
+            return "Sent. Check WhatsApp."
+        } catch {
+            return "Not sent: \(String(describing: error))"
         }
     }
 }

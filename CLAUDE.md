@@ -33,6 +33,10 @@ mic (LFCapture: CGEventTap hold-to-talk + AVAudioEngine 16kHz;
 → insert (LFInsert: AX-at-caret, checks settability FIRST — Catalyst apps
   lie — then pasteboard+Cmd-V with clipboard restore)
 Contracts in `Sources/LFContracts` (Utterance/Transcriber/TextPolisher/…).
+Opt-in "Send to WhatsApp" (Settings → Dictation, Mac-only): no editable focus
+at key-down → display screenshot + polished text sent as one message via
+`LFInsert/WhatsAppSender` (background AX drive of WhatsApp.app; see its doc
+comment for the hidden-app / Cmd-V key-repeat gotchas).
 
 ## Commands
 
