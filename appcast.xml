@@ -3,6 +3,15 @@
     <channel>
         <title>LocalFlow</title>
         <item>
+            <title>1.4.9</title>
+            <pubDate>Fri, 27 Nov 2026 16:34:57 +1100</pubDate>
+            <sparkle:version>10409</sparkle:version>
+            <sparkle:shortVersionString>1.4.9</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/yonif8/LocalFlow/releases/download/v1.4.9/LocalFlow-1.4.9.dmg" length="23731566" type="application/octet-stream" sparkle:edSignature="QdohbgdCjAd40AJYKICpbVBnsyJ2NUrqwGeLDzIAMdoXgZAPx5AoeZKujpOu8kF0xgR8woB9s38jg4R3yFUEDA=="/>
+        </item>
+        <item>
             <title>1.4.8</title>
             <pubDate>Sat, 21 Nov 2026 13:43:22 +1100</pubDate>
             <sparkle:version>10408</sparkle:version>
@@ -19,15 +28,6 @@
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <enclosure url="https://github.com/yonif8/LocalFlow/releases/download/v1.4.7/LocalFlow-1.4.7.dmg" length="61306875" type="application/octet-stream" sparkle:edSignature="1fbOb+YXp9Nr2ivCd4hgCwXsTfeBhR6yss6d2GU+GMlwsRZPZj7BqDhcW9+LAmiHbGguvIyyZhiQxlMZfANMAA=="/>
-        </item>
-        <item>
-            <title>1.4.6</title>
-            <pubDate>Sun, 06 Sep 2026 15:30:46 +1000</pubDate>
-            <sparkle:version>10406</sparkle:version>
-            <sparkle:shortVersionString>1.4.6</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/yonif8/LocalFlow/releases/download/v1.4.6/LocalFlow-1.4.6.dmg" length="59785048" type="application/octet-stream" sparkle:edSignature="WpNjDt++Qefsw/mUSHQL2qi14Nav3i2+fmMehASd1nobGwYa9xnpDB8rafS/RPDAXWzNEIOyi+fK8JNi134FBw=="/>
         </item>
     </channel>
 </rss>
